@@ -1,0 +1,55 @@
+# benchmarks/classification.yaml
+name: "Customer Support Classification"
+judge_model: ""
+quality_threshold: 85
+
+inference:
+  temperature: 0
+  max_tokens: 50
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
+      Choose from: {labels}.
+      Conversation: {conversation}
+
+  - id: "v2"
+    system: "You are an expert classification assistant."
+    template: >
+      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
+      Choose exactly one label from: {labels}.
+      Conversation: {conversation}
+
+models:
+  - "openai/gpt-4o-mini"
+  - "anthropic/claude-haiku-3-5"
+  - "mistralai/mistral-small-3"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+test_cases:
+  - id: "conv_001"
+    variables:
+      conversation: "I cannot find my last order."
+    expected_output: "order_issue"
+    evaluation: "exact_match"
+    tags: ["order", "easy"]
+
+  - id: "conv_002"
+    variables:
+      conversation: "What is included in my subscription plan?"
+    evaluation: "llm_judge"
+    criteria: >
+      Should identify a billing or subscription inquiry.
+      Must return a single label, no explanation.
+    reference: "billing"
+    tags: ["billing", "medium"]
+
+  - id: "conv_003"
+    variables:
+      conversation: "I was charged twice but the app shows one order."
+    expected_output: "billing"
+    evaluation: "exact_match"
+    tags: ["billing", "edge_case"]

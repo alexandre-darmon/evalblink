@@ -1,0 +1,43 @@
+# benchmarks/classification.yaml
+name: "Customer Support Classification"
+judge_model: ""
+quality_threshold: 85
+
+inference:
+  temperature: 0
+  max_tokens: 50
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
+models:
+  - "google/gemma-4-31b-it:free"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+test_cases:
+  - id: "conv_001"
+    variables:
+      conversation: "I cannot find my last order."
+    expected_output: "order_issue"
+    evaluation: "exact_match"
+    tags: ["order", "easy"]
+  
+  - id: "conv_002"
+    variables:
+      conversation: "I cannot see my bill."
+    expected_output: "billing"
+    evaluation: "exact_match"
+    tags: ["bill", "easy"]
+
+  - id: "conv_003"
+    variables:
+      conversation: "What is the status of my product?"
+    expected_output: "product_question"
+    evaluation: "exact_match"
+    tags: ["product", "easy"]
