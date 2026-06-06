@@ -10,7 +10,8 @@ inference:
 prompts:
   - id: "v1"
     template: >
-      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
+      Classify this conversation. 
+      Return only a valid label from the list. No JSON. No explanation. No punctuation.
       Choose from: {{ labels }}.
       Conversation: {{ conversation }}
 
