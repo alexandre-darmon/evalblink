@@ -2,7 +2,7 @@
 ## Multi-LLM Evaluation & Benchmark Kit
 
 **Author:** Alexandre Darmon  
-**Version:** 5.0  
+**Version:** 6.0  
 **Status:** Draft  
 **Last updated:** June 2026
 
@@ -758,13 +758,28 @@ Below threshold → exit 1, pipeline blocked.
 | Terminal output | Rich | Tables, progress bars, colors |
 | Config | PyYAML (`safe_load`) | Standard, readable |
 | Template injection | `str.format_map()` | Native Python, no dependency |
-| API calls | `requests` | Simple, synchronous, debuggable |
+| API calls | `httpx` (sync) | HTTP/2 connection reuse across calls to the same host; near-identical API to `requests`; trivial migration to `httpx.AsyncClient` for V2 async |
 | Concurrency | `ThreadPoolExecutor` | Standard library, sufficient for batch API calls |
 | Retry logic | `tenacity` | Exponential backoff, configurable |
 | Data validation | Pydantic v2 | Config and result schema validation |
 | LLM routing | OpenRouter | Multi-vendor, single API key |
 | Caching | Local JSON (`SHA256` key) | Zero infra, reproducible |
 | Result storage | Local JSON + Markdown | Human-readable, git-friendly |
+
+**Why `httpx` over `requests`:** evalblink makes all API calls to a single host (`openrouter.ai`). `httpx.Client()` used as a context manager keeps the TCP connection alive across the entire benchmark run — connection reuse that `requests` does not provide (each call opens a new connection). On a 300-call benchmark, this difference is measurable. The API is nearly identical to `requests`, so the learning curve is the same. The async migration path is explicit: swap `httpx.Client` for `httpx.AsyncClient` and add `await` — no request logic rewrite required.
+
+```python
+import httpx
+
+with httpx.Client(timeout=30.0) as client:
+    response = client.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json=payload,
+    )
+    response.raise_for_status()
+    return response.json()
+```
 
 **Environment variables:**
 
@@ -783,14 +798,21 @@ evalblink/
 │   ├── runner.py           # Benchmark execution (ThreadPoolExecutor)
 │   ├── evaluator.py        # exact_match (JSON) + llm_judge
 │   ├── reporter.py         # Markdown + terminal output (Rich)
-│   ├── openrouter.py       # API client + model metadata
+│   ├── openrouter.py       # httpx client + model metadata
 │   ├── cache.py            # SHA256 cache management
 │   ├── comparator.py       # Delta between two run JSON files
-│   └── schemas.py           # Pydantic config and result schemas
+│   └── schemas.py          # Pydantic config and result schemas
 ├── benchmarks/
 │   └── example_classification.yaml
+├── docs/
+│   └── skills/
+│       ├── 01_design_your_test_set.md
+│       ├── 02_write_a_testable_prompt.md
+│       ├── 03_read_your_results.md
+│       └── 04_refine_your_prompt.md
 ├── results/                # Git-ignored
 ├── .evalblink_cache/       # Git-ignored
+├── PRODUCT.md              # PRD — public, version-controlled
 ├── pyproject.toml
 ├── README.md
 └── .env.example
@@ -823,7 +845,47 @@ evalblink/
 
 ---
 
-## 20. V2 — Streamlit Dashboard
+## 20. Eval Methodology — `/docs/skills/`
+
+evalblink ships with four markdown guides covering the full evaluation workflow. No code required — these are practitioner-facing documents that teach the methodology alongside the tool.
+
+### Why skills matter
+
+Most eval tools ship documentation about their API. evalblink ships documentation about *how to evaluate*. This distinction matters: a team that runs evalblink without understanding what makes a good test set, a testable prompt, or a meaningful rubric will get numbers that are meaningless at best and misleading at worst. The skills close that gap.
+
+### `[V1]` Four core skills
+
+**`01_design_your_test_set.md` — Design your test set**
+
+Covers: what makes a golden set credible, the 50/30/20 easy/medium/edge_case distribution, minimum viable set size (50–200 cases), tag taxonomy design, contamination risk and why BYOD is the only safe evaluation approach, how to source real production inputs.
+
+**`02_write_a_testable_prompt.md` — Write a testable prompt**
+
+Covers: what makes a prompt evaluable (deterministic output format, unambiguous task definition, isolated variables), the `str.format_map()` escaping rules, system prompt design, how to separate what you're testing from what you're controlling for, common prompt anti-patterns that break exact match evaluation.
+
+**`03_read_your_results.md` — Read your results**
+
+Covers: how to interpret the results matrix (quality vs cost vs latency tradeoffs), reading the tag stratification table, what parse errors signal about your prompt, how to distinguish a model failure from a prompt failure, when a 96% aggregate score is not good enough.
+
+**`04_refine_your_prompt.md` — Refine your prompt**
+
+Covers: using `evalblink compare` to validate a hypothesis, one-variable-at-a-time iteration discipline, how to use judge reasoning output to diagnose failures, when to expand your test set vs when to change your prompt, how to know when you're done iterating.
+
+### `[V1.1]` Interactive scaffolding — `evalblink init`
+
+`evalblink init` generates a pre-structured YAML benchmark file interactively. It asks the user for their task type, label set, and number of test cases — then scaffolds the file with the correct tag distribution and placeholder test cases. The skills are referenced inline.
+
+```bash
+evalblink init
+> Task type: classification
+> Labels: order_issue, billing, product_question, other
+> Number of test cases: 20
+> ✅ Generated benchmarks/my_benchmark.yaml (6 easy · 6 medium · 4 edge_case · 4 non_english)
+```
+
+---
+
+## 21. V2 — Streamlit Dashboard
 
 ### Overview
 
@@ -878,7 +940,49 @@ test_cases:
 
 ---
 
-## 21. Success Metrics
+## 22. V3 — Assisted Optimisation
+
+> **Vision, not a commitment.** This section documents the long-term direction. Nothing here ships before V2 is validated.
+
+### The workflow as skills — Phase 1 (V1, shipped)
+
+The `/docs/skills/` folder makes the eval workflow explicit: design test set → write prompt → run benchmark → read results → refine. This is a methodology, not just a tool.
+
+### Interactive scaffolding — Phase 2 (V1.1)
+
+`evalblink init` turns the skills into an interactive CLI wizard. The human makes every decision; evalblink structures the output.
+
+### Assisted optimisation — Phase 3 (V3)
+
+`evalblink suggest` reads a benchmark result and proposes *hypotheses* — not a rewritten prompt, but diagnostic observations grounded in the results:
+
+```
+evalblink suggest results/run_002.json
+
+DIAGNOSIS — claude-sonnet / prompt_v2
+Overall quality: 96%
+
+⚠️  Subgroup failures detected:
+    edge_case   60% — model struggles with ambiguous phrasing
+    non_english 50% — model defaults to English label names
+
+Hypotheses to test:
+  1. Add explicit handling for ambiguous cases in the system prompt
+  2. Add a non-English example to the few-shot block
+  3. Increase max_tokens — truncated outputs may explain the 14% parse error rate on edge_case
+
+→ Run: evalblink run benchmarks/classification_v3.yaml to validate hypothesis 1
+```
+
+**The human stays in the decision loop.** evalblink diagnoses and hypothesises. The human decides what to test next and writes the new prompt. This preserves the core value proposition: understanding *why* one prompt is better, not just optimising a metric.
+
+### Why not a fully autonomous agent
+
+A fully autonomous agent that generates test cases, optimises prompts, and evaluates its own outputs without human validation creates the exact problem evalblink is designed to detect: optimisation on the evaluation set itself. If the agent generates test cases and optimises against them in the same loop, it produces overfitting by design — a system that scores well on its own benchmark and fails in production. The human checkpoint between hypothesis and validation is not a limitation; it is the architecture.
+
+---
+
+## 23. Success Metrics
 
 | Metric | V1 Target |
 |---|---|
@@ -889,4 +993,4 @@ test_cases:
 
 ---
 
-*evalblink V5.0 — PRD reflects fourth CTO review incorporating three research-backed quick wins: (1) per-tag result stratification — optional free-form tags on test cases, groupby quality breakdown in CLI + report, ⚠️ auto-warning when any tag scores below 70%, grounded in MVES guidance (LLM Evaluation Guide 2025) that aggregate scores systematically mask subgroup failures; (2) expanded example YAML modelling good test-set design — 4 cases covering easy/medium/edge_case/non_english with tags; (3) contamination framing in problem statement — BYOD as the only contamination-free evaluation. V2 roadmap extended with multi-turn conversation test cases (full turn history, per-turn evaluation mode, context retention / consistency / topic-switch coverage). Sources: G-Eval (Liu et al., 2023), MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025), LLM Evaluation Guide (Commey, 2026).*
+*evalblink V6.0 — PRD reflects fifth CTO review incorporating: (1) httpx (sync) replacing requests — HTTP/2 connection reuse across all calls to openrouter.ai, near-identical API, explicit async migration path for V2; (2) /docs/skills/ methodology layer — four practitioner guides covering the full eval workflow (design test set, write testable prompt, read results, refine prompt), shipped as markdown in V1; (3) evalblink init interactive scaffolding in V1.1 — CLI wizard generating pre-structured YAML with correct tag distribution; (4) V3 assisted optimisation roadmap — evalblink suggest as a hypothesis engine, human-in-the-loop by design, with explicit architectural rationale for why a fully autonomous agent creates the overfitting problem evalblink is built to prevent. Sources: G-Eval (Liu et al., 2023), MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025), LLM Evaluation Guide (Commey, 2026).*
