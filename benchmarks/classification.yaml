@@ -22,9 +22,8 @@ prompts:
       Conversation: {conversation}
 
 models:
-  - "openai/gpt-4o-mini"
-  - "anthropic/claude-haiku-3-5"
-  - "mistralai/mistral-small-3"
+  - "nex-agi/nex-n2-pro:free"
+  - "poolside/laguna-xs.2:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"
