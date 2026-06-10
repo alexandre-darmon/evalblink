@@ -35,23 +35,26 @@ def openrouter_request(prompt, model, temperature=0, max_tokens=4096):
         "HTTP-Referer": "localhost", # Optional. Site URL for rankings on openrouter.ai.
         "X-OpenRouter-Title": "evalblink", # Optional. Site title for rankings on openrouter.ai.
     },
-    data=json.dumps({
+    json={
         "model": model,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": [
-        {
-            "role": "user",
-            "content": prompt
-        }
+            {
+                "role": "user",
+                "content": prompt
+            }
         ]
-    })
+    }
     )
     full = response.json()
     if "error" in full:
         raise RuntimeError(f"OpenRouter error {full['error']['code']}: {full['error']['message']}")
+    content = full['choices'][0]['message']['content']
+    if content is None:
+        raise RuntimeError(f"OpenRouter returned null content. Increase max_tokens. Full response: {full}")
     request_result = {
-            "response": full['choices'][0]['message']['content'],
+            "response": content,
             "prompt_tokens": full['usage']['prompt_tokens'],
             "completion_tokens": full['usage']['completion_tokens'],
             "cost": full['usage']['cost'],
@@ -60,6 +63,47 @@ def openrouter_request(prompt, model, temperature=0, max_tokens=4096):
 
 def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
+
+def weighted_match(evaluation_params, response, expected, tolerance=0.20):
+    param_map = {}
+    for eval_param in evaluation_params['variables']:
+        name = eval_param['name']
+        param_map[name] = eval_param
+
+    parsed = json.loads(response)
+
+    # use_case score — F1 over expected vs found labels
+    expected_labels = {item['use_case'] for item in expected}
+    found_labels = {item['use_case'] for item in parsed}
+    correct = len(expected_labels & found_labels)
+    precision = correct / len(found_labels) if found_labels else 0
+    recall = correct / len(expected_labels) if expected_labels else 0
+    label_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) else 0
+
+    response_lookup = {item['use_case']: item for item in parsed}
+
+    # percent score — within tolerance for matched labels
+    matched_percent = 0
+    for exp_item in expected:
+        label = exp_item['use_case']
+        if label in response_lookup:
+            tol = param_map['percent'].get('tolerance', tolerance)
+            if abs(response_lookup[label]['percent'] - exp_item['percent']) <= tol:
+                matched_percent += 1
+    percent_score = matched_percent / len(expected)
+
+    # order score — exact match for matched labels
+    matched_order = 0
+    for exp_item in expected:
+        label = exp_item['use_case']
+        if label in response_lookup:
+            if response_lookup[label]['order'] == exp_item['order']:
+                matched_order += 1
+    order_score = matched_order / len(expected)
+
+    return (label_score   * param_map['use_case']['weight']
+          + percent_score * param_map['percent']['weight']
+          + order_score   * param_map['order']['weight'])
 
 def save_results(config, results, timestamp):
     benchmark_name =  config['name']
@@ -70,7 +114,7 @@ def save_results(config, results, timestamp):
         "judge_model": config['judge_model'] if 'judge_model' in config else None,
         "temperature": config['inference']['temperature'] if 'temperature' in config['inference'] else 0,
         "max_tokens": config['inference']['max_tokens'] if 'max_tokens' in config['inference'] else 4096,
-        "quality_threshold": config['quality_threshold'] if 'quality_threshold' in config else None,
+        "quality_threshold": config['evaluation']['quality_threshold'] if 'quality_threshold' in config['evaluation'] else None,
         "timestamp": timestamp,
         "results": results
     }
@@ -83,7 +127,7 @@ def save_results(config, results, timestamp):
 
 if __name__ == "__main__":
     load_dotenv()
-    filepath = 'benchmarks/first_classification.yaml'
+    filepath = 'benchmarks/weighted_match_config.yaml'
     config = load_config(filepath)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     results = []
@@ -108,7 +152,16 @@ if __name__ == "__main__":
                 print(f"Rendered prompt: {rendered}")
                 response = openrouter_request(rendered, model, config['inference']['temperature'], config['inference']['max_tokens'])
                 time.sleep(5)
-                exact_match_result = exact_match(response['response'], test_case['expected_output'])
+                print(f"Raw response: {response['response']}")
+                if test_case['evaluation'] == 'exact_match':
+                    match_result = exact_match(response['response'], test_case['expected_output'])
+                    match_score = 1.0 if match_result else 0.0
+                elif test_case['evaluation'] == 'weighted_match':
+                    match_score = weighted_match(config['evaluation'], response['response'], test_case['expected_output'])
+                    threshold = config['evaluation']['quality_threshold'] if 'quality_threshold' in config['evaluation'] else 0.70
+                    match_result = match_score >= threshold
+                    print(f"Match score: {match_score:.4f} (threshold: {threshold:.4f}) match result: {match_result}")
+
                 print(f"Response: {response['response']} Prompt tokens: {response['prompt_tokens']} Completion tokens: {response['completion_tokens']} Cost: ${response['cost']:.6f}")
                 prompt_tokens = response['prompt_tokens']
                 completion_tokens = response['completion_tokens']
@@ -117,7 +170,8 @@ if __name__ == "__main__":
                     "id": test_case['id'],
                     "tags": test_case['tags'],
                     "evaluation": test_case['evaluation'],
-                    "match_result": exact_match_result,
+                    "match_result": match_result,
+                    "match_score": match_score,
                     "response": response['response'],
                     "expected": test_case['expected_output'],
                     "prompt_tokens": prompt_tokens,
@@ -131,8 +185,8 @@ if __name__ == "__main__":
 
 
                 print(f"Expected: {test_case['expected_output']}")
-                print(f"Exact match: {exact_match_result}\n")
-                if exact_match_result:
+                print(f"Match result: {match_result}\n")
+                if match_result:
                     success += 1
                 total += 1
 

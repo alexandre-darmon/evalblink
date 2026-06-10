@@ -1,11 +1,13 @@
 # benchmarks/classification.yaml
 name: "Customer Support Classification"
 judge_model: ""
-quality_threshold: 85
-
 inference:
   temperature: 0
   max_tokens: 50
+
+
+
+
 
 prompts:
   - id: "v1"
