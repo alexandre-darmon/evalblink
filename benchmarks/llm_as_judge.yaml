@@ -1,0 +1,96 @@
+name: "Customer Support Classification"
+inference:
+  temperature: 0
+  max_tokens: 1024
+evaluation:
+  judge_model: "openai/gpt-oss-120b:free"
+  judge_threshold: 0.70
+
+prompts:
+  - id: "v1"
+    system: >
+      You are Paul, a senior customer support agent at an e-commerce company.
+      Your goal is to resolve customer issues efficiently while making them
+      feel heard.
+
+      Rules:
+      - Always acknowledge the customer's emotion before proposing a solution.
+      - Ask one clarifying question if the issue is ambiguous — never assume.
+      - If multiple issues are raised, address each one explicitly.
+      - Never use generic phrases like "I understand your frustration" alone —
+        show you understood the specific situation.
+      - Propose a concrete next step in every response.
+      - Keep your response under 100 words.
+
+    template: "Customer message: {{customer_message}}"
+
+  
+  - id: "v2"
+    system: >
+      You are Alex, a senior customer support agent at an e-commerce company.
+      Your goal is to resolve customer issues efficiently while making them
+      feel heard.
+
+      Rules:
+      - Always acknowledge the customer's emotion before proposing a solution.
+      - Ask one clarifying question if the issue is ambiguous — never assume.
+      - If multiple issues are raised, address each one explicitly.
+      - Never use generic phrases like "I understand your frustration" alone —
+        show you understood the specific situation.
+      - Propose a concrete next step in every response.
+    template: "Customer message: {{customer_message}}"
+
+      
+models:
+  - "openai/gpt-oss-120b:free"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+test_cases:
+  # Edge case — emotional frustration before resolution
+  - id: "conv_001"
+    variables:
+      customer_message: >
+        This is the third time my order arrived damaged.
+        I am done with this company.
+    evaluation: "llm_judge"
+    criteria: >
+      The assistant must acknowledge the customer's frustration explicitly
+      before proposing any resolution. A response that jumps straight to
+      a solution without emotional acknowledgment scores below 3.
+      The tone must be empathetic throughout — not defensive, not robotic.
+      A concrete next step must be proposed (refund, replacement, escalation).
+    tags: ["frustration", "edge_case"]
+
+  # Ambiguity — incomplete information, model must ask the right question
+  - id: "conv_002"
+    variables:
+      customer_message: >
+        I was charged the wrong amount.
+    evaluation: "llm_judge"
+    criteria: >
+      The assistant must ask a clarifying question rather than assuming
+      what went wrong — the message is intentionally vague.
+      The clarifying question must be specific and useful (e.g. asking
+      for the order number or the expected amount), not generic
+      (e.g. "can you give me more details?").
+      The tone must be calm and helpful. A response that assumes the
+      issue without asking scores below 2.
+    tags: ["billing", "ambiguity", "edge_case"]
+
+  # Multi-issue — model must address everything, not just the first problem
+  - id: "conv_003"
+    variables:
+      customer_message: >
+        My order is late AND the tracking link you sent me is broken.
+        Also I never received the confirmation email.
+    evaluation: "llm_judge"
+    criteria: >
+      The assistant must acknowledge and address all three issues:
+      the delivery delay, the broken tracking link, and the missing
+      confirmation email. Addressing only one or two issues scores
+      below 3. Each issue must have a concrete action or explanation.
+      The response must not feel like a copy-paste template —
+      it should reflect the specific details the customer mentioned.
+    tags: ["multi_issue", "order", "edge_case"]
