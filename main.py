@@ -18,19 +18,29 @@ def load_config(filepath):
 
 
 def render_template(prompt, variables, test_case):
-    template = Template(prompt["template"])
     if variables:
         render_kwargs = dict(variables)
     else:
         render_kwargs = {}
     if test_case["variables"]:
         render_kwargs.update(test_case["variables"])
-    rendered_prompt = template.render(**render_kwargs)
-    return rendered_prompt
+    rendered_prompt = Template(prompt["template"]).render(**render_kwargs)
+    rendered_system = (
+        Template(prompt["system"]).render(**render_kwargs)
+        if prompt.get("system")
+        else None
+    )
+    return rendered_prompt, rendered_system
 
 
-def openrouter_request(prompt, model, temperature=0, max_tokens=4096):
+def openrouter_request(
+    prompt, model, temperature=0, max_tokens=4096, system=None, timeout=120
+):
     api_key = os.getenv("OPENROUTER_API_KEY")
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
     response = httpx.post(
         url="https://openrouter.ai/api/v1/chat/completions",
         headers={
@@ -42,8 +52,9 @@ def openrouter_request(prompt, model, temperature=0, max_tokens=4096):
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         },
+        timeout=timeout,  # default httpx timeout is 5s — too short for free models
     )
     full = response.json()
     if "error" in full:
@@ -66,6 +77,94 @@ def openrouter_request(prompt, model, temperature=0, max_tokens=4096):
 
 def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
+
+
+def evaluate_llm_judge(
+    evaluation_params, candidate_response, task, criteria, reference=None
+):
+    judge_model = evaluation_params.get("judge_model")
+    if not judge_model:
+        raise ValueError("Judge model not specified in evaluation parameters.")
+
+    threshold = evaluation_params.get("judge_threshold", 0.70)
+
+    reference_line = f"Reference answer: {reference}\n" if reference else ""
+    judge_prompt = f"""You are an expert evaluator. Your goal is to assess quality, not style.
+        Original task: {task}
+        Evaluation criteria: {criteria}
+        Model response: {candidate_response}
+        {reference_line}
+        Think step by step about whether the response meets the criteria.
+
+        Important:
+        - Judge on criteria satisfaction only — do not reward length.
+        - Do not reward confident tone over accuracy.
+        - The criteria were not shown to the model being judged.
+
+        Then return ONLY valid JSON, no markdown:
+        {{"reasoning": "<your analysis>", "score": <integer 1-5>}}"""
+
+    # The judge must be deterministic regardless of candidate inference settings.
+    # Use a dedicated max_tokens — reasoning + JSON needs more room than the
+    # candidate's configured max_tokens (e.g. 50).
+    try:
+        judge_response = openrouter_request(
+            prompt=judge_prompt,
+            model=judge_model,
+            temperature=0,
+            max_tokens=512,
+        )
+    except (RuntimeError, httpx.HTTPError):
+        # Judge API failed (error response, timeout, rate limit) — pipeline
+        # failure, not a real evaluation. score is None, not 0.
+        return {
+            "status": "judge_api_error",
+            "match_result": False,
+            "score_raw": None,
+            "score_normalized": None,
+            "reasoning": None,
+            "judge_model": judge_model,
+            "judge_prompt_tokens": 0,
+            "judge_completion_tokens": 0,
+            "judge_cost": 0.0,
+        }
+
+    raw = judge_response["response"]
+    judge_prompt_tokens = judge_response["prompt_tokens"]
+    judge_completion_tokens = judge_response["completion_tokens"]
+    judge_cost = judge_response["cost"]
+    try:
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        # Judge returned malformed JSON / no usable score — pipeline failure.
+        return {
+            "status": "judge_error",
+            "match_result": False,
+            "score_raw": None,
+            "score_normalized": None,
+            "reasoning": None,
+            "judge_model": judge_model,
+            "judge_prompt_tokens": judge_prompt_tokens,
+            "judge_completion_tokens": judge_completion_tokens,
+            "judge_cost": judge_cost,
+            "raw_response": raw,
+        }
+
+    score = max(1, min(5, score))
+    normalized = (score - 1) / 4  # 1-5 → 0.0-1.0
+    passed = normalized >= threshold
+    return {
+        "status": "success" if passed else "fail",
+        "match_result": passed,
+        "score_raw": score,
+        "score_normalized": normalized,
+        "reasoning": parsed.get("reasoning"),
+        "judge_model": judge_model,
+        "judge_prompt_tokens": judge_prompt_tokens,
+        "judge_completion_tokens": judge_completion_tokens,
+        "judge_cost": judge_cost,
+    }
 
 
 def weighted_match(evaluation_params, response, expected, tolerance=0.20):
@@ -120,16 +219,16 @@ def save_results(config, results, timestamp):
     data = {
         "run_id": run_id,
         "benchmark": config["name"],
-        "judge_model": config["judge_model"] if "judge_model" in config else None,
+        "judge_model": config.get("evaluation", {}).get("judge_model"),
         "temperature": config["inference"]["temperature"]
         if "temperature" in config["inference"]
         else 0,
         "max_tokens": config["inference"]["max_tokens"]
         if "max_tokens" in config["inference"]
         else 4096,
-        "quality_threshold": config["evaluation"]["quality_threshold"]
-        if "quality_threshold" in config["evaluation"]
-        else None,
+        "quality_threshold": config["evaluation"].get(
+            "quality_threshold", config["evaluation"].get("judge_threshold")
+        ),
         "timestamp": timestamp,
         "results": results,
     }
@@ -142,7 +241,7 @@ def save_results(config, results, timestamp):
 
 if __name__ == "__main__":
     load_dotenv()
-    filepath = "benchmarks/weighted_match_config.yaml"
+    filepath = "benchmarks/llm_as_judge.yaml"
     config = load_config(filepath)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     results = []
@@ -163,16 +262,25 @@ if __name__ == "__main__":
             print(f"Prompt: {prompt['id']}")
             for test_case in config["test_cases"]:
                 print(f"Test case: {test_case['id']}")
-                rendered = render_template(prompt, config["variables"], test_case)
+                rendered, rendered_system = render_template(
+                    prompt, config.get("variables"), test_case
+                )
                 print(f"Rendered prompt: {rendered}")
                 response = openrouter_request(
                     rendered,
                     model,
                     config["inference"]["temperature"],
                     config["inference"]["max_tokens"],
+                    rendered_system,
                 )
                 time.sleep(5)
                 print(f"Raw response: {response['response']}")
+                match_result = False
+                match_score = None
+                reasoning = None
+                judge_prompt_tokens = 0
+                judge_completion_tokens = 0
+                judge_cost = 0.0
                 if test_case["evaluation"] == "exact_match":
                     match_result = exact_match(
                         response["response"], test_case["expected_output"]
@@ -193,6 +301,26 @@ if __name__ == "__main__":
                     print(
                         f"Match score: {match_score:.4f} (threshold: {threshold:.4f}) match result: {match_result}"
                     )
+                elif test_case["evaluation"] == "llm_judge":
+                    judge_result = evaluate_llm_judge(
+                        config["evaluation"],
+                        response["response"],
+                        rendered,  # full rendered prompt — no variable-name coupling
+                        test_case["criteria"],
+                        test_case.get("expected_output"),  # reference (None here)
+                    )
+                    time.sleep(5)
+                    match_result = judge_result["match_result"]
+                    match_score = judge_result["score_normalized"]
+                    reasoning = judge_result["reasoning"]
+                    judge_prompt_tokens = judge_result["judge_prompt_tokens"]
+                    judge_completion_tokens = judge_result["judge_completion_tokens"]
+                    judge_cost = judge_result["judge_cost"]
+                    print(
+                        f"Judge status: {judge_result['status']} "
+                        f"raw: {judge_result['score_raw']} "
+                        f"score: {match_score} match result: {match_result}"
+                    )
 
                 print(
                     f"Response: {response['response']} Prompt tokens: {response['prompt_tokens']} Completion tokens: {response['completion_tokens']} Cost: ${response['cost']:.6f}"
@@ -208,18 +336,23 @@ if __name__ == "__main__":
                         "match_result": match_result,
                         "match_score": match_score,
                         "response": response["response"],
-                        "expected": test_case["expected_output"],
+                        "reasoning": reasoning,
+                        "expected": test_case.get("expected_output"),
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "cost": cost,
+                        "judge_prompt_tokens": judge_prompt_tokens,
+                        "judge_completion_tokens": judge_completion_tokens,
+                        "judge_cost": judge_cost,
+                        "total_cost": cost + judge_cost,
                     }
                 )
 
                 total_prompt_tokens += prompt_tokens
                 total_completion_tokens += completion_tokens
-                total_cost += cost
+                total_cost += cost + judge_cost
 
-                print(f"Expected: {test_case['expected_output']}")
+                print(f"Expected: {test_case.get('expected_output')}")
                 print(f"Match result: {match_result}\n")
                 if match_result:
                     success += 1

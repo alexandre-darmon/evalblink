@@ -1,6 +1,5 @@
 # benchmarks/classification.yaml
 name: "Customer Support Classification"
-judge_model: ""
 
 inference:
   temperature: 0

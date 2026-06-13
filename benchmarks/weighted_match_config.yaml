@@ -1,6 +1,5 @@
 # benchmarks/usage_classification.yaml
 name: "ChatGPT Usage Classification"
-judge_model: ""
 
 inference:
   temperature: 0
@@ -19,13 +18,14 @@ evaluation:
 
 prompts:
   - id: "v1"
-    template: >
+    system: >
       Analyse cette conversation et identifie les cas d'usage présents.
       Retourne uniquement un JSON valide, sans explication, sans markdown.
       Format: [{"use_case": "<label>", "percent": <float>, "order": <int>}]
       Les pourcentages doivent sommer à 1.0.
       Use cases disponibles: {{ use_cases }}.
-      Conversation: {{ conversation }}
+    template: >
+       Conversation: {{ conversation }}
 
 models:
   - "poolside/laguna-xs.2:free"
