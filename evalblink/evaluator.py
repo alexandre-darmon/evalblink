@@ -67,8 +67,10 @@ def evaluate_llm_judge(
             "judge_prompt_tokens": 0,
             "judge_completion_tokens": 0,
             "judge_cost": 0.0,
+            "from_cache": False,
         }
 
+    from_cache = judge_response.get("from_cache", False)
     raw = judge_response["response"]
     judge_prompt_tokens = judge_response["prompt_tokens"]
     judge_completion_tokens = judge_response["completion_tokens"]
@@ -89,6 +91,7 @@ def evaluate_llm_judge(
             "judge_completion_tokens": judge_completion_tokens,
             "judge_cost": judge_cost,
             "raw_response": raw,
+            "from_cache": from_cache,
         }
 
     score = max(1, min(5, score))
@@ -104,6 +107,7 @@ def evaluate_llm_judge(
         "judge_prompt_tokens": judge_prompt_tokens,
         "judge_completion_tokens": judge_completion_tokens,
         "judge_cost": judge_cost,
+        "from_cache": from_cache,
     }
 
 
