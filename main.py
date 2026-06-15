@@ -1,12 +1,11 @@
 import datetime
-import os
 import time
 import yaml
 from dotenv import load_dotenv
 import httpx
-import json
 from jinja2 import Template
 
+from evalblink import reporter
 from evalblink.openrouter import openrouter_request
 from evalblink.evaluator import exact_match, evaluate_llm_judge, weighted_match
 
@@ -34,32 +33,6 @@ def render_template(prompt, variables, test_case):
         else None
     )
     return rendered_prompt, rendered_system
-
-
-def save_results(config, results, timestamp):
-    benchmark_name = config["name"]
-    run_id = f"{timestamp}_{benchmark_name}"
-    data = {
-        "run_id": run_id,
-        "benchmark": config["name"],
-        "judge_model": config.get("evaluation", {}).get("judge_model"),
-        "temperature": config["inference"]["temperature"]
-        if "temperature" in config["inference"]
-        else 0,
-        "max_tokens": config["inference"]["max_tokens"]
-        if "max_tokens" in config["inference"]
-        else 4096,
-        "quality_threshold": config["evaluation"].get(
-            "quality_threshold", config["evaluation"].get("judge_threshold")
-        ),
-        "timestamp": timestamp,
-        "results": results,
-    }
-    os.makedirs("results", exist_ok=True)
-    file_path = f"results/{run_id}.json"
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
-    return file_path
 
 
 if __name__ == "__main__":
@@ -203,5 +176,4 @@ if __name__ == "__main__":
             print(f"Total prompt tokens: {total_prompt_tokens}")
             print(f"Total completion tokens: {total_completion_tokens}")
             print(f"Total cost: ${total_cost:.6f}")
-    file = save_results(config, results, timestamp)
-    print(f"Results saved to {file}")
+    reporter.write(config, results, timestamp)
