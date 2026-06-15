@@ -4,3 +4,4 @@ __pycache__/
 .env
 results/*
 .ruff_cache/
+.evalblink_cache/
