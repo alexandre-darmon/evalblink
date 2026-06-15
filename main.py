@@ -1,11 +1,13 @@
 import datetime
+import os
 import time
 import yaml
 from dotenv import load_dotenv
-import os
 import httpx
 import json
 from jinja2 import Template
+
+from evalblink.openrouter import openrouter_request
 
 
 def load_config(filepath):
@@ -33,54 +35,12 @@ def render_template(prompt, variables, test_case):
     return rendered_prompt, rendered_system
 
 
-def openrouter_request(
-    prompt, model, temperature=0, max_tokens=4096, system=None, timeout=120
-):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-    response = httpx.post(
-        url="https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
-            "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
-        },
-        json={
-            "model": model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        },
-        timeout=timeout,  # default httpx timeout is 5s — too short for free models
-    )
-    full = response.json()
-    if "error" in full:
-        raise RuntimeError(
-            f"OpenRouter error {full['error']['code']}: {full['error']['message']}"
-        )
-    content = full["choices"][0]["message"]["content"]
-    if content is None:
-        raise RuntimeError(
-            f"OpenRouter returned null content. Increase max_tokens. Full response: {full}"
-        )
-    request_result = {
-        "response": content,
-        "prompt_tokens": full["usage"]["prompt_tokens"],
-        "completion_tokens": full["usage"]["completion_tokens"],
-        "cost": full["usage"]["cost"],
-    }
-    return request_result
-
-
 def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
 
 
 def evaluate_llm_judge(
-    evaluation_params, candidate_response, task, criteria, reference=None
+    client, evaluation_params, candidate_response, task, criteria, reference=None
 ):
     judge_model = evaluation_params.get("judge_model")
     if not judge_model:
@@ -109,6 +69,7 @@ def evaluate_llm_judge(
     # candidate's configured max_tokens (e.g. 50).
     try:
         judge_response = openrouter_request(
+            client,
             prompt=judge_prompt,
             model=judge_model,
             temperature=0,
@@ -241,6 +202,7 @@ def save_results(config, results, timestamp):
 
 if __name__ == "__main__":
     load_dotenv()
+    client = httpx.Client()
     filepath = "benchmarks/llm_as_judge.yaml"
     config = load_config(filepath)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -267,13 +229,15 @@ if __name__ == "__main__":
                 )
                 print(f"Rendered prompt: {rendered}")
                 response = openrouter_request(
+                    client,
                     rendered,
                     model,
                     config["inference"]["temperature"],
                     config["inference"]["max_tokens"],
                     rendered_system,
                 )
-                time.sleep(5)
+                if not response.get("from_cache"):
+                    time.sleep(5)
                 print(f"Raw response: {response['response']}")
                 match_result = False
                 match_score = None
@@ -303,6 +267,7 @@ if __name__ == "__main__":
                     )
                 elif test_case["evaluation"] == "llm_judge":
                     judge_result = evaluate_llm_judge(
+                        client,
                         config["evaluation"],
                         response["response"],
                         rendered,  # full rendered prompt — no variable-name coupling
