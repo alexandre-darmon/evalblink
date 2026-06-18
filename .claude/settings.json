@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m evalblink.main benchmarks/classification.yaml)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)"
+    ]
+  }
+}

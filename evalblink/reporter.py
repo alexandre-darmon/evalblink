@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from rich.console import Console
 from rich.table import Table
@@ -15,10 +16,15 @@ from rich.table import Table
 RESULTS_DIR = "results"
 
 
+def _slugify(name: str) -> str:
+    """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def _build_data(config, results, timestamp) -> dict:
     """The canonical run record — the exact shape persisted as JSON."""
     benchmark_name = config["name"]
-    run_id = f"{timestamp}_{benchmark_name}"
+    run_id = f"{timestamp}_{_slugify(benchmark_name)}"
     return {
         "run_id": run_id,
         "benchmark": config["name"],
@@ -29,8 +35,8 @@ def _build_data(config, results, timestamp) -> dict:
         "max_tokens": config["inference"]["max_tokens"]
         if "max_tokens" in config["inference"]
         else 4096,
-        "quality_threshold": config["evaluation"].get(
-            "quality_threshold", config["evaluation"].get("judge_threshold")
+        "quality_threshold": config.get("evaluation", {}).get(
+            "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
         ),
         "timestamp": timestamp,
         "results": results,

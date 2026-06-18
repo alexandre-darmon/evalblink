@@ -34,8 +34,12 @@ def render_template(prompt, variables, test_case):
     return rendered_prompt, rendered_system
 
 
-def run(config):
-    """Run every model × prompt × test case and return ``(results, timestamp)``."""
+def run(config, verbose=False):
+    """Run every model × prompt × test case and return ``(results, timestamp)``.
+
+    ``verbose`` enables per-test-case detail (rendered prompts, raw responses);
+    by default only high-level progress and the final report are printed.
+    """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     results = []
 
@@ -55,7 +59,8 @@ def run(config):
                     rendered, rendered_system = render_template(
                         prompt, config.get("variables"), test_case
                     )
-                    print(f"Rendered prompt: {rendered}")
+                    if verbose:
+                        print(f"Rendered prompt: {rendered}")
                     response = openrouter_request(
                         client,
                         rendered,
@@ -67,7 +72,8 @@ def run(config):
                     # Rate-limit only real API calls — cache hits need no backoff.
                     if not response.get("from_cache"):
                         time.sleep(5)
-                    print(f"Raw response: {response['response']}")
+                    if verbose:
+                        print(f"Raw response: {response['response']}")
                     match_result = False
                     match_score = None
                     reasoning = None
@@ -91,9 +97,10 @@ def run(config):
                             else 0.70
                         )
                         match_result = match_score >= threshold
-                        print(
-                            f"Match score: {match_score:.4f} (threshold: {threshold:.4f}) match result: {match_result}"
-                        )
+                        if verbose:
+                            print(
+                                f"Match score: {match_score:.4f} (threshold: {threshold:.4f}) match result: {match_result}"
+                            )
                     elif test_case["evaluation"] == "llm_judge":
                         judge_result = evaluate_llm_judge(
                             client,
@@ -109,17 +116,21 @@ def run(config):
                         match_score = judge_result["score_normalized"]
                         reasoning = judge_result["reasoning"]
                         judge_prompt_tokens = judge_result["judge_prompt_tokens"]
-                        judge_completion_tokens = judge_result["judge_completion_tokens"]
+                        judge_completion_tokens = judge_result[
+                            "judge_completion_tokens"
+                        ]
                         judge_cost = judge_result["judge_cost"]
-                        print(
-                            f"Judge status: {judge_result['status']} "
-                            f"raw: {judge_result['score_raw']} "
-                            f"score: {match_score} match result: {match_result}"
-                        )
+                        if verbose:
+                            print(
+                                f"Judge status: {judge_result['status']} "
+                                f"raw: {judge_result['score_raw']} "
+                                f"score: {match_score} match result: {match_result}"
+                            )
 
-                    print(
-                        f"Response: {response['response']} Prompt tokens: {response['prompt_tokens']} Completion tokens: {response['completion_tokens']} Cost: ${response['cost']:.6f}"
-                    )
+                    if verbose:
+                        print(
+                            f"Response: {response['response']} Prompt tokens: {response['prompt_tokens']} Completion tokens: {response['completion_tokens']} Cost: ${response['cost']:.6f}"
+                        )
                     prompt_tokens = response["prompt_tokens"]
                     completion_tokens = response["completion_tokens"]
                     cost = response["cost"]
@@ -147,8 +158,9 @@ def run(config):
                     total_completion_tokens += completion_tokens
                     total_cost += cost + judge_cost
 
-                    print(f"Expected: {test_case.get('expected_output')}")
-                    print(f"Match result: {match_result}\n")
+                    if verbose:
+                        print(f"Expected: {test_case.get('expected_output')}")
+                        print(f"Match result: {match_result}\n")
                     if match_result:
                         success += 1
                     total += 1

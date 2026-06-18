@@ -3,27 +3,30 @@ name: "Customer Support Classification"
 
 inference:
   temperature: 0
-  max_tokens: 50
+  max_tokens: 1024  # reasoning models (e.g. poolside/laguna) need headroom beyond the label itself
 
 evaluation:
-  quality_threshold: 85
+  judge_model: "openai/gpt-oss-120b:free"
+  judge_threshold: 0.70
 
 prompts:
   - id: "v1"
     template: >
-      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
-      Choose from: {labels}.
-      Conversation: {conversation}
+      Classify this conversation. Return only a single label from the list.
+      No JSON, no explanation, no punctuation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
 
   - id: "v2"
     system: "You are an expert classification assistant."
     template: >
-      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
-      Choose exactly one label from: {labels}.
-      Conversation: {conversation}
+      Analyze the following conversation and return exactly one label from the list.
+      Return only the label — no JSON, no explanation, no punctuation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
 
 models:
-  - "nex-agi/nex-n2-pro:free"
+  - "google/gemma-4-31b-it:free"
   - "poolside/laguna-xs.2:free"
 
 variables:
@@ -44,7 +47,6 @@ test_cases:
     criteria: >
       Should identify a billing or subscription inquiry.
       Must return a single label, no explanation.
-    reference: "billing"
     tags: ["billing", "medium"]
 
   - id: "conv_003"

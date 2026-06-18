@@ -8,10 +8,28 @@ module testable in isolation and free of any runner dependency.
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
 from .openrouter import openrouter_request
+
+
+def _extract_json(raw):
+    """Parse JSON from a model response, tolerating a markdown code fence.
+
+    Models often wrap JSON in ```` ```json … ``` ````. Strip a leading/trailing
+    fence before parsing so both the judge and weighted_match accept fenced output.
+    Raises ``json.JSONDecodeError`` if the stripped text still isn't valid JSON.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        # Strip the opening fence (with optional language tag) and the closing fence,
+        # whether or not they sit on their own lines.
+        text = re.sub(r"^```[a-zA-Z0-9]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+    return json.loads(text)
 
 
 def exact_match(response, expected):
@@ -76,7 +94,7 @@ def evaluate_llm_judge(
     judge_completion_tokens = judge_response["completion_tokens"]
     judge_cost = judge_response["cost"]
     try:
-        parsed = json.loads(raw)
+        parsed = _extract_json(raw)
         score = int(parsed["score"])
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         # Judge returned malformed JSON / no usable score — pipeline failure.
@@ -117,7 +135,12 @@ def weighted_match(evaluation_params, response, expected, tolerance=0.20):
         name = eval_param["name"]
         param_map[name] = eval_param
 
-    parsed = json.loads(response)
+    try:
+        parsed = _extract_json(response)
+    except json.JSONDecodeError:
+        # Candidate failed to produce parseable JSON — that's a task failure
+        # (score 0.0), not a pipeline error. Don't abort the whole run.
+        return 0.0
 
     # use_case score — F1 over expected vs found labels
     expected_labels = {item["use_case"] for item in expected}

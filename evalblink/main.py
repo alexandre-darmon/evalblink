@@ -5,6 +5,7 @@ Run with ``python -m evalblink.main [path/to/benchmark.yaml]``.
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 import yaml
@@ -12,23 +13,32 @@ from dotenv import load_dotenv
 
 from evalblink import reporter, runner
 
-DEFAULT_CONFIG = "benchmarks/llm_as_judge.yaml"
+DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
 
 
 def load_config(filepath):
-    with open(filepath) as stream:
-        try:
+    """Load a benchmark YAML, exiting with a clear message on failure."""
+    try:
+        with open(filepath) as stream:
             return yaml.safe_load(stream)
-        except yaml.YAMLError as exc:
-            print(exc)
-            return None
+    except FileNotFoundError:
+        sys.exit(f"Config not found: {filepath}")
+    except yaml.YAMLError as exc:
+        sys.exit(f"Invalid YAML in {filepath}: {exc}")
 
 
 def main():
     load_dotenv()
-    filepath = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CONFIG
-    config = load_config(filepath)
-    results, timestamp = runner.run(config)
+    parser = argparse.ArgumentParser(prog="evalblink", description=__doc__)
+    parser.add_argument(
+        "config", nargs="?", default=DEFAULT_CONFIG, help="path to a benchmark YAML"
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print per-test-case detail"
+    )
+    args = parser.parse_args()
+    config = load_config(args.config)
+    results, timestamp = runner.run(config, verbose=args.verbose)
     reporter.write(config, results, timestamp)
 
 
