@@ -66,6 +66,15 @@ def test_weighted_match_malformed_returns_zero():
     assert weighted_match(WEIGHTED_PARAMS, "not json", EXPECTED) == 0.0
 
 
+def test_weighted_match_wrong_shape_returns_zero():
+    # Valid JSON, but not a list of objects with the scored keys → 0.0, not a crash.
+    assert weighted_match(WEIGHTED_PARAMS, '{"use_case": "A"}', EXPECTED) == 0.0
+    assert weighted_match(WEIGHTED_PARAMS, '["A", "B"]', EXPECTED) == 0.0
+    assert (
+        weighted_match(WEIGHTED_PARAMS, '[{"use_case": "A"}]', EXPECTED) == 0.0
+    )  # missing percent/order
+
+
 def test_weighted_match_partial_percent_out_of_tolerance():
     # B's percent is off by 0.6 (> 0.2 tolerance): labels F1=1, percent=1/2, order=1.
     response = json.dumps(
