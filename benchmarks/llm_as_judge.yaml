@@ -42,7 +42,7 @@ prompts:
 
       
 models:
-  - "openai/gpt-oss-120b:free"
+  - "google/gemma-4-31b-it:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"

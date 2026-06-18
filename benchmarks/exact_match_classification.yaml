@@ -18,7 +18,7 @@ prompts:
       Conversation: {{ conversation }}
 
 models:
-  - "nex-agi/nex-n2-pro:free"
+  - "google/gemma-4-31b-it:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"
