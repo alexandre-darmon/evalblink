@@ -39,7 +39,19 @@ def main():
     args = parser.parse_args()
     config = load_config(args.config)
     results, timestamp = runner.run(config, verbose=args.verbose)
-    reporter.write(config, results, timestamp)
+    result = reporter.write(config, results, timestamp)
+
+    # Top-level CI gate (0-100 %); separate from the per-case scorer thresholds
+    # under `evaluation:`.
+    threshold = config.get("quality_threshold")
+    if threshold is None:
+        print("\nGate: no quality_threshold set — not enforcing pass/fail.")
+        sys.exit(0)
+    if result["passed"]:
+        print(f"\nPASS: best score meets quality_threshold ({threshold}).")
+        sys.exit(0)
+    print(f"\nFAIL: best score is below quality_threshold ({threshold}).")
+    sys.exit(1)
 
 
 if __name__ == "__main__":

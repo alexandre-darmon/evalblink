@@ -23,7 +23,7 @@ def render_template(prompt, variables, test_case):
         render_kwargs = dict(variables)
     else:
         render_kwargs = {}
-    if test_case["variables"]:
+    if test_case.get("variables"):
         render_kwargs.update(test_case["variables"])
     rendered_prompt = Template(prompt["template"]).render(**render_kwargs)
     rendered_system = (
@@ -48,6 +48,8 @@ def run(config, verbose=False):
             print(f"Model: {model}\n")
             for prompt in config["prompts"]:
                 success = 0
+                scored = 0
+                errors = 0
                 total = 0
                 test_case_results = []
                 total_prompt_tokens = 0
@@ -76,16 +78,18 @@ def run(config, verbose=False):
                         print(f"Raw response: {response['response']}")
                     match_result = False
                     match_score = None
+                    status = "scored"
                     reasoning = None
                     judge_prompt_tokens = 0
                     judge_completion_tokens = 0
                     judge_cost = 0.0
-                    if test_case["evaluation"] == "exact_match":
+                    evaluation = test_case.get("evaluation")
+                    if evaluation == "exact_match":
                         match_result = exact_match(
                             response["response"], test_case["expected_output"]
                         )
                         match_score = 1.0 if match_result else 0.0
-                    elif test_case["evaluation"] == "weighted_match":
+                    elif evaluation == "weighted_match":
                         match_score = weighted_match(
                             config["evaluation"],
                             response["response"],
@@ -101,7 +105,7 @@ def run(config, verbose=False):
                             print(
                                 f"Match score: {match_score:.4f} (threshold: {threshold:.4f}) match result: {match_result}"
                             )
-                    elif test_case["evaluation"] == "llm_judge":
+                    elif evaluation == "llm_judge":
                         judge_result = evaluate_llm_judge(
                             client,
                             config["evaluation"],
@@ -114,6 +118,9 @@ def run(config, verbose=False):
                             time.sleep(5)
                         match_result = judge_result["match_result"]
                         match_score = judge_result["score_normalized"]
+                        # Carry the judge's status so a pipeline failure (score=None)
+                        # is distinguished downstream from a real score of 0.
+                        status = judge_result["status"]
                         reasoning = judge_result["reasoning"]
                         judge_prompt_tokens = judge_result["judge_prompt_tokens"]
                         judge_completion_tokens = judge_result[
@@ -126,6 +133,8 @@ def run(config, verbose=False):
                                 f"raw: {judge_result['score_raw']} "
                                 f"score: {match_score} match result: {match_result}"
                             )
+                    else:
+                        raise ValueError(f"Unknown evaluation type: {evaluation!r}")
 
                     if verbose:
                         print(
@@ -137,8 +146,9 @@ def run(config, verbose=False):
                     test_case_results.append(
                         {
                             "id": test_case["id"],
-                            "tags": test_case["tags"],
-                            "evaluation": test_case["evaluation"],
+                            "tags": test_case.get("tags") or [],
+                            "evaluation": evaluation,
+                            "status": status,
                             "match_result": match_result,
                             "match_score": match_score,
                             "response": response["response"],
@@ -163,14 +173,24 @@ def run(config, verbose=False):
                         print(f"Match result: {match_result}\n")
                     if match_result:
                         success += 1
+                    # A pipeline error (judge API/parse failure) yields match_score
+                    # None; exclude it from the scored denominator instead of
+                    # counting it as a real failure.
+                    if match_score is None:
+                        errors += 1
+                    else:
+                        scored += 1
                     total += 1
 
-                score = success / total * 100
+                # Quality is over genuinely-scored cases only.
+                score = success / scored * 100 if scored else 0.0
                 results.append(
                     {
                         "model": model,
                         "prompt_id": prompt["id"],
                         "success": success,
+                        "scored": scored,
+                        "errors": errors,
                         "total": total,
                         "score": score,
                         "total_prompt_tokens": total_prompt_tokens,
@@ -179,7 +199,10 @@ def run(config, verbose=False):
                         "test_cases": test_case_results,
                     }
                 )
-                print(f"Quality score: {success}/{total} ({score:.1f}%)")
+                err_note = f", {errors} error(s)" if errors else ""
+                print(
+                    f"Quality score: {success}/{scored} scored ({score:.1f}%){err_note}"
+                )
                 print(f"Total prompt tokens: {total_prompt_tokens}")
                 print(f"Total completion tokens: {total_completion_tokens}")
                 print(f"Total cost: ${total_cost:.6f}")
