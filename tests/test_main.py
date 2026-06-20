@@ -227,3 +227,98 @@ def test_history_skips_invalid_json(monkeypatch, tmp_path):
         main.main()
     # Graceful exit (empty table message), not a crash.
     assert exc.value.code == 0
+
+
+# ── models ────────────────────────────────────────────────────────────────────
+
+_FAKE_MODELS = {
+    "anthropic/claude-3-haiku": {
+        "prompt": 0.00000025,
+        "completion": 0.00000125,
+        "context_length": 200000,
+    },
+    "openai/gpt-4o": {
+        "prompt": 0.000005,
+        "completion": 0.000015,
+        "context_length": 128000,
+    },
+    "mistralai/mistral-7b-instruct:free": {
+        "prompt": 0.0,
+        "completion": 0.0,
+        "context_length": 32768,
+    },
+}
+
+
+def test_models_lists_all(monkeypatch):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "models"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+
+def test_models_provider_filter(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "models", "--provider", "anthropic"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "anthropic/claude-3-haiku" in out
+    assert "openai/gpt-4o" not in out
+
+
+def test_models_free_filter(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "models", "--free"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "mistralai/mistral-7b-instruct:free" in out
+    assert "anthropic/claude-3-haiku" not in out
+
+
+def test_models_min_context_filter(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "models", "--min-context", "100k"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "anthropic/claude-3-haiku" in out  # 200k passes
+    assert "openai/gpt-4o" in out  # 128k passes
+    assert "mistralai/mistral-7b-instruct:free" not in out  # 32k excluded
+
+
+def test_models_no_match_exits_gracefully(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "models", "--provider", "nonexistent"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    assert "No models match" in capsys.readouterr().out
+
+
+def test_parse_context_helper():
+    assert main._parse_context("100k") == 100_000
+    assert main._parse_context("8K") == 8_000
+    assert main._parse_context("1m") == 1_000_000
+    assert main._parse_context("4096") == 4096
