@@ -2,9 +2,11 @@
 ## Multi-LLM Evaluation & Benchmark Kit
 
 **Author:** Alexandre Darmon  
-**Version:** 6.0  
-**Status:** Draft  
+**Version:** 7.0  
+**Status:** Living document  
 **Last updated:** June 2026
+
+> **Reading this document:** sections tagged `[V1 — shipped]` describe the current implementation. Sections tagged `[V1.1]`, `[V2]`, and `[V3]` describe planned future work. Nothing in future sections is implemented today.
 
 ---
 
@@ -42,21 +44,41 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 
 ## 3. Goals
 
+### `[V1 — shipped]`
+
 - Run a structured benchmark across N prompts × N models × N test cases in one command
-- Evaluate responses via exact match (JSON-enforced output) or LLM-as-judge
-- Measure quality, cost, and latency per combination — including judge costs
+- Evaluate responses via exact match, LLM-as-judge, or weighted match (three shipped modes)
+- Measure quality and cost per combination — including judge costs; latency is intentionally not tracked
 - Cache results locally to avoid redundant API calls during prompt iteration
 - Run API calls concurrently using `ThreadPoolExecutor`
-- Retry failed API calls with exponential backoff
-- Generate a versioned markdown report per run
-- Store results history locally and compare runs over time
-- Fetch live model metadata from OpenRouter API
+- Retry failed API calls with exponential backoff (manual retry loop, no external library)
+- Estimate cost before a run with `--dry-run` (no API calls)
+- Validate configs statically with `evalblink validate` (no API calls)
+- Generate a versioned Markdown report and JSON record per run
+- Store results history locally and compare runs with `evalblink compare` (quality + cost deltas; per-case transitions with `--detailed`)
+- Browse live OpenRouter model catalog with pricing and context length via `evalblink models`
+- Scaffold a new benchmark YAML interactively via `evalblink init`
+
+### `[V1.1 — planned]`
+
+- `evalblink calibrate` — validate judge scores against human-labelled cases (Pearson + Cohen's Kappa)
+- Pairwise judge mode with double-pass order-swap tie detection
+
+### `[V2 — planned]`
+
+- Streamlit dashboard
+- Multi-turn conversation test cases
+
+### `[V3 — vision]`
+
+- `evalblink suggest` — hypothesis engine that diagnoses subgroup failures and proposes targeted prompt changes (human stays in the decision loop)
 
 ---
 
 ## 4. Out of Scope (V1)
 
 - Web UI / dashboard (→ V2)
+- Latency measurement (intentionally excluded — varies with network conditions and adds noise to quality/cost comparisons)
 - Red teaming or adversarial testing
 - Real-time guardrails or production monitoring
 - Authentication or multi-user support
@@ -65,43 +87,81 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 
 ---
 
-## 5. Benchmark Configuration
+## 5. `[V1 — shipped]` Benchmark Configuration
 
 Every benchmark is defined in a single YAML file.
 
+### Minimal example (exact match)
+
 ```yaml
-name: "Customer Support - Conversation Classification"
-description: "Compare 2 prompt versions across 3 models on 50 labelled conversations"
-judge_model: "anthropic/claude-sonnet-4-6"
-max_cost_usd: 10.00
-quality_threshold: 85         # CI/CD: exit 1 if best score < 85%
-cache: true                   # Skip API calls for already-cached prompt+model combos
+name: "Customer Support Classification"
+quality_threshold: 85         # CI/CD gate: exit 1 if best combo score < 85%
 
 inference:
-  temperature: 0              # Required for reproducibility
-  max_tokens: 50              # Keeps cost low for classification tasks
-
-prompts:
-  - id: "v1"
-    template: >
-      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
-      Choose from: {labels}.
-      Conversation: {conversation}
-
-  - id: "v2"
-    system: "You are an expert classification assistant."
-    template: >
-      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
-      Choose exactly one label from: {labels}.
-      Conversation: {conversation}
+  temperature: 0
+  max_tokens: 50
 
 models:
   - "openai/gpt-4o-mini"
   - "anthropic/claude-sonnet-4-6"
-  - "mistralai/mistral-small-3"
 
 variables:
-  labels: "order_issue, authentication_issue, billing, product_question, other"
+  labels: "order_issue, billing, product_question, other"
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation.
+      Return only the label — no JSON, no explanation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
+test_cases:
+  - id: "conv_001"
+    variables:
+      conversation: "I cannot find my last order."
+    expected_output: "order_issue"
+    evaluation: "exact_match"
+    tags: ["order", "easy"]
+```
+
+### Mixed-mode example (exact match + llm_judge)
+
+```yaml
+name: "Customer Support Classification"
+quality_threshold: 85
+max_cost_usd: 10.00
+
+inference:
+  temperature: 0
+  max_tokens: 200
+
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70
+
+models:
+  - "openai/gpt-4o-mini"
+  - "anthropic/claude-sonnet-4-6"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation.
+      Return only the label — no JSON, no explanation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
+  - id: "v2"
+    system: "You are an expert classification assistant."
+    template: >
+      Classify the following conversation.
+      Return exactly one label — no JSON, no explanation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
 
 test_cases:
   - id: "conv_001"
@@ -118,22 +178,15 @@ test_cases:
     criteria: >
       Should identify a billing or subscription inquiry.
       Must return a single label, no explanation.
-    reference: "billing"   # optional — grounds the judge in a known-good answer
+    reference: "billing"
     tags: ["billing", "medium"]
 
   - id: "conv_003"
     variables:
-      conversation: "I was charged twice last month but the app shows one order."
-    expected_output: "billing"
-    evaluation: "exact_match"
-    tags: ["billing", "edge_case"]
-
-  - id: "conv_004"
-    variables:
       conversation: "Bonjour, je ne trouve pas ma commande."
     expected_output: "order_issue"
     evaluation: "exact_match"
-    tags: ["order", "edge_case", "non_english"]
+    tags: ["order", "non_english"]
 ```
 
 ### Configuration reference
@@ -141,150 +194,163 @@ test_cases:
 | Field | Required | Description |
 |---|---|---|
 | `name` | ✅ | Benchmark display name |
-| `description` | — | Optional context |
-| `judge_model` | ✅ if llm_judge used | OpenRouter model ID for evaluation |
-| `max_cost_usd` | — | Hard stop if total estimated cost (models + judge) exceeds limit |
-| `quality_threshold` | — | Minimum quality % for CI/CD pass |
-| `cache` | — | Enable local response caching (default: true) |
-| `inference.temperature` | — | Sampling temperature (default: 0 for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: 100) |
-| `prompts[].id` | ✅ | Unique identifier used in reports |
-| `prompts[].template` | ✅ | Prompt template using `{variable}` placeholders |
-| `prompts[].system` | — | Optional system message |
 | `models` | ✅ | List of OpenRouter model IDs |
-| `variables` | — | Global variables injected into all templates |
-| `test_cases[].evaluation` | ✅ | `exact_match` or `llm_judge` |
-| `test_cases[].expected_output` | ✅ if exact_match | Ground truth label |
-| `test_cases[].criteria` | ✅ if llm_judge | Evaluation rubric for the judge |
-| `test_cases[].reference` | — | Optional gold reference answer injected into the judge prompt to ground scoring in truth rather than plausibility (V1) |
-| `test_cases[].tags` | — | Optional list of free-form strings for per-category result breakdown (e.g. `["billing", "edge_case"]`) |
-| `test_cases[].human_score` | — | Optional integer 1–5 from a human reviewer, used by `evalblink calibrate` (V1.1) |
+| `quality_threshold` | — | Top-level CI/CD gate: exits 1 if best combo score falls below this percentage (0–100) |
+| `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
+| `concurrency` | — | Max parallel API requests (default: `5`) |
+| `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
+| `inference.max_tokens` | — | Max output tokens per call (default: `4096`) |
+| `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
+| `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge`, normalized 0–1 (default: `0.70`) |
+| `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match`, 0–1 |
+| `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions (`name`, `weight`, optional `tolerance`) |
+| `prompts[].id` | ✅ | Unique identifier used in reports |
+| `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces) |
+| `prompts[].system` | — | Optional system message (also a Jinja2 template) |
+| `variables` | — | Global key/value pairs injected into all templates |
+| `test_cases[].id` | ✅ | Unique identifier |
+| `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
+| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth — string for `exact_match`, JSON array for `weighted_match` |
+| `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
+| `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
+| `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
+| `test_cases[].tags` | — | Free-form strings for per-category result breakdown |
+| `test_cases[].human_score` | — | Integer 1–5 from a human reviewer — available for collection now, used by `evalblink calibrate` in V1.1 |
 
-> **Self-preference warning:** if `judge_model` shares a vendor prefix with any model in `models` (e.g. `anthropic/claude-*` judging `anthropic/claude-*`), evalblink emits a warning at run start. Self-preference bias runs 10–25% in magnitude — always use a judge from a different model family than the candidates being evaluated.
+> **Three threshold fields, three distinct concepts.** `quality_threshold` at the top level (0–100 %) is the CI/CD gate on the best combo's aggregate score. `evaluation.quality_threshold` (0–1) is the per-case pass threshold for `weighted_match`. `evaluation.judge_threshold` (0–1) is the per-case pass threshold for `llm_judge`. All three can coexist in one config.
+
+> **Self-preference warning:** if `evaluation.judge_model` shares a vendor prefix with any model in `models` (e.g. `anthropic/claude-*` judging `anthropic/claude-*`), evalblink emits a warning at run start. Self-preference bias runs 10–25% in magnitude — use a judge from a different model family when possible.
 
 ---
 
-## 6. Template Injection
+## 6. `[V1 — shipped]` Template Injection
 
 Variables are injected into prompt templates using Jinja2.
 
 ```python
 from jinja2 import Template
-rendered_prompt = Template(template).render(**{**global_variables, **test_case_variables})
+rendered = Template(template).render(**{**global_variables, **test_case_variables})
 ```
 
-Templates use double-brace syntax: `{{ variable }}`. Single braces `{variable}` are treated as literal text and silently produce wrong prompts — `evalblink validate` warns on this pattern.
+**Templates use double-brace syntax: `{{ variable }}`**. Single braces `{variable}` are treated as literal text and silently produce wrong prompts — `evalblink validate` warns on this pattern.
 
-**Why Jinja2:** filter expressions (`{{ label | upper }}`, `{{ items | join(", ") }}`) are common in LLM prompt authoring and require a real template engine. `str.format_map()` cannot support them, and its error messages on missing keys are harder to diagnose than Jinja2's `UndefinedError`.
+**Why Jinja2:** filter expressions (`{{ label | upper }}`, `{{ items | join(", ") }}`) are common in LLM prompt authoring and require a real template engine. `str.format_map()` cannot support them.
 
-**Literal braces in prompt text:** wrap in Jinja2 raw blocks — `{% raw %}{...}{% endraw %}` — or avoid bare braces in few-shot JSON examples by using backtick code blocks in the prompt instead.
+**Literal braces in prompt text:** wrap in a Jinja2 raw block — `{% raw %}{...}{% endraw %}` — or use backtick code blocks in the prompt instead.
 
 ---
 
-## 7. Evaluation Modes
+## 7. `[V1 — shipped]` Evaluation Modes
 
-### 7.1 Exact Match (JSON-enforced)
+A single config can mix all three modes across its test cases.
 
-Used for classification and structured output tasks.
+### 7.1 Exact Match
 
-The prompt template instructs the model to return a specific JSON structure:
+For classification tasks where the model must return a specific label.
 
-```
-Return only valid JSON: {"label": "<label>"}
-```
-
-evalblink parses the response:
+**How it works:** case-insensitive string comparison after trimming whitespace.
 
 ```python
-import json
-parsed = json.loads(response)
-predicted = parsed.get("label", "").strip().lower()
-expected = expected_output.strip().lower()
-score = 1 if predicted == expected else 0
+response.strip().lower() == expected_output.strip().lower()
 ```
 
-**Why JSON over text parsing:** Extracting "the last meaningful word" from a free-text LLM response is fragile and breaks on model updates, language changes, or unexpected formatting. Enforcing a JSON contract is deterministic and requires zero regex.
+No JSON parsing. The model must return just the label text. **Prompt it explicitly to return no JSON and no explanation** — if the response wraps the label in `{"label": "..."}` or adds any surrounding text, the match fails.
 
-**Fallback:** If the model returns malformed JSON, evalblink scores the test case 0, logs the raw response, and records it as a parse error. No regex fallback is attempted — doing so would undermine the JSON contract that makes exact match reliable in the first place.
-
-```json
-{
-  "test_case_id": "ticket_001",
-  "status": "parse_error",
-  "raw_response": "The answer is billing.",
-  "score": 0,
-  "note": "Model returned malformed JSON. Expected {\"label\": \"...\"}."
-}
+```yaml
+test_cases:
+  - id: "conv_001"
+    evaluation: "exact_match"
+    expected_output: "order_issue"
 ```
-
-Parse errors are grouped under a dedicated "Parse Errors" section in the Markdown report, separate from correct/incorrect results.
 
 ### 7.2 LLM-as-Judge
 
-Used for open-ended tasks (summarization, generation, explanation) where no single correct output exists.
+For open-ended tasks (summarization, generation, explanation) where no single correct output exists.
 
-The judge model receives:
+The judge receives the original task, the evaluation criteria, the model response, and optionally a reference answer:
 
 ```
 You are an expert evaluator. Your goal is to assess quality, not style.
-
 Original task: {prompt}
 Evaluation criteria: {criteria}
 Model response: {model_output}
-{reference_block}
+[Reference answer: {reference}]   ← only included when test_cases[].reference is set
+
 Think step by step about whether the response meets the criteria.
 
 Important:
-- Judge on criteria satisfaction only — do not reward length. A concise correct answer
-  scores higher than a verbose partially-correct one.
-- Do not reward confident tone. An accurate hedged answer scores higher than a
-  confidently wrong one.
-- The criteria above are for evaluation only and were not shown to the model being judged.
+- Judge on criteria satisfaction only — do not reward length.
+- Do not reward confident tone over accuracy.
+- The criteria were not shown to the model being judged.
 
 Then return ONLY valid JSON:
 {"reasoning": "<your analysis>", "score": <integer 1-5>}
-
-Scoring scale:
-1 — Completely wrong or off-topic
-2 — Partially relevant but missing key elements
-3 — Acceptable but imprecise
-4 — Good, minor issues
-5 — Perfect, meets all criteria
 ```
 
-When `reference` is provided in the test case, `{reference_block}` is injected as:
+**Score normalization:** `(score - 1) / 4` → 0.0–1.0. A case passes if `normalized_score >= judge_threshold` (default 0.70, meaning a raw score ≥ 3.8 out of 5).
 
-```
-Reference answer: {reference}
-Use this as a ground truth anchor when assessing correctness.
-```
+**Judge failures** (API error, malformed JSON) return `score=None` and a `status` flag — a pipeline failure is never conflated with a real score of 0.
 
-When no reference is provided, `{reference_block}` is omitted entirely.
+```yaml
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70        # optional, default 0.70
 
-**Why reasoning first:** The judge writes its analysis before committing to a number. This chain-of-thought approach — established by G-Eval (Liu et al., 2023) and MT-Bench — produces more calibrated scores because the model reasons its way to a position rather than anchoring on a number and justifying it retroactively. The `reasoning` field also surfaces in the report, giving users actionable signal on why a response scored poorly.
-
-**Response structure:**
-
-```json
-{
-  "reasoning": "The response correctly identifies a billing issue and returns a single label without explanation, meeting both criteria.",
-  "score": 4
-}
+test_cases:
+  - id: "conv_002"
+    evaluation: "llm_judge"
+    criteria: >
+      Should identify a billing inquiry.
+      Must return a single label, no explanation.
+    reference: "billing"       # optional
 ```
 
-Score normalized to 0–100%: `(score - 1) / 4 * 100`.
+**Why reasoning first:** The judge writes its analysis before committing to a number — the chain-of-thought-first approach established by G-Eval (Liu et al., 2023) and MT-Bench produces more calibrated scores because the model reasons its way to a position rather than anchoring on a number and justifying retroactively. The `reasoning` field surfaces in the Markdown report, giving actionable signal on why a response scored poorly.
 
-**Judge parse error:** If the judge returns malformed JSON, the test case is scored `null`, logged under "Judge Errors" in the report, and excluded from quality calculations. Score 0 is reserved for valid judge responses rating the output as completely wrong — it must not be conflated with a pipeline failure.
+### 7.3 Weighted Match
 
-**Judge cost:** Each llm_judge test case triggers one additional API call to the judge model. This cost is included in the dry-run estimate and the final cost report. On a 50 test case benchmark with `llm_judge`, expect judge costs to equal or exceed model call costs when using a powerful judge model.
+For structured outputs where the model must return a JSON array of `{"use_case", "percent", "order"}` objects. Three dimensions are scored independently and combined by weight.
+
+**Fixed output schema:** the expected and actual outputs must conform to this structure — `evaluation.variables` defines the weights and tolerances for `use_case`, `percent`, and `order`, not arbitrary field names.
+
+```yaml
+evaluation:
+  quality_threshold: 0.80      # per-case pass threshold (0–1)
+  variables:
+    - name: "use_case"
+      weight: 0.50             # F1 score on matched labels
+    - name: "percent"
+      weight: 0.25
+      tolerance: 0.20          # |actual - expected| ≤ tolerance counts as match
+    - name: "order"
+      weight: 0.25             # exact order match
+
+test_cases:
+  - id: "conv_001"
+    evaluation: "weighted_match"
+    expected_output:
+      - use_case: "Summarize content"
+        percent: 0.70
+        order: 1
+      - use_case: "Translate content"
+        percent: 0.30
+        order: 2
+```
+
+**Scoring per dimension:**
+- `use_case`: F1 score (2 × precision × recall / (precision + recall)) on matched label sets
+- `percent`: fraction of expected items where the model's percent is within `tolerance` of the expected value
+- `order`: fraction of expected items with an exact order match
+
+**On parse failure:** if the model returns malformed JSON or the wrong shape, the case scores 0.0 — a task failure, not a pipeline error; the run continues.
 
 ---
 
-### 7.3 Judge Reliability & Bias Mitigation
+## 8. `[V1 — shipped]` Judge Reliability & Bias Mitigation
 
-LLM judges exhibit documented, quantified biases. evalblink addresses them systematically, with V1 mitigations built in and V1.1 mitigations designed from the start.
+LLM judges exhibit documented, quantified biases. evalblink addresses them in V1 with three built-in mitigations.
 
-#### Known biases and their magnitude
+### Known biases
 
 | Bias | Magnitude | Description |
 |---|---|---|
@@ -293,124 +359,109 @@ LLM judges exhibit documented, quantified biases. evalblink addresses them syste
 | Style | variable | Confident tone rewarded even when content is wrong |
 | Position | 5–15% | Judge favours the response appearing first in pairwise prompts |
 
-*Sources: MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025), LLM Evaluation Guide (2025).*
+*Sources: MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025).*
 
-#### `[V1]` Self-preference detection
+### `[V1 — shipped]` Self-preference detection
 
-At config validation time, `schemas.py` extracts the vendor prefix from `judge_model` and each entry in `models`. If any candidate model shares the same vendor as the judge, evalblink emits a warning before the run starts:
+At run start, evalblink compares the vendor prefix of `evaluation.judge_model` against every model in `models`. If any candidate shares the same vendor as the judge, a warning is emitted before the first API call:
 
 ```
-⚠️  Self-preference risk detected.
-    judge_model: anthropic/claude-sonnet-4-6
-    candidate:   anthropic/claude-haiku-3-5
-
-    LLM judges show 10–25% preference for outputs from their own model family.
-    Recommendation: use a judge from a different vendor (e.g. openai/gpt-4o).
+⚠️  Self-preference risk: judge 'anthropic/claude-sonnet-4-6' shares vendor
+    'anthropic' with candidate(s): anthropic/claude-haiku-4-5.
+    Judge scores for these may be inflated.
 ```
 
-The run is not blocked — sometimes no better judge is available — but the warning is always shown and recorded in the result JSON under `"warnings"`.
+The run is not blocked — sometimes no better judge is available — but the warning is always shown.
 
-#### `[V1]` Verbosity and style bias — judge prompt guardrails
+### `[V1 — shipped]` Verbosity and style bias — judge prompt guardrails
 
-The judge prompt explicitly instructs the model to:
+The judge prompt instructs the model to:
 - Judge on criteria satisfaction only, not on length
-- Prefer accurate hedged answers over confidently wrong ones
+- Not reward confident tone over accuracy
 
-These two lines are embedded in the system-level instruction block and are not user-configurable, to ensure they are always active.
+These instructions are embedded in the judge prompt and are not user-configurable, ensuring they are always active.
 
-#### `[V1]` Rubric isolation — design principle
+### `[V1 — shipped]` Rubric isolation
 
-The `criteria` field is passed exclusively to the judge model. It is never injected into the candidate's `template`. This prevents rubric-hacking — where a model learns to match rubric keywords superficially rather than meeting the actual quality bar. The YAML schema enforces this separation: `criteria` is a test-case-level field, not a prompt-level field.
+`criteria` is a test-case-level field, never injected into the candidate's `template`. This prevents rubric-hacking — where a model learns to match rubric keywords superficially rather than meeting the actual quality bar.
 
-#### `[V1]` Reference-guided grading
+### `[V1 — shipped]` Reference-guided grading
 
-When `test_cases[].reference` is provided, the gold reference answer is injected into the judge prompt. This grounds evaluation in truth rather than plausibility, reducing the risk of hallucination blind spots where a fluent but incorrect answer scores well. Reference is optional — if absent, the judge evaluates against criteria alone.
+When `test_cases[].reference` is provided, the gold reference answer is injected into the judge prompt. This grounds evaluation in truth rather than plausibility, reducing the risk of hallucination blind spots where a fluent but incorrect answer scores well.
 
-#### `[V1.1]` Judge calibration — `evalblink calibrate`
+### `[V1.1 — planned]` Judge calibration — `evalblink calibrate`
 
-> **Designed in V1, built in V1.1.** The `human_score` field is available in the schema from V1 so teams can start collecting labels immediately. The `calibrate` command ships in V1.1.
+LLM judge scores are only meaningful if they correlate with human judgment. `evalblink calibrate` computes Pearson correlation and Cohen's Kappa between judge scores and human-labelled `human_score` fields. Recommended thresholds: Pearson ≥ 0.7, Cohen's Kappa ≥ 0.6. Below 0.4, the rubric is likely ambiguous and needs revision.
 
-LLM judge scores are only meaningful if they correlate with human judgment. The recommended threshold is a correlation coefficient ≥ 0.7 or Cohen's Kappa ≥ 0.6 (substantial agreement). Below 0.4, the rubric is likely ambiguous and needs revision.
-
-**Schema addition (V1 — collect now, analyse in V1.1):**
-
-```yaml
-test_cases:
-  - id: "conv_002"
-    evaluation: "llm_judge"
-    criteria: "Should identify a billing inquiry."
-    human_score: 4    # optional — integer 1-5, collected offline by a human reviewer
-```
-
-**CLI command (V1.1):**
+The `human_score` field is available in the schema from V1 so teams can start collecting labels immediately.
 
 ```bash
 evalblink calibrate results/run_001.json
 ```
 
-**Output:**
+### `[V1.1 — planned]` Pairwise judge mode
 
-```
-JUDGE CALIBRATION REPORT
-Judge model: anthropic/claude-sonnet-4-6
-Human-labelled cases: 24 / 50
+Pairwise evaluation — "which of these two responses better satisfies the criteria?" — produces higher inter-rater agreement than pointwise 1–5 scoring because it simplifies the cognitive task to relative comparison. This maps naturally onto evalblink's core use case: comparing prompt v1 vs v2 on the same model.
 
-Pearson correlation : 0.81  ✅ (threshold: 0.70)
-Cohen's Kappa       : 0.74  ✅ (threshold: 0.60)
-
-Verdict: Judge is well-calibrated. Scores are reliable.
-
-Cases with largest disagreement (judge vs human):
-  conv_018  judge=5  human=2  Δ=3  → review criteria
-  conv_031  judge=2  human=5  Δ=3  → review criteria
-```
-
-Re-validate calibration after any judge model update — provider updates can shift judge behaviour without notice.
-
-#### `[V1.1]` Pairwise judge mode
-
-> **Designed in V1, built in V1.1.**
-
-Pointwise scoring (V1's default) asks the judge to score each response independently on a 1–5 scale. Pairwise evaluation — asking "which of these two responses better satisfies the criteria?" — produces higher inter-rater agreement because it simplifies the cognitive task from absolute rating to relative comparison.
-
-This maps naturally onto evalblink's core use case: comparing prompt v1 vs v2 on the same model.
-
-**Pairwise is immune to verbosity bias by design:** if both responses are verbose, neither benefits. The judge compares *relative* quality.
-
-**Position bias mitigation (double-pass):** pairwise evaluation introduces position bias (5–15% magnitude) — the judge systematically favours the response appearing first. evalblink mitigates this with a double-pass: every comparison is run twice with A/B order swapped. If the judge's preference flips, the result is recorded as a tie. This catches approximately 90% of position-bias sensitivity errors.
-
-```yaml
-# V1.1 YAML addition
-judge_mode: "pairwise"    # default: "pointwise"
-```
-
-**Cost implication:** pairwise mode doubles judge API calls (two passes per comparison). This is included in dry-run cost estimates.
+Position bias (5–15%) is mitigated with a double-pass: every comparison runs twice with A/B order swapped. A preference flip is recorded as a tie.
 
 ---
 
-### 7.4 `[V1]` Test Case Stratification
+## 9. `[V1 — shipped]` Test Case Stratification
 
-Tags are free-form strings attached to test cases. They have no semantic meaning to evalblink — the user defines their own taxonomy. evalblink groups results by tag and reports quality per group.
+Tags are free-form strings attached to test cases. evalblink groups results by tag and reports quality per group.
 
-**Why it matters:** aggregate scores hide subgroup failures. A 91% overall score can mask 55% on billing edge cases. The literature is consistent on this: high overall scores masking poor performance on critical subsets is the single most common cause of production failures in LLM applications (LLM Evaluation Guide, 2025).
+**Why it matters:** aggregate scores hide subgroup failures. A 91% overall score can mask 55% on billing edge cases.
 
-**Recommended tag taxonomy for classification tasks:**
+**Recommended taxonomy:**
 
 | Tag | Purpose |
 |---|---|
 | `easy` | Unambiguous inputs any model should handle |
 | `medium` | Require nuanced understanding |
-| `edge_case` | Boundary conditions, ambiguous phrasing, unusual formats |
-| `non_english` | Inputs in languages other than the primary training language |
-| `<category>` | Domain-specific label matching your output taxonomy (e.g. `billing`, `order`) |
+| `edge_case` | Boundary conditions, ambiguous phrasing |
+| `non_english` | Inputs in non-primary languages |
+| `<category>` | Domain label matching your output taxonomy (e.g. `billing`, `order`) |
 
-Aim for roughly 50% easy, 30% medium, 20% edge cases. The research-recommended golden set size is 50–200 cases total, version-controlled alongside your prompt templates.
+Aim for roughly 50% easy, 30% medium, 20% edge cases.
 
-**Implementation:** one optional `List[str]` field on `TestCase` in `schemas.py`. The reporter does a `groupby(tag)` over results — no new API calls, no new dependencies. Tags with fewer than 3 cases are reported but flagged as statistically thin.
+**Auto-warning:** any tag scoring below 70% in the best-performing combination is flagged in both the CLI output and the Markdown report:
 
-**⚠️ threshold trigger:** if any tag scores below 70% in the best-performing combination, the recommendation block in the CLI and the report both flag it explicitly. This surfaces before the aggregate threshold check so subgroup failures are never buried.
+```
+⚠️  Warning  : edge_case quality is below 70%.
+```
 
 ---
+
+## 10. `[V1 — shipped]` Cost Estimation — `--dry-run`
+
+Estimates the full run cost without making any completion API calls:
+
+```bash
+evalblink run benchmarks/classification.yaml --dry-run
+```
+
+```
+DRY RUN — estimated cost (no API calls)
+ Model                         Prompt  Est prompt tok  Est completion tok  Est cost
+ anthropic/claude-sonnet-4-6   v1      3842            200                 $0.001230
+ openai/gpt-4o-mini            v1      3842            200                 $0.000210
+
+Estimated total cost: $0.001440
+Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
+✓ Within budget: estimate $0.001440 ≤ max_cost_usd $10.000000.
+```
+
+- Prompt tokens estimated as `len(rendered_text) / 4`
+- Completion tokens use the configured `max_tokens` as a ceiling
+- Judge tokens estimated separately per `llm_judge` case
+- Exits 1 if the estimate exceeds `max_cost_usd`; exits 0 otherwise
+
+Pricing data is fetched from OpenRouter once per day and cached locally at `.evalblink_cache/models.json`.
+
+---
+
+## 11. `[V1 — shipped]` Concurrency
 
 API calls run concurrently using `ThreadPoolExecutor` from Python's standard library.
 
@@ -418,19 +469,17 @@ API calls run concurrently using `ThreadPoolExecutor` from Python's standard lib
 from concurrent.futures import ThreadPoolExecutor
 
 with ThreadPoolExecutor(max_workers=concurrency) as executor:
-    futures = [executor.submit(call_model, prompt, model) for ...]
+    futures = [executor.submit(call_model, ...) for ...]
     results = [f.result() for f in futures]
 ```
-
-**Why ThreadPoolExecutor over asyncio:** For a CLI tool making network API calls, `ThreadPoolExecutor` is simpler, easier to debug, and produces identical throughput. `asyncio` + `httpx` async is the right architecture for a server handling concurrent users — not for a script executing a finite batch of API calls. Threading is sufficient and removes a significant layer of complexity.
-
-**Concurrency config:**
 
 ```yaml
 concurrency: 5    # max parallel requests (default: 5)
 ```
 
-**Estimated impact on a 50 test case × 3 models × 2 prompts benchmark:**
+**Why `ThreadPoolExecutor` over asyncio:** for a CLI tool making a finite batch of API calls to one host, threading is simpler, easier to debug, and produces identical throughput to async without the complexity.
+
+**Estimated impact on 50 cases × 3 models × 2 prompts:**
 
 | Mode | Estimated duration |
 |---|---|
@@ -439,305 +488,196 @@ concurrency: 5    # max parallel requests (default: 5)
 
 ---
 
-## 9. Retry Logic
+## 12. `[V1 — shipped]` Retry Logic
 
-All API calls are wrapped with exponential backoff using `tenacity`.
+Manual retry loop in `openrouter.py`. No external retry library.
 
 ```python
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-
-@retry(
-    wait=wait_exponential(min=1, max=30),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((TimeoutError, RateLimitError))
-)
-def call_model(prompt: str, model: str) -> str:
-    ...
+RETRYABLE_CODES = {408, 429, 502, 503, 504}
+MAX_RETRIES = 4
 ```
 
-**Behavior:**
-- Attempt 1: immediate
-- Attempt 2: wait 1–2s
-- Attempt 3: wait 2–4s
-- After 3 failures: log the error, score the test case as `None`, continue benchmark
-
-Failed calls are listed in the report under "API Errors" and excluded from quality calculations.
+Retries on: HTTP status codes in `RETRYABLE_CODES` and `httpx.TimeoutException`. Each retry waits with exponential backoff. After `MAX_RETRIES` failures, the test case is scored `None` (pipeline error, not a score of 0) and listed under "API Errors" in the report; the run continues.
 
 ---
 
-## 10. Caching
+## 13. `[V1 — shipped]` Caching
 
-evalblink caches every API response locally to avoid redundant calls during prompt iteration.
+Every API response is cached locally by SHA256 key.
 
 **Cache key:** `SHA256(model_id + rendered_system_prompt + rendered_prompt + temperature + max_tokens)`
 
-The system prompt is included in the key because changing `prompts[].system` alone must invalidate the cache. Both `system` and `template` are rendered (variables injected) before hashing — an unrendered template with different variables could produce the same raw string but a different effective prompt.
-
-```python
-import hashlib, json
-
-def make_cache_key(model_id, rendered_system, rendered_prompt, temperature, max_tokens):
-    payload = json.dumps({
-        "model": model_id,
-        "system": rendered_system or "",
-        "prompt": rendered_prompt,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }, sort_keys=True)
-    return hashlib.sha256(payload.encode()).hexdigest()
-```
-
-`json.dumps` with `sort_keys=True` ensures dict key ordering never produces a different hash for identical inputs.
+Both `system` and `template` are rendered (variables injected) before hashing — changing a variable value invalidates the cache correctly.
 
 ```
 .evalblink_cache/
-  a3f2b1c4d5e6...json
+  a3f2b1c4d5e6...json    ← candidate responses
   b7c8d9e0f1a2...json
+  models.json            ← OpenRouter model catalog (TTL: 24h)
 ```
 
-**Important — temperature and reproducibility:**
+**Cache is always on** — bypass it per-run with `--no-cache`. There is no `cache:` config key.
 
-> Caching is only meaningful when `temperature: 0`. At temperature > 0, two identical calls return different outputs. Caching non-deterministic responses defeats the purpose of evaluation.
-
-evalblink enforces this: if `cache: true` and `temperature > 0`, a warning is displayed at run start:
-
-```
-⚠️  Cache enabled with temperature=0.7. Cached responses may not reflect
-    current model behavior. Set temperature: 0 for reproducible benchmarks.
-```
-
-**Cache commands:**
+> Cache + `temperature: 0` = fully reproducible benchmarks. evalblink warns if cache is active with `temperature > 0`.
 
 ```bash
-evalblink cache clear       # delete all cached responses
-evalblink cache stats       # show entry count, size, hit rate from last run
+evalblink cache stats    # entry count and total size on disk
+evalblink cache clear    # wipe all cached responses (--yes to skip confirmation)
 ```
-
-**Impact:** On a prompt iteration run (changing only `v1` → `v2`), prompt `v1` responses are served from cache at zero cost. Only `v2` triggers new API calls.
 
 ---
 
-## 11. CLI Reference
+## 14. `[V1 — shipped]` CLI Reference
 
 ```bash
-# Run a single benchmark
+# Run a benchmark
 evalblink run benchmarks/classification.yaml
+evalblink run                               # defaults to benchmarks/exact_match_classification.yaml
+evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
+evalblink run benchmarks/classification.yaml --no-cache  # bypass local cache
+evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no API calls
 
-# Run all benchmarks in a folder
-evalblink run benchmarks/
+# Validate a config (errors and warnings, no API calls)
+evalblink validate benchmarks/classification.yaml
 
-# Estimate cost without calling APIs (includes judge cost)
-evalblink run benchmarks/classification.yaml --dry-run
+# Compare two finished runs (quality + cost deltas; offline, no API calls)
+evalblink compare results/<run_a>.json results/<run_b>.json
+evalblink compare results/<run_a>.json results/<run_b>.json --detailed  # per-case transitions
 
-# Force fresh API calls, bypass cache
-evalblink run benchmarks/classification.yaml --no-cache
-
-# Compare two historical runs (delta view)
-evalblink compare results/run_001.json results/run_002.json
+# Regenerate Markdown report from existing JSON
+evalblink report results/<run>.json
 
 # List past runs
 evalblink history
 
-# List available models from OpenRouter (context window + pricing)
-evalblink available-models
-evalblink available-models --min-context 100k --provider mistral
+# Browse OpenRouter model catalog
+evalblink models
+evalblink models --provider anthropic
+evalblink models --free
+evalblink models --min-context 100k
 
-# Scaffold a new benchmark file interactively
+# Scaffold a new benchmark YAML interactively
 evalblink init
 
 # Cache management
-evalblink cache clear
 evalblink cache stats
-
-# [V1.1] Validate judge calibration against human-labelled cases
-evalblink calibrate results/run_001.json
+evalblink cache clear --yes
 ```
 
 ---
 
-## 12. Results Matrix
+## 15. `[V1 — shipped]` Results Matrix
 
-### CLI output
+### Terminal output
 
 ```
-evalblink — Customer Support Classification
-Run: 2026-06-10 14:32 | ID: a3f2b1 | Cache hits: 102/300
+              Customer Support Classification — 2026-06-10_14-32_customer-support-classification
+ Model                         Prompt  Score   Pass/Scored  Errors  Prompt tok  Completion tok  Cost
+ anthropic/claude-sonnet-4-6   v2      96.0%   48/50        0       5120        344             $0.000471
+ anthropic/claude-sonnet-4-6   v1      94.0%   47/50        0       4200        312             $0.000445
+ openai/gpt-4o-mini            v2      91.0%   45/50        0       5010        321             $0.000071
+ openai/gpt-4o-mini            v1      87.0%   43/50        1       4100        298             $0.000063
 
-              | gpt-4o-mini         | claude-sonnet       | mistral-small-3
-prompt_v1     | 87% · $0.06 · 1.1s  | 94% · $0.45 · 2.3s  | 82% · $0.04 · 0.9s
-prompt_v2     | 91% · $0.07 · 1.2s  | 96% · $0.47 · 2.1s  | 88% · $0.04 · 0.8s
-              | +4% ↑               | +2% ↑               | +6% ↑
-
-Judge cost (llm_judge cases): $0.18
-Total run cost: $1.05
-
-QUALITY BY TAG — best combination (claude-sonnet / prompt_v2)
-tag             | cases | quality
-----------------|-------|--------
-easy            | 30    | 99%
-medium          | 15    | 91%
-edge_case       | 5     | 60%   ⚠️
-billing         | 12    | 63%   ⚠️
-non_english     | 4     | 50%   ⚠️
+       QUALITY BY TAG — best combo (anthropic/claude-sonnet-4-6 / v2)
+ Tag          Cases  Quality  Errors
+ easy         30     99%      0
+ medium       15     91%      0
+ edge_case    5      60%      0     ⚠️
+ billing      12     63%      1     ⚠️
 
 RECOMMENDATION
-Best quality : claude-sonnet / prompt_v2 (96% overall)
-Best value   : mistral-small-3 / prompt_v2 (88% quality · $0.04/run)
-⚠️  Warning   : edge_case quality is 60% — review these test cases before shipping.
+Best quality : anthropic/claude-sonnet-4-6 / v2 (96.0%)
+Best value   : openai/gpt-4o-mini / v2 (91.0% · $0.0001/run)
+⚠️  Warning  : edge_case quality is below 70%.
+⚠️  Warning  : billing quality is below 70%.
 ```
 
-### Markdown report — three tables per metric
+**Columns tracked:** Model, Prompt, Score (%), Pass/Scored, Errors (pipeline errors), Prompt tokens, Completion tokens, Cost. **Latency is not tracked.**
+
+### Markdown report structure
+
+Auto-generated at `results/YYYY-MM-DD_HH-MM_<name>.md`:
 
 ```markdown
-## Results Matrix
+# {benchmark name}
+- Run ID: ...
+- Timestamp: ...
+- Judge model: ...
+- Temperature: ...
+- Max tokens: ...
+- Quality threshold: ...
 
-### Quality (%)
-              | gpt-4o-mini | claude-sonnet | mistral-small-3
-prompt_v1     | 87%         | 94%           | 82%
-prompt_v2     | 91% ↑       | 96% ↑         | 88% ↑
+## Summary
+| Model | Prompt | Score | Pass/Scored | Errors | Prompt tok | Completion tok | Cost |
+...
 
-### Cost ($/run — models + judge)
-              | gpt-4o-mini | claude-sonnet | mistral-small-3
-prompt_v1     | $0.06       | $0.45         | $0.04
-prompt_v2     | $0.07       | $0.46         | $0.04
+## {model} — prompt `{id}`
+| Test case | Evaluation | Match | Score | Cost |
+...
 
-### Latency (avg per call)
-              | gpt-4o-mini | claude-sonnet | mistral-small-3
-prompt_v1     | 1.1s        | 2.3s          | 0.9s
-prompt_v2     | 1.2s        | 2.1s ↓        | 0.8s ↓
-```
+## Quality by tag — best combo ({model} / {prompt})
+| Tag | Cases | Quality | Errors | |
+...
 
-> Compact single-cell format (`quality · cost · latency`) for CLI. Separate tables per metric for Markdown. Interactive heatmap for V2 Streamlit.
-
----
-
-## 13. Markdown Report Structure
-
-Auto-generated at `/results/YYYY-MM-DD_HH-MM-SS_<name>.md`
-
-```markdown
-# Benchmark Report: {name}
-Run ID: {uuid} | {timestamp}
-Cache: {hit_count}/{total} hits | Total cost: ${total}
-
-## Warnings
-[self-preference alerts, cache+temperature conflicts, context window overflows]
-
-## Results Matrix
-[quality / cost / latency — 3 tables]
-
-## Quality by Tag
-[per-tag breakdown for the best-performing combination — only shown if tags are present]
-
-tag           | cases | quality
---------------|-------|--------
-easy          | 30    | 99%
-medium        | 15    | 91%
-edge_case     | 5     | 60%  ⚠️
-billing       | 12    | 63%  ⚠️
-non_english   | 4     | 50%  ⚠️
-
-## Cost Breakdown
-[models cost + judge cost, per prompt version and per model]
-
-## Failed Test Cases
-[exact_match mismatches + JSON parse errors + API errors + judge errors]
-
-## Judge Reasoning
-[per llm_judge case: criteria · reference (if set) · reasoning · score]
-
-## Model Specs
-[from OpenRouter API: context window, pricing]
-
-## Context Window Warnings
-[test cases that exceed a model's context window]
-
-## Recommendations
-[auto-generated: best quality, best value, biggest improvement, tag-level warnings]
+## Recommendation
+- Best quality: ...
+- Best value: ...
+- ⚠️ Warning: ...
 ```
 
 ---
 
-## 14. Results History & Compare
+## 16. `[V1 — shipped]` Results History & Compare
 
 ### Storage
 
+Every run writes two files:
+
 ```
-/results
-  2026-06-10_14-32_classification_a3f2b1.json
-  2026-06-10_14-32_classification_a3f2b1.md
-```
-
-JSON stores: full config snapshot, all rendered prompts, responses, scores, tokens, costs, latencies, model specs, cache stats.
-
-Every result JSON includes a top-level `schema_version` field written at run time:
-
-```json
-{
-  "schema_version": "1.0",
-  "run_id": "a3f2b1",
-  ...
-}
+results/
+  2026-06-10_14-32_customer-support-classification.json   # full record, git-friendly
+  2026-06-10_14-32_customer-support-classification.md     # human-readable report
 ```
 
-**Why schema versioning matters:** when new fields are added in future releases, `evalblink compare` can detect mismatches and handle them gracefully rather than silently producing wrong deltas.
+JSON includes a top-level `schema_version` field. `evalblink compare` handles mismatched versions gracefully rather than hard-blocking — old records remain usable.
 
-**`evalblink compare` version handling:**
-
-| Scenario | Behaviour |
-|---|---|
-| Both files same version | Proceed normally |
-| Different versions | Print warning listing which fields may be absent, then compare on fields common to both versions |
-| File predates versioning (no field) | Treat as `"0.9"`, warn the user, proceed with best effort |
-
-The comparison never hard-blocks on version mismatch — that would make historical result files unusable. The warning gives the user full visibility without destroying the workflow.
-
-Markdown is generated once at run time. Re-generate from JSON on demand:
-
-```bash
-evalblink report results/run_001.json    # regenerate .md from existing .json
-```
-
-### Compare
+### Compare output
 
 ```bash
 evalblink compare results/run_001.json results/run_002.json
 ```
 
 ```
-DELTA: run_001 → run_002
-Prompt: v1 → v2
+ DELTA: 2026-06-08_run_001 → 2026-06-10_run_002
+ Model                         Prompt  Quality Δ    Cost Δ       Notes
+ anthropic/claude-sonnet-4-6   v1      +4.0% ↑      +0.0002 ↑
+ anthropic/claude-sonnet-4-6   v2      stable        stable
+ openai/gpt-4o-mini            v1      +6.0% ↑      stable
 
-Model             | Quality    | Cost       | Latency
-------------------|------------|------------|----------
-gpt-4o-mini       | +4% ↑      | +$0.01     | +0.1s
-claude-sonnet     | +2% ↑      | stable     | stable
-mistral-small-3   | +6% ↑      | stable     | -0.1s ↓
-
-Verdict: prompt_v2 improves quality across all models.
-         mistral-small-3: +6% quality at no additional cost.
+Verdict: B improved on A across 2/3 combos.
 ```
+
+`--detailed` adds a per-combo test-case transition table (regressed / improved / new_error / recovered) and a global summary (change counts, worst-regressed cases, per-tag net).
+
+**Latency is intentionally absent from compare output** — the runner does not capture it.
 
 ---
 
-## 15. OpenRouter API Integration
+## 17. `[V1 — shipped]` OpenRouter API Integration
 
 Called at run start to fetch live model metadata.
 
 **Endpoint:** `GET https://openrouter.ai/api/v1/models`  
 **Auth:** `OPENROUTER_API_KEY` environment variable  
-**Local cache:** TTL 24h (stored in `.evalblink_cache/models.json`)
+**Local cache:** TTL 24h at `.evalblink_cache/models.json`
 
-Data extracted per model:
-- `context_length` — triggers warnings if test cases exceed it
-- `pricing.prompt` — cost per input token
-- `pricing.completion` — cost per output token
-
-Cost estimation accounts for: model calls + judge calls (llm_judge cases).
+Data used per model:
+- `pricing.prompt` and `pricing.completion` — cost per token for dry-run estimates and post-run cost reporting
+- `context_length` — available for future context-overflow warnings
 
 ---
 
-## 16. CI/CD Integration
+## 18. `[V1 — shipped]` CI/CD Integration
 
 evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
 
@@ -748,41 +688,28 @@ evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-Best quality score across all combinations ≥ threshold → exit 0.  
-Below threshold → exit 1, pipeline blocked.
+Best quality score across all combinations ≥ `quality_threshold` → exit 0.  
+Below threshold, or `--dry-run` over `max_cost_usd` → exit 1, pipeline blocked.
 
 ---
 
-## 17. Technical Stack
+## 19. `[V1 — shipped]` Technical Stack
 
-| Component | Tool | Rationale |
+| Component | Tool | Notes |
 |---|---|---|
-| CLI | Typer | Type-safe, auto-generates help |
-| Terminal output | Rich | Tables, progress bars, colors |
-| Config | PyYAML (`safe_load`) | Standard, readable |
-| Template injection | `str.format_map()` | Native Python, no dependency |
-| API calls | `httpx` (sync) | HTTP/2 connection reuse across calls to the same host; near-identical API to `requests`; trivial migration to `httpx.AsyncClient` for V2 async |
-| Concurrency | `ThreadPoolExecutor` | Standard library, sufficient for batch API calls |
-| Retry logic | `tenacity` | Exponential backoff, configurable |
-| Data validation | `TypedDict` (typing) + `validator.py` (runtime) | TypedDicts document shapes for IDE/mypy; `validator.validate()` catches bad YAML at the CLI boundary with explicit error messages. No Pydantic. |
+| CLI | `argparse` (stdlib) | Subcommand dispatcher in `main.py` |
+| Terminal output | `rich` | Tables, colors, progress |
+| Config | `PyYAML` (`safe_load`) | Standard, readable |
+| Template injection | `Jinja2` | Double-brace syntax; supports filters and raw blocks |
+| HTTP client | `httpx` (sync) | `httpx.Client` as context manager reuses the TCP connection across all calls to the same host |
+| Concurrency | `ThreadPoolExecutor` (stdlib) | Sufficient for batch API calls; no async complexity |
+| Retry logic | Manual loop in `openrouter.py` | `RETRYABLE_CODES`, `MAX_RETRIES`, exponential backoff; no external retry library |
+| Data validation | `TypedDict` (typing) + `validator.py` | TypedDicts for IDE/mypy only; `validator.validate()` does runtime checking at the CLI boundary |
 | LLM routing | OpenRouter | Multi-vendor, single API key |
-| Caching | Local JSON (`SHA256` key) | Zero infra, reproducible |
+| Caching | Local JSON files (SHA256 key) | Zero infra, reproducible |
 | Result storage | Local JSON + Markdown | Human-readable, git-friendly |
 
-**Why `httpx` over `requests`:** evalblink makes all API calls to a single host (`openrouter.ai`). `httpx.Client()` used as a context manager keeps the TCP connection alive across the entire benchmark run — connection reuse that `requests` does not provide (each call opens a new connection). On a 300-call benchmark, this difference is measurable. The API is nearly identical to `requests`, so the learning curve is the same. The async migration path is explicit: swap `httpx.Client` for `httpx.AsyncClient` and add `await` — no request logic rewrite required.
-
-```python
-import httpx
-
-with httpx.Client(timeout=30.0) as client:
-    response = client.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-    )
-    response.raise_for_status()
-    return response.json()
-```
+**Why `httpx` over `requests`:** `httpx.Client()` used as a context manager keeps the TCP connection alive across the entire benchmark run — connection reuse that `requests` does not provide. On a 300-call benchmark, this difference is measurable. The async migration path is also explicit: swap `httpx.Client` for `httpx.AsyncClient`.
 
 **Environment variables:**
 
@@ -792,140 +719,112 @@ OPENROUTER_API_KEY=     # required
 
 ---
 
-## 18. Repo Structure
+## 20. `[V1 — shipped]` Repo Structure
 
 ```
 evalblink/
 ├── evalblink/
 │   ├── main.py             # argparse CLI entrypoint + subcommand handlers
 │   ├── runner.py           # Benchmark execution (ThreadPoolExecutor)
-│   ├── evaluator.py        # exact_match + weighted_match + llm_judge
-│   ├── reporter.py         # Markdown + terminal output (Rich)
-│   ├── openrouter.py       # httpx client + model metadata + retry logic
-│   ├── cache.py            # SHA256 cache management
-│   ├── compare.py          # Delta between two run JSON files
+│   ├── evaluator.py        # exact_match + weighted_match + llm_judge + bias detection
+│   ├── reporter.py         # Terminal (Rich) + JSON + Markdown output
+│   ├── openrouter.py       # httpx client, model metadata, retry logic, SHA256 cache
+│   ├── cache.py            # SHA256 cache read/write/stats/clear
+│   ├── compare.py          # Delta between two run JSON records
 │   ├── estimate.py         # Offline cost estimation for --dry-run
 │   ├── validator.py        # Static config validation (no API calls)
+│   ├── analysis.py         # Insights: best combo, tag breakdown, recommendations
 │   └── schemas.py          # TypedDicts for IDE/mypy only — no runtime effect
 ├── benchmarks/
-│   └── example_classification.yaml
+│   ├── exact_match_classification.yaml
+│   ├── llm_as_judge.yaml
+│   ├── weighted_match_config.yaml
+│   └── classification.yaml          # mixed-mode: exact_match + llm_judge
 ├── docs/
-│   └── skills/
-│       ├── 01_design_your_test_set.md
-│       ├── 02_write_a_testable_prompt.md
-│       ├── 03_read_your_results.md
-│       └── 04_refine_your_prompt.md
-├── results/                # Git-ignored
-├── .evalblink_cache/       # Git-ignored
-├── PRODUCT.md              # PRD — public, version-controlled
+│   └── skills/              # practitioner guides (content planned for V1.1)
+├── tests/                   # offline unit tests (fake httpx.Client, no API key needed)
+├── results/                 # git-ignored
+├── .evalblink_cache/        # git-ignored
 ├── pyproject.toml
 ├── README.md
+├── CLAUDE.md
+├── PRD.md
 └── .env.example
 ```
 
 ---
 
-## 19. Differentiation vs PromptFoo
+## 21. `[V1 — shipped]` Differentiation vs PromptFoo
 
 | | evalblink | PromptFoo |
 |---|---|---|
-| Language | Python (pip install) | Node.js (npx) |
+| Language | Python (`pip install`) | Node.js (`npx`) |
 | Vendor neutrality | Independent | Acquired by OpenAI (March 2026) |
 | Live model metadata | ✅ OpenRouter API | ❌ |
 | Cost estimation incl. judge | ✅ | ❌ |
 | Run comparison (delta) | ✅ `evalblink compare` | ❌ |
 | Markdown report per run | ✅ | ❌ |
-| JSON-enforced output | ✅ | ❌ |
 | Self-preference detection | ✅ warning at run start | ❌ |
 | Verbosity + style bias guardrails | ✅ baked into judge prompt | ❌ |
 | Reference-guided grading | ✅ optional `reference` field | ❌ |
-| Judge calibration vs human labels | ✅ V1.1 `evalblink calibrate` | ❌ |
-| Pairwise judge mode | ✅ V1.1 with order-swap tie detection | ❌ |
-| Per-tag result breakdown | ✅ subgroup quality + ⚠️ auto-warnings | ❌ |
+| Per-tag result breakdown | ✅ with ⚠️ auto-warnings | ❌ |
+| Weighted match evaluation | ✅ multi-dimension scoring | ❌ |
+| Judge calibration vs human labels | V1.1 `evalblink calibrate` | ❌ |
+| Pairwise judge mode | V1.1 with order-swap tie detection | ❌ |
 | Caching | ✅ | ✅ |
-| Concurrency | ✅ ThreadPoolExecutor | ✅ |
+| Concurrency | ✅ `ThreadPoolExecutor` | ✅ |
 | CI/CD integration | ✅ | ✅ |
 | Red teaming | ❌ Out of scope | ✅ |
-| Web UI | V2 Streamlit | ✅ |
+| Web UI | V2 | ✅ |
 
 ---
 
-## 20. Eval Methodology — `/docs/skills/`
+## 22. `[V1 — shipped]` Evaluation Methodology — `/docs/skills/`
 
-evalblink ships with four markdown guides covering the full evaluation workflow. No code required — these are practitioner-facing documents that teach the methodology alongside the tool.
+evalblink ships with four practitioner guides covering the full evaluation workflow. **Content is planned for V1.1** — the directory structure (`docs/skills/`) is in place.
 
-### Why skills matter
-
-Most eval tools ship documentation about their API. evalblink ships documentation about *how to evaluate*. This distinction matters: a team that runs evalblink without understanding what makes a good test set, a testable prompt, or a meaningful rubric will get numbers that are meaningless at best and misleading at worst. The skills close that gap.
-
-### `[V1]` Four core skills
-
-**`01_design_your_test_set.md` — Design your test set**
-
-Covers: what makes a golden set credible, the 50/30/20 easy/medium/edge_case distribution, minimum viable set size (50–200 cases), tag taxonomy design, contamination risk and why BYOD is the only safe evaluation approach, how to source real production inputs.
-
-**`02_write_a_testable_prompt.md` — Write a testable prompt**
-
-Covers: what makes a prompt evaluable (deterministic output format, unambiguous task definition, isolated variables), the `str.format_map()` escaping rules, system prompt design, how to separate what you're testing from what you're controlling for, common prompt anti-patterns that break exact match evaluation.
-
-**`03_read_your_results.md` — Read your results**
-
-Covers: how to interpret the results matrix (quality vs cost vs latency tradeoffs), reading the tag stratification table, what parse errors signal about your prompt, how to distinguish a model failure from a prompt failure, when a 96% aggregate score is not good enough.
-
-**`04_refine_your_prompt.md` — Refine your prompt**
-
-Covers: using `evalblink compare` to validate a hypothesis, one-variable-at-a-time iteration discipline, how to use judge reasoning output to diagnose failures, when to expand your test set vs when to change your prompt, how to know when you're done iterating.
-
-### `[V1.1]` Interactive scaffolding — `evalblink init`
-
-`evalblink init` generates a pre-structured YAML benchmark file interactively. It asks the user for their task type, label set, and number of test cases — then scaffolds the file with the correct tag distribution and placeholder test cases. The skills are referenced inline.
-
-```bash
-evalblink init
-> Task type: classification
-> Labels: order_issue, billing, product_question, other
-> Number of test cases: 20
-> ✅ Generated benchmarks/my_benchmark.yaml (6 easy · 6 medium · 4 edge_case · 4 non_english)
-```
+| Guide | What it will cover |
+|---|---|
+| `01_design_your_test_set.md` | Golden set design, 50/30/20 distribution, contamination risk, tag taxonomy |
+| `02_write_a_testable_prompt.md` | Deterministic output formats, variable isolation, common anti-patterns |
+| `03_read_your_results.md` | Interpreting the results matrix, parse errors, aggregate vs subgroup scores |
+| `04_refine_your_prompt.md` | Using `evalblink compare`, one-variable iteration, when to expand the test set |
 
 ---
 
-## 21. V2 — Streamlit Dashboard
+## 23. `[V1.1 — planned]` Interactive Scaffolding — `evalblink init`
 
-### Overview
+> **Status:** `evalblink init` shipped in V1 as a basic interactive YAML scaffolder. V1.1 will extend it to generate pre-structured test case distributions (50/30/20 easy/medium/edge_case) with inline references to the `/docs/skills/` guides.
+
+---
+
+## 24. `[V2 — planned]` Streamlit Dashboard
 
 Visual interface for running benchmarks and sharing results with non-technical stakeholders.
 
-### Screens
+**Planned screens:**
+- **Configure** — Upload YAML or build from form. Model selector with live OpenRouter metadata. Cost preview.
+- **Run** — Select prompt × model combinations. Dry-run toggle. Progress bar per combination. Live cost counter.
+- **Results** — Interactive heatmap (prompts × models). Drill down per cell → individual test case results. Tag breakdown. Export Markdown or PDF.
+- **Compare** — Two-run delta view. Highlight improved/regressed cells.
+- **History** — List of all runs: name, date, best score, total cost. Search, filter, delete.
+- **Models** — Full OpenRouter model table. Filter by provider, context size, price.
 
-**Configure** — Upload YAML or build from form. Model selector with live OpenRouter metadata. Prompt editor. Test case table with CSV import. Cost preview including judge cost.
-
-**Run** — Select prompt × model combinations. Dry-run toggle. Progress bar per combination. Live cost counter. Cancel button.
-
-**Results** — Interactive heatmap (prompts × models). Toggle: Quality / Cost / Latency. Drill down per cell → individual test case results. Tag breakdown table. Export Markdown or PDF.
-
-**Compare** — Two-run delta view. Highlight cells with improvement > 5%. LLM-generated narrative summary.
-
-**History** — List of all runs: name, date, models, best score, total cost. Search, filter, delete.
-
-**Models** — Full OpenRouter model table. Filter by provider, context size, price.
-
-### `[V2]` Multi-turn Conversation Tests
-
-Single-turn evaluation (one input → one output) covers most classification and generation tasks. But many LLM applications are conversational — the model must retain context, stay consistent, and handle topic switches across multiple turns.
+### `[V2 — planned]` Multi-turn Conversation Tests
 
 Multi-turn test cases specify the full conversation history and the expected behaviour at each turn:
 
 ```yaml
 test_cases:
   - id: "multi_001"
-    type: "multi_turn"           # V2 addition
+    type: "multi_turn"
     tags: ["context_retention", "edge_case"]
     turns:
       - role: "user"
         content: "I can't find my last order."
       - role: "assistant"
-        expected_contains: "order_issue"   # evaluated at this turn
+        evaluation: "exact_match"
+        expected_output: "order_issue"
       - role: "user"
         content: "Actually, I think I was also charged twice."
       - role: "assistant"
@@ -935,43 +834,20 @@ test_cases:
           Must not contradict the previous turn.
 ```
 
-**What multi-turn evaluation catches:**
-- **Context retention** — does the model reference earlier turns correctly?
-- **Consistency** — does the model contradict itself across turns?
-- **Topic switching** — does the model handle abrupt subject changes gracefully?
-- **Clarification handling** — does the model respond appropriately to follow-up questions?
-
-**Why V2 and not V1:** multi-turn test cases are more complex to author than single-turn cases — this complexity lands on the user's YAML and increases the learning curve. V1 targets zero-to-benchmark in under 5 minutes. Multi-turn authoring is a deliberate V2 feature once the core workflow is validated.
+**Why V2 and not V1:** multi-turn test cases are more complex to author — this complexity lands on the user's YAML and increases the learning curve. V1 targets zero-to-benchmark in under 5 minutes.
 
 ---
 
-## 22. V3 — Assisted Optimisation
+## 25. `[V3 — vision]`  Assisted Optimisation
 
-> **Vision, not a commitment.** This section documents the long-term direction. Nothing here ships before V2 is validated.
+> **Vision, not a commitment.** Nothing here ships before V2 is validated.
 
-### The workflow as skills — Phase 1 (V1, shipped)
-
-The `/docs/skills/` folder makes the eval workflow explicit: design test set → write prompt → run benchmark → read results → refine. This is a methodology, not just a tool.
-
-### Interactive scaffolding — Phase 2 (V1.1)
-
-`evalblink init` turns the skills into an interactive CLI wizard. The human makes every decision; evalblink structures the output.
-
-### Assisted optimisation — Phase 3 (V3)
-
-`evalblink suggest` reads a benchmark result and proposes *hypotheses* — not a rewritten prompt, but diagnostic observations grounded in the results:
-
-`evalblink generate` — natural language → draft YAML, with the same self-preference warning logic reused, and an explicit "human review required" banner on output
-
-Expand the existing `evalblink suggest` mockup to show three distinct suggestion types (test case / model / prompt hypothesis) with the accept/reject framing made explicit in the CLI output
-
-A short subsection codifying the risk table above as a design principle — same spirit as your "why not a fully autonomous agent" paragraph, just applied to suggestion-type by suggestion-type
-
+`evalblink suggest` reads a benchmark result and proposes hypotheses — not a rewritten prompt, but diagnostic observations grounded in the data:
 
 ```
 evalblink suggest results/run_002.json
 
-DIAGNOSIS — claude-sonnet / prompt_v2
+DIAGNOSIS — anthropic/claude-sonnet-4-6 / v2
 Overall quality: 96%
 
 ⚠️  Subgroup failures detected:
@@ -981,20 +857,18 @@ Overall quality: 96%
 Hypotheses to test:
   1. Add explicit handling for ambiguous cases in the system prompt
   2. Add a non-English example to the few-shot block
-  3. Increase max_tokens — truncated outputs may explain the 14% parse error rate on edge_case
+  3. Increase max_tokens — truncated outputs may explain the parse error rate on edge_case
 
 → Run: evalblink run benchmarks/classification_v3.yaml to validate hypothesis 1
 ```
 
 **The human stays in the decision loop.** evalblink diagnoses and hypothesises. The human decides what to test next and writes the new prompt. This preserves the core value proposition: understanding *why* one prompt is better, not just optimising a metric.
 
-### Why not a fully autonomous agent
-
-A fully autonomous agent that generates test cases, optimises prompts, and evaluates its own outputs without human validation creates the exact problem evalblink is designed to detect: optimisation on the evaluation set itself. If the agent generates test cases and optimises against them in the same loop, it produces overfitting by design — a system that scores well on its own benchmark and fails in production. The human checkpoint between hypothesis and validation is not a limitation; it is the architecture.
+**Why not a fully autonomous agent:** a fully autonomous agent that generates test cases and optimises against them in the same loop produces overfitting by design — a system that scores well on its own benchmark and fails in production. The human checkpoint between hypothesis and validation is not a limitation; it is the architecture.
 
 ---
 
-## 23. Success Metrics
+## 26. Success Metrics
 
 | Metric | V1 Target |
 |---|---|
@@ -1005,4 +879,4 @@ A fully autonomous agent that generates test cases, optimises prompts, and evalu
 
 ---
 
-*evalblink V6.0 — PRD reflects fifth CTO review incorporating: (1) httpx (sync) replacing requests — HTTP/2 connection reuse across all calls to openrouter.ai, near-identical API, explicit async migration path for V2; (2) /docs/skills/ methodology layer — four practitioner guides covering the full eval workflow (design test set, write testable prompt, read results, refine prompt), shipped as markdown in V1; (3) evalblink init interactive scaffolding in V1.1 — CLI wizard generating pre-structured YAML with correct tag distribution; (4) V3 assisted optimisation roadmap — evalblink suggest as a hypothesis engine, human-in-the-loop by design, with explicit architectural rationale for why a fully autonomous agent creates the overfitting problem evalblink is built to prevent. Sources: G-Eval (Liu et al., 2023), MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025), LLM Evaluation Guide (Commey, 2026).*
+*evalblink V7.0 — PRD updated to reflect V1 shipped state. All V1 sections describe the current implementation exactly. Sources: G-Eval (Liu et al., 2023), MT-Bench (Zheng et al., 2024), Judging the Judges (Gu et al., 2025).*
