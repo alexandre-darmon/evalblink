@@ -1,9 +1,12 @@
 """Data shapes for evalblink — config and result dicts.
 
-These are ``TypedDict``s, not Pydantic models: the pipeline keeps passing the
-plain dicts that come straight out of the YAML / get built during a run, so
-these definitions add typing and documentation with zero runtime change. No
-logic lives here.
+TypedDicts for type-checking and IDE autocomplete only; zero runtime effect.
+Runtime validation is handled by ``validator.validate()``, which is called
+explicitly at the CLI boundary (``cmd_run``, ``cmd_validate``). Plain dicts
+flow through the whole pipeline unchanged.
+
+No Pydantic — the validator produces explicit, actionable error messages that
+Pydantic's generic ValidationError cannot match for YAML config authoring.
 """
 
 from __future__ import annotations

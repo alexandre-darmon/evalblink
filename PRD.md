@@ -166,15 +166,18 @@ test_cases:
 
 ## 6. Template Injection
 
-Variables are injected into prompt templates using Python's native `str.format_map()`. No third-party template engine required.
+Variables are injected into prompt templates using Jinja2.
 
 ```python
-rendered_prompt = template.format_map({**global_variables, **test_case_variables})
+from jinja2 import Template
+rendered_prompt = Template(template).render(**{**global_variables, **test_case_variables})
 ```
 
-**Why not Jinja2:** Jinja2 is a full template engine designed for HTML rendering. For simple variable substitution in LLM prompts, it adds an unnecessary dependency and breaks when prompts contain curly braces (e.g. JSON examples in few-shot prompts). `str.format_map()` is deterministic, dependency-free, and sufficient.
+Templates use double-brace syntax: `{{ variable }}`. Single braces `{variable}` are treated as literal text and silently produce wrong prompts — `evalblink validate` warns on this pattern.
 
-**Escaping literal braces:** Use `{{` and `}}` in templates to output a literal `{` or `}`.
+**Why Jinja2:** filter expressions (`{{ label | upper }}`, `{{ items | join(", ") }}`) are common in LLM prompt authoring and require a real template engine. `str.format_map()` cannot support them, and its error messages on missing keys are harder to diagnose than Jinja2's `UndefinedError`.
+
+**Literal braces in prompt text:** wrap in Jinja2 raw blocks — `{% raw %}{...}{% endraw %}` — or avoid bare braces in few-shot JSON examples by using backtick code blocks in the prompt instead.
 
 ---
 
@@ -761,7 +764,7 @@ Below threshold → exit 1, pipeline blocked.
 | API calls | `httpx` (sync) | HTTP/2 connection reuse across calls to the same host; near-identical API to `requests`; trivial migration to `httpx.AsyncClient` for V2 async |
 | Concurrency | `ThreadPoolExecutor` | Standard library, sufficient for batch API calls |
 | Retry logic | `tenacity` | Exponential backoff, configurable |
-| Data validation | Pydantic v2 | Config and result schema validation |
+| Data validation | `TypedDict` (typing) + `validator.py` (runtime) | TypedDicts document shapes for IDE/mypy; `validator.validate()` catches bad YAML at the CLI boundary with explicit error messages. No Pydantic. |
 | LLM routing | OpenRouter | Multi-vendor, single API key |
 | Caching | Local JSON (`SHA256` key) | Zero infra, reproducible |
 | Result storage | Local JSON + Markdown | Human-readable, git-friendly |
@@ -794,14 +797,16 @@ OPENROUTER_API_KEY=     # required
 ```
 evalblink/
 ├── evalblink/
-│   ├── cli.py              # Typer CLI entrypoint
+│   ├── main.py             # argparse CLI entrypoint + subcommand handlers
 │   ├── runner.py           # Benchmark execution (ThreadPoolExecutor)
-│   ├── evaluator.py        # exact_match (JSON) + llm_judge
+│   ├── evaluator.py        # exact_match + weighted_match + llm_judge
 │   ├── reporter.py         # Markdown + terminal output (Rich)
-│   ├── openrouter.py       # httpx client + model metadata
+│   ├── openrouter.py       # httpx client + model metadata + retry logic
 │   ├── cache.py            # SHA256 cache management
-│   ├── comparator.py       # Delta between two run JSON files
-│   └── schemas.py          # Pydantic config and result schemas
+│   ├── compare.py          # Delta between two run JSON files
+│   ├── estimate.py         # Offline cost estimation for --dry-run
+│   ├── validator.py        # Static config validation (no API calls)
+│   └── schemas.py          # TypedDicts for IDE/mypy only — no runtime effect
 ├── benchmarks/
 │   └── example_classification.yaml
 ├── docs/
