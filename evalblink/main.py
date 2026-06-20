@@ -1,8 +1,4 @@
-"""Entrypoint: dispatch the ``run`` and ``compare`` subcommands.
-
-python -m evalblink.main run [path/to/benchmark.yaml]
-python -m evalblink.main compare results/a.json results/b.json
-"""
+"""Benchmark LLM prompts × models on your own data via OpenRouter."""
 
 from __future__ import annotations
 
@@ -61,29 +57,109 @@ def cmd_compare(args):
     sys.exit(0)
 
 
+_RUN_DESCRIPTION = "Run a benchmark YAML against all model × prompt combinations."
+
+_RUN_EPILOG = """\
+YAML CONFIG KEYS
+  name                          required
+  models                        list of OpenRouter model IDs  (required)
+  prompts[].id                  prompt identifier             (required)
+  prompts[].template            Jinja2 — use {{ var }}        (required)
+  prompts[].system              optional system message
+  inference.temperature         default: 0
+  inference.max_tokens          default: 100
+  variables                     global key/value pairs injected into templates
+  quality_threshold             CI gate 0–100; exit 1 if best score is below
+  evaluation.judge_model        required for llm_judge
+  evaluation.judge_threshold    default: 0.70
+  test_cases[].id               required
+  test_cases[].evaluation       exact_match | llm_judge | weighted_match  (required)
+  test_cases[].expected_output  required for exact_match
+  test_cases[].criteria         required for llm_judge
+  test_cases[].variables        per-case variables
+  test_cases[].tags             list of strings for per-category breakdown
+
+EXAMPLES
+  evalblink run benchmarks/classification.yaml
+  evalblink run benchmarks/classification.yaml -v
+"""
+
+_COMPARE_DESCRIPTION = "Diff two run records — quality and cost deltas, no API calls."
+
+_COMPARE_EPILOG = """\
+OUTPUT COLUMNS
+  Quality A / B   pass-rate % per run
+  Quality Δ       ↑ / ↓ / stable (threshold: 5 pp)
+  Cost A / B      total cost per combo (models + judge)
+  Cost Δ          cost change
+  Notes           a_only / b_only when a combo is missing from one run
+
+--detailed also shows per-combo case transitions and a global summary:
+  regressed   pass → fail
+  improved    fail → pass
+  new_error   scored → None  (pipeline error, not counted as a regression)
+  recovered   None → scored
+
+EXAMPLES
+  evalblink compare results/run_a.json results/run_b.json
+  evalblink compare results/run_a.json results/run_b.json --detailed
+"""
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(prog="evalblink", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="evalblink",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_p = subparsers.add_parser("run", help="run a benchmark config")
-    run_p.add_argument(
-        "config", nargs="?", default=DEFAULT_CONFIG, help="path to a benchmark YAML"
+    run_p = subparsers.add_parser(
+        "run",
+        help="run a benchmark config against all model × prompt combinations",
+        description=_RUN_DESCRIPTION,
+        epilog=_RUN_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     run_p.add_argument(
-        "-v", "--verbose", action="store_true", help="print per-test-case detail"
+        "config",
+        nargs="?",
+        default=DEFAULT_CONFIG,
+        help=(f"path to a benchmark YAML (default: {DEFAULT_CONFIG})"),
+    )
+    run_p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print per-test-case detail (response, score, status) during the run",
     )
     run_p.set_defaults(func=cmd_run)
 
     compare_p = subparsers.add_parser(
-        "compare", help="diff two run records (quality + cost)"
+        "compare",
+        help="diff two run records — quality and cost deltas, no API calls",
+        description=_COMPARE_DESCRIPTION,
+        epilog=_COMPARE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    compare_p.add_argument("file_a", help="earlier run JSON (results/*.json)")
-    compare_p.add_argument("file_b", help="later run JSON (results/*.json)")
+    compare_p.add_argument(
+        "file_a",
+        metavar="FILE_A",
+        help="baseline run JSON (the earlier / reference run)",
+    )
+    compare_p.add_argument(
+        "file_b",
+        metavar="FILE_B",
+        help="candidate run JSON (the run being evaluated)",
+    )
     compare_p.add_argument(
         "-d",
         "--detailed",
         action="store_true",
-        help="drill into per-test-case changes and a global summary",
+        help=(
+            "drill into per-test-case transitions and show a global summary "
+            "(worst-regressed cases, per-tag net change)"
+        ),
     )
     compare_p.set_defaults(func=cmd_compare)
 

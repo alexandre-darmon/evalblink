@@ -5,7 +5,11 @@
       "Bash(pytest *)",
       "Bash(ruff check *)",
       "Bash(ruff format *)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "Bash(git -C /Users/alex/git/evalblink rm -r --cached evalblink.egg-info/)",
+      "Bash(evalblink --help)",
+      "Bash(evalblink run *)",
+      "Bash(evalblink compare *)"
     ]
   }
 }
