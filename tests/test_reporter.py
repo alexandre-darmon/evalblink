@@ -85,6 +85,7 @@ def test_write_embeds_insights_in_json_and_markdown(tmp_path, monkeypatch):
     assert out["passed"] is False
 
     data = json.loads(open(out["json"]).read())
+    assert data["schema_version"] == 1
     insights = data["insights"]
     assert insights["best_quality"]["model"] == "m/cheap"
     assert insights["warnings"] == ["edge_case"]

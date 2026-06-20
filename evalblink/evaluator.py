@@ -36,6 +36,31 @@ def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
 
 
+def _vendor(model):
+    """The provider prefix of an OpenRouter model id (text before the first '/')."""
+    return model.split("/", 1)[0].strip().lower() if model else ""
+
+
+def judge_vendor_warning(judge_model, models):
+    """Warn when the judge shares a vendor with any candidate it grades.
+
+    Self-preference bias: a judge tends to over-score responses from its own
+    vendor (README: 10-25% magnitude). Returns a one-line warning naming the
+    overlapping candidates, or ``None`` when there is no judge or no overlap.
+    """
+    judge_vendor = _vendor(judge_model)
+    if not judge_vendor:
+        return None
+    overlap = [m for m in (models or []) if _vendor(m) == judge_vendor]
+    if not overlap:
+        return None
+    return (
+        f"⚠️  Self-preference risk: judge '{judge_model}' shares vendor "
+        f"'{judge_vendor}' with candidate(s): {', '.join(overlap)}. "
+        "Judge scores for these may be inflated."
+    )
+
+
 def evaluate_llm_judge(
     client, evaluation_params, candidate_response, task, criteria, reference=None
 ):

@@ -18,9 +18,13 @@ pip install -r requirements.txt          # or use the existing .venv/
 export OPENROUTER_API_KEY=...             # or put it in .env (loaded via python-dotenv)
 
 # Run a benchmark (this IS the CLI — there is no `evalblink` console script)
-python -m evalblink.main benchmarks/classification.yaml
-python -m evalblink.main                 # defaults to benchmarks/exact_match_classification.yaml
-python -m evalblink.main benchmarks/classification.yaml -v   # verbose: per-test-case detail
+python -m evalblink.main run benchmarks/classification.yaml
+python -m evalblink.main run             # defaults to benchmarks/exact_match_classification.yaml
+python -m evalblink.main run benchmarks/classification.yaml -v   # verbose: per-test-case detail
+
+# Compare two finished runs (quality + cost deltas; offline, no API calls)
+python -m evalblink.main compare results/<run_a>.json results/<run_b>.json
+python -m evalblink.main compare results/<run_a>.json results/<run_b>.json --detailed  # per-test-case changes + global summary
 
 # Tests
 pytest -q
@@ -36,12 +40,13 @@ Tests live in `tests/` and run offline (a fake `httpx.Client`, no API key). Beyo
 
 A run flows through one linear pipeline; module boundaries are deliberate, not incidental:
 
-- **`main.py`** — thin entrypoint: `load_dotenv()` → `load_config(yaml)` → `runner.run(config, verbose)` → `reporter.write(...)`. Uses `argparse` (positional config path, `-v/--verbose`); `load_config` exits with a clear message on missing/invalid YAML.
+- **`main.py`** — `argparse` subcommand dispatcher (`load_dotenv()` then `args.func`). `run <config> [-v]` → `runner.run` → `reporter.write` → CI gate `sys.exit(0|1)`; `compare <a.json> <b.json>` → `compare.load_record` ×2 → `compare.diff` → `reporter.render_comparison`. `load_config` exits with a clear message on missing/invalid YAML.
 - **`runner.py`** — owns the single `httpx.Client` and the `model × prompt × test_case` triple loop. Renders templates, calls OpenRouter for each candidate, routes the response to the right evaluator, accumulates per-prompt token/cost totals. Sequential. Rate-limits with `time.sleep(5)` only on non-cached calls. Per-case detail prints are gated behind `verbose`.
 - **`openrouter.py`** — the *single API choke point*. Every network call (candidate responses AND the LLM judge) goes through `openrouter_request`. It lives in its own leaf module specifically to avoid a `runner ↔ evaluator` import cycle. Responsibilities: build the request, consult the SHA256 cache, **retry transient failures** (`RETRYABLE_CODES = {408,429,502,503,504}` + local `httpx.TimeoutException`, `MAX_RETRIES` attempts, exponential backoff), raise `RuntimeError` on non-transient API errors or null content.
 - **`evaluator.py`** — three scorers: `exact_match`, `weighted_match`, `evaluate_llm_judge`, plus `_extract_json` (strips markdown code fences before parsing). Pure scoring; `evaluate_llm_judge` makes an API call but receives the `httpx.Client` as a parameter (never creates one) so it stays free of any runner dependency. Judge failures (API error, malformed JSON) return a result with `score=None` and a `status` flag — a pipeline failure is distinguished from a real score of 0. `weighted_match` returns `0.0` on unparseable candidate output (a task failure, not a pipeline error).
 - **`cache.py`** — SHA256 file cache under `.evalblink_cache/<key>.json`. The cache key is the full request payload (model, messages, temperature, max_tokens). `temperature: 0` + cache = reproducible runs.
-- **`reporter.py`** — all output (terminal Rich table, JSON, Markdown to `results/`). Formats only; makes no decisions. `write` is the single entry point; filenames are slugified.
+- **`reporter.py`** — all output (terminal Rich table, JSON, Markdown to `results/`). Formats only; makes no decisions. `write` is the single entry point for a run; `render_comparison` formats the `compare` delta table. Filenames are slugified. JSON records carry a `schema_version` (from `schemas.SCHEMA_VERSION`).
+- **`compare.py`** — pure run-to-run diff (no I/O beyond `load_record`). `diff` keys combos by `(model, prompt_id)`, emits per-combo quality/cost deltas (latency is not tracked, so it's out of scope), and tolerates schema-version mismatch rather than hard-blocking. `detailed_diff` (the `compare --detailed` mode) drills into per-test-case transitions — `case_diff` classifies each case as regressed/improved/new_error/recovered/etc. (reusing the `match_score is None` = pipeline-error rule, never a real fail) and aggregates a global summary (change counts, worst-regressed cases across combos, per-tag net). Mirrors the `analysis`/`reporter` decisions-vs-formatting split.
 - **`schemas.py`** — `TypedDict`s documenting the config and result dict shapes. **Documentation/typing only, zero runtime effect** — the pipeline passes plain dicts straight from the YAML.
 
 ## Benchmark config schema (as actually consumed)
