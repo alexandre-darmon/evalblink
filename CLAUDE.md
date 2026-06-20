@@ -14,17 +14,17 @@ evalblink benchmarks LLM prompts × models on your own data, routing every call 
 
 ```bash
 # Setup
-pip install -r requirements.txt          # or use the existing .venv/
+pip install -e ".[dev]"                  # installs evalblink + dev tools (ruff, pytest)
 export OPENROUTER_API_KEY=...             # or put it in .env (loaded via python-dotenv)
 
-# Run a benchmark (this IS the CLI — there is no `evalblink` console script)
-python -m evalblink.main run benchmarks/classification.yaml
-python -m evalblink.main run             # defaults to benchmarks/exact_match_classification.yaml
-python -m evalblink.main run benchmarks/classification.yaml -v   # verbose: per-test-case detail
+# Run a benchmark
+evalblink run benchmarks/classification.yaml
+evalblink run                            # defaults to benchmarks/exact_match_classification.yaml
+evalblink run benchmarks/classification.yaml -v   # verbose: per-test-case detail
 
 # Compare two finished runs (quality + cost deltas; offline, no API calls)
-python -m evalblink.main compare results/<run_a>.json results/<run_b>.json
-python -m evalblink.main compare results/<run_a>.json results/<run_b>.json --detailed  # per-test-case changes + global summary
+evalblink compare results/<run_a>.json results/<run_b>.json
+evalblink compare results/<run_a>.json results/<run_b>.json --detailed  # per-test-case changes + global summary
 
 # Tests
 pytest -q

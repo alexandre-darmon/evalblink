@@ -1,0 +1,2 @@
+[console_scripts]
+evalblink = evalblink.main:main
