@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from typing import Optional
 
 CACHE_DIR = ".evalblink_cache"
@@ -43,10 +44,24 @@ def get(key: str) -> Optional[dict]:
 
 
 def set(key: str, value: dict) -> None:
-    """Persist ``value`` under ``key``."""
+    """Persist ``value`` under ``key`` atomically.
+
+    Write to a unique temp file then ``os.replace`` (atomic on POSIX) so a
+    concurrent reader never sees a half-written file — the runner now populates
+    the cache from multiple worker threads, and two threads can race on the same
+    key when distinct test cases render to an identical request.
+    """
     os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(_path(key), "w") as f:
-        json.dump(value, f, indent=4)
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, indent=4)
+        os.replace(tmp, _path(key))
+    except BaseException:
+        # Never leave a stray temp file behind on failure.
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def stats() -> dict:
