@@ -10,6 +10,7 @@ cycle.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Optional
@@ -19,11 +20,25 @@ import httpx
 from . import cache
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# Live model catalog (pricing + context) is cached on disk for a day so a
+# dry-run estimate doesn't refetch it on every invocation (PRD §15).
+MODELS_CACHE_PATH = os.path.join(cache.CACHE_DIR, "models.json")
+MODELS_TTL_SECONDS = 24 * 3600
 
 # OpenRouter / upstream errors that are worth retrying: gateway timeouts and
 # transient overload from the provider it routes to, plus rate limiting.
 RETRYABLE_CODES = {408, 429, 502, 503, 504}
 MAX_RETRIES = 4
+
+
+def _auth_headers() -> dict:
+    """Standard OpenRouter request headers with the Bearer key from the env."""
+    return {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
+        "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
+    }
 
 
 def openrouter_request(
@@ -59,12 +74,7 @@ def openrouter_request(
         if cached is not None:
             return {**cached, "from_cache": True}
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
-        "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
-    }
+    headers = _auth_headers()
 
     # OpenRouter free/slow models 504 intermittently; retry transient failures so a
     # single flaky call doesn't abort the whole benchmark run. Backoff: 1s, 2s, 4s.
@@ -114,3 +124,48 @@ def openrouter_request(
     if use_cache:
         cache.set(key, request_result)
     return {**request_result, "from_cache": False}
+
+
+def _parse_models(data: list) -> dict:
+    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length}}``."""
+    models = {}
+    for entry in data:
+        model_id = entry.get("id")
+        if not model_id:
+            continue
+        pricing = entry.get("pricing") or {}
+        models[model_id] = {
+            # Prices are per-token USD strings ("0" for free models).
+            "prompt": float(pricing.get("prompt", 0) or 0),
+            "completion": float(pricing.get("completion", 0) or 0),
+            "context_length": entry.get("context_length"),
+        }
+    return models
+
+
+def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
+    """Return ``{model_id: {prompt, completion, context_length}}`` from OpenRouter.
+
+    The catalog is cached on disk for ``MODELS_TTL_SECONDS`` (24h); a fresh cache
+    is served without a network call. Prices are per-token USD floats.
+    """
+    if use_cache and os.path.exists(MODELS_CACHE_PATH):
+        with open(MODELS_CACHE_PATH) as f:
+            cached = json.load(f)
+        if time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS:
+            return cached["models"]
+
+    response = client.get(
+        url=OPENROUTER_MODELS_URL, headers=_auth_headers(), timeout=30
+    )
+    full = response.json()
+    if "error" in full:
+        raise RuntimeError(
+            f"OpenRouter error {full['error']['code']}: {full['error']['message']}"
+        )
+    models = _parse_models(full.get("data", []))
+
+    os.makedirs(cache.CACHE_DIR, exist_ok=True)
+    with open(MODELS_CACHE_PATH, "w") as f:
+        json.dump({"fetched_at": time.time(), "models": models}, f, indent=4)
+    return models

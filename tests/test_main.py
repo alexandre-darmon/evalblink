@@ -88,6 +88,49 @@ def test_no_subcommand_errors(monkeypatch):
     assert exc.value.code == 2
 
 
+# --- run --dry-run --------------------------------------------------------
+
+
+def test_dry_run_estimates_without_running(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {"m": {}})
+    monkeypatch.setattr(
+        main.estimate, "estimate", lambda config, meta: {"over_budget": False}
+    )
+    monkeypatch.setattr(
+        main.reporter, "render_estimate", lambda est: seen.update(rendered=est)
+    )
+    # The benchmark itself must never run in a dry-run.
+    monkeypatch.setattr(
+        main.runner,
+        "run",
+        lambda *a, **k: pytest.fail("runner.run called during --dry-run"),
+    )
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "run", "bench.yaml", "--dry-run"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    assert seen["rendered"] == {"over_budget": False}
+
+
+def test_dry_run_exits_1_when_over_budget(monkeypatch):
+    monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {})
+    monkeypatch.setattr(
+        main.estimate, "estimate", lambda config, meta: {"over_budget": True}
+    )
+    monkeypatch.setattr(main.reporter, "render_estimate", lambda est: None)
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "run", "bench.yaml", "--dry-run"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1
+
+
 # ── cache stats ──────────────────────────────────────────────────────────────
 
 

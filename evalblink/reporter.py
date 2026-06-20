@@ -247,6 +247,57 @@ def write_from_record(record: dict) -> str:
     return md_path
 
 
+def render_estimate(est, console: Console | None = None) -> None:
+    """Print the ``--dry-run`` cost estimate table, totals, and budget verdict.
+
+    Formatting only — ``estimate.estimate`` produced the numbers. Costs are
+    upper-bound estimates (completion tokens assume the configured max_tokens).
+    """
+    console = console or Console()
+    table = Table(title="DRY RUN — estimated cost (no API calls)")
+    table.add_column("Model")
+    table.add_column("Prompt")
+    table.add_column("Est prompt tok", justify="right")
+    table.add_column("Est completion tok", justify="right")
+    table.add_column("Est cost", justify="right")
+    for row in est["rows"]:
+        combo_cost = row["est_cost"] + row["est_judge_cost"]
+        table.add_row(
+            row["model"],
+            row["prompt_id"],
+            str(row["est_prompt_tokens"]),
+            str(row["est_completion_tokens"]),
+            f"${combo_cost:.6f}",
+        )
+    console.print(table)
+
+    if est["judge_cost"]:
+        console.print(f"Judge cost (llm_judge cases): ${est['judge_cost']:.6f}")
+    console.print(f"[bold]Estimated total cost: ${est['total_cost']:.6f}[/bold]")
+    console.print(
+        "[dim]Estimate only — completion tokens assume max_tokens; "
+        "prompt tokens ≈ chars/4.[/dim]"
+    )
+
+    for model in est["missing_pricing"]:
+        console.print(
+            f"[yellow]⚠️  No pricing for '{model}' — excluded from the estimate.[/yellow]"
+        )
+
+    budget = est["max_cost_usd"]
+    if budget is not None:
+        if est["over_budget"]:
+            console.print(
+                f"[red]✗ Over budget: estimate ${est['total_cost']:.6f} exceeds "
+                f"max_cost_usd ${budget:.6f}.[/red]"
+            )
+        else:
+            console.print(
+                f"[green]✓ Within budget: estimate ${est['total_cost']:.6f} ≤ "
+                f"max_cost_usd ${budget:.6f}.[/green]"
+            )
+
+
 # Cost deltas within this many dollars read as "stable" rather than a ±.
 _COST_EPS = 1e-6
 

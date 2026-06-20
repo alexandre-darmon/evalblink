@@ -83,4 +83,7 @@ def client_factory():
                 raise body
             return _FakeResponse(body)
 
+        # ``fetch_models`` issues a GET; reuse the same queued-body mechanism.
+        get = post
+
     return FakeClient
