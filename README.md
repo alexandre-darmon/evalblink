@@ -1,6 +1,6 @@
 # evalblink
 
-**Benchmark LLM prompts × models — quality, cost, and latency in one command.**
+**Benchmark LLM prompts × models — quality and cost in one command.**
 
 Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. No JavaScript, no vendor lock-in.
 
@@ -29,30 +29,32 @@ Most LLM eval tools are built for JavaScript developers, locked to a single vend
 Define a benchmark in YAML. Run one command. Get a results matrix, a versioned Markdown report, and a local cache so prompt iteration costs almost nothing.
 
 ```
-evalblink — Customer Support Classification
-Run: 2026-06-10 14:32 | ID: a3f2b1 | Cache hits: 102/300
+                  Customer Support Classification — 2026-06-10_14-32_customer-support-classification
+ Model                         Prompt  Score   Pass/Scored  Errors  Prompt tok  Completion tok  Cost
+ anthropic/claude-sonnet-4-6   v2      96.0%   48/50        0       5120        344             $0.000471
+ anthropic/claude-sonnet-4-6   v1      94.0%   47/50        0       4200        312             $0.000445
+ openai/gpt-4o-mini            v2      91.0%   45/50        0       5010        321             $0.000071
+ openai/gpt-4o-mini            v1      87.0%   43/50        1       4100        298             $0.000063
+ mistralai/mistral-small-3     v2      88.0%   44/50        0       4900        308             $0.000042
+ mistralai/mistral-small-3     v1      82.0%   41/50        2       4000        289             $0.000038
 
-              | gpt-4o-mini         | claude-sonnet       | mistral-small-3
-prompt_v1     | 87% · $0.06 · 1.1s  | 94% · $0.45 · 2.3s  | 82% · $0.04 · 0.9s
-prompt_v2     | 91% · $0.07 · 1.2s  | 96% · $0.47 · 2.1s  | 88% · $0.04 · 0.8s
-              | +4% ↑               | +2% ↑               | +6% ↑
-
-Judge cost (llm_judge cases): $0.18
-Total run cost: $1.05
-
-QUALITY BY TAG — best combination (claude-sonnet / prompt_v2)
-tag             | cases | quality
-----------------|-------|--------
-easy            | 30    | 99%
-medium          | 15    | 91%
-edge_case       | 5     | 60%   ⚠️
-billing         | 12    | 63%   ⚠️
-non_english     | 4     | 50%   ⚠️
+       QUALITY BY TAG — best combo (anthropic/claude-sonnet-4-6 / v2)
+ Tag          Cases  Quality  Errors
+ easy         30     99%      0
+ medium       15     91%      0
+ edge_case    5      60%      0     ⚠️
+ billing      12     63%      1     ⚠️
+ non_english  4      50%      0     ⚠️
 
 RECOMMENDATION
-Best quality : claude-sonnet / prompt_v2 (96% overall)
-Best value   : mistral-small-3 / prompt_v2 (88% quality · $0.04/run)
-⚠️  Warning   : edge_case quality is 60% — review before shipping.
+Best quality : anthropic/claude-sonnet-4-6 / v2 (96.0%)
+Best value   : mistralai/mistral-small-3 / v2 (88.0% · $0.0000/run)
+⚠️  Warning  : edge_case quality is below 70%.
+⚠️  Warning  : billing quality is below 70%.
+⚠️  Warning  : non_english quality is below 70%.
+
+Results saved to results/2026-06-10_14-32_customer-support-classification.json
+Markdown report saved to results/2026-06-10_14-32_customer-support-classification.md
 ```
 
 ---
@@ -81,8 +83,8 @@ export OPENROUTER_API_KEY=your_key_here
 ```yaml
 # benchmarks/classification.yaml
 name: "Customer Support Classification"
-quality_threshold: 85
-max_cost_usd: 10.00
+quality_threshold: 85        # CI/CD gate: exits 1 if best combo score < 85%
+max_cost_usd: 10.00          # --dry-run exits 1 if estimated cost exceeds this
 
 models:
   - "openai/gpt-4o-mini"
@@ -97,18 +99,24 @@ evaluation:
   judge_model: "openai/gpt-4o"
   judge_threshold: 0.70
 
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70      # per-case pass threshold for llm_judge (default: 0.70)
+
 prompts:
   - id: "v1"
     template: >
-      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
+      Classify this conversation.
+      Return only the label — no JSON, no explanation.
       Choose from: {{ labels }}.
       Conversation: {{ conversation }}
 
   - id: "v2"
     system: "You are an expert classification assistant."
     template: >
-      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
-      Choose exactly one label from: {{ labels }}.
+      Classify the following conversation.
+      Return exactly one label — no JSON, no explanation.
+      Choose from: {{ labels }}.
       Conversation: {{ conversation }}
 
 variables:
@@ -161,26 +169,28 @@ evalblink run benchmarks/classification.yaml
 |---|---|---|
 | `name` | ✅ | Benchmark display name |
 | `models` | ✅ | List of OpenRouter model IDs |
-| `quality_threshold` | — | Minimum quality % for CI/CD pass (`evalblink run` exits 1 if best score is below this) |
-| `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this |
+| `quality_threshold` | — | Top-level CI/CD gate: `evalblink run` exits 1 if the best combo score falls below this percentage (0–100) |
+| `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
+| `inference.max_tokens` | — | Max output tokens per call (default: `4096`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
-| `evaluation.judge_threshold` | — | Minimum judge score to count as pass (default: `0.70`) |
-| `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-dimension pass threshold |
-| `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions |
+| `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
+| `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
+| `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions (`name`, `weight`, optional `tolerance`) |
 | `prompts[].id` | ✅ | Unique identifier used in reports |
 | `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces) |
 | `prompts[].system` | — | Optional system message (also a Jinja2 template) |
 | `variables` | — | Global key/value pairs injected into all templates |
 | `test_cases[].id` | ✅ | Unique identifier |
 | `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
-| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth |
+| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth (string for `exact_match`, JSON array for `weighted_match`) |
 | `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
 | `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
 | `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
 | `test_cases[].tags` | — | Free-form strings for per-category result breakdown |
+
+> **Threshold naming:** `quality_threshold` at the top level is the CI/CD gate (0–100 %). `evaluation.quality_threshold` is the per-case pass threshold for `weighted_match` (0–1). `evaluation.judge_threshold` is the per-case pass threshold for `llm_judge` (0–1, default 0.70). These are three distinct concepts.
 
 ---
 
@@ -226,34 +236,78 @@ evalblink cache clear --yes
 
 ### Exact match
 
-For classification and structured output tasks.
+For classification tasks where the model must return a specific label. Prompt the model explicitly to return no JSON and no extra text.
 
 ```yaml
+# Full example: benchmarks/exact_match_classification.yaml
+name: "Customer Support Classification"
+inference:
+  temperature: 0
+  max_tokens: 50
+
+models:
+  - "google/gemma-4-31b-it:free"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation.
+      Return only a valid label from the list. No JSON. No explanation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
 test_cases:
-  - id: "tc_001"
+  - id: "conv_001"
+    variables:
+      conversation: "I cannot find my last order."
+    expected_output: "order_issue"
     evaluation: "exact_match"
-    expected_output: "billing"
+    tags: ["order", "easy"]
 ```
 
-evalblink strips markdown fences and parses the response as JSON, then compares against `expected_output`. If the model returns malformed JSON, the case is scored 0 and logged under "Parse Errors".
+Case-insensitive string comparison after whitespace trimming. The model must return just the label text. If it wraps the output in JSON or adds any explanation, the match fails.
 
 ### LLM-as-judge
 
 For open-ended tasks (summarization, generation, explanation) where no single correct output exists.
 
 ```yaml
+# Full example: benchmarks/llm_as_judge.yaml
+name: "Customer Support Quality"
+inference:
+  temperature: 0
+  max_tokens: 1024
+
 evaluation:
   judge_model: "openai/gpt-4o"
   judge_threshold: 0.70        # optional, default 0.70
 
+models:
+  - "google/gemma-4-31b-it:free"
+
+prompts:
+  - id: "v1"
+    system: >
+      You are Paul, a senior customer support agent.
+      Acknowledge the customer's emotion before proposing a solution.
+      Keep your response under 100 words.
+    template: "Customer message: {{ customer_message }}"
+
 test_cases:
-  - id: "tc_002"
+  - id: "conv_001"
+    variables:
+      customer_message: "This is the third time my order arrived damaged."
     evaluation: "llm_judge"
-    criteria: "Should identify a billing inquiry. Must return a single label."
-    reference: "billing"       # optional — grounds the judge in a known-good answer
+    criteria: >
+      The assistant must acknowledge frustration before proposing resolution.
+      A concrete next step must be proposed (refund, replacement, escalation).
+    tags: ["frustration", "edge_case"]
 ```
 
-The judge reasons step by step before committing to a score — this chain-of-thought-first approach (G-Eval, MT-Bench) produces more calibrated results than scoring first and justifying retroactively. Judge reasoning surfaces in the report so you know *why* a response scored poorly.
+The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. Judge reasoning surfaces in the report so you know *why* a response scored poorly.
 
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)
@@ -262,27 +316,90 @@ The judge reasons step by step before committing to a score — this chain-of-th
 
 ### Weighted match
 
-For structured outputs with multiple scored dimensions (e.g. JSON arrays with `use_case`, `percent`, and `order` fields).
+For structured outputs where the model must return a JSON array of `{"use_case", "percent", "order"}` objects. Three dimensions are scored independently and combined by weight.
 
 ```yaml
+# Full example: benchmarks/weighted_match_config.yaml
+name: "ChatGPT Usage Classification"
+inference:
+  temperature: 0
+  max_tokens: 4096
+
 evaluation:
-  quality_threshold: 0.80
+  quality_threshold: 0.80      # per-case pass threshold (0–1)
   variables:
-    - name: use_case
-      weight: 0.5
-    - name: percent
-      weight: 0.3
-      tolerance: 0.05
-    - name: order
-      weight: 0.2
+    - name: "use_case"
+      weight: 0.50             # F1 score on matched labels
+    - name: "percent"
+      weight: 0.25
+      tolerance: 0.20          # percent within ±0.20 of expected counts as match
+    - name: "order"
+      weight: 0.25             # exact order match
+
+models:
+  - "poolside/laguna-xs.2:free"
+
+variables:
+  use_cases: "Translate content, Analyze content, Summarize content, Write content, Other"
+
+prompts:
+  - id: "v1"
+    system: >
+      Analyse this conversation and identify the use cases present.
+      Return only valid JSON, no explanation, no markdown.
+      Format: [{"use_case": "<label>", "percent": <float>, "order": <int>}]
+      Percentages must sum to 1.0.
+      Available use cases: {{ use_cases }}.
+    template: "Conversation: {{ conversation }}"
 
 test_cases:
-  - id: "tc_003"
+  - id: "conv_001"
+    variables:
+      conversation: |
+        User: Summarize this document.
+        User: Translate it to English.
+    expected_output:
+      - use_case: "Summarize content"
+        percent: 0.70
+        order: 1
+      - use_case: "Translate content"
+        percent: 0.30
+        order: 2
     evaluation: "weighted_match"
-    expected_output: [{"use_case": "billing", "percent": 0.60, "order": 1}]
+    tags: ["summarize", "translate"]
 ```
 
 Returns a weighted score 0.0–1.0. Cases scoring below `evaluation.quality_threshold` are counted as failures.
+
+**Scoring per dimension:**
+- `use_case`: F1 score (precision × recall) on matched labels
+- `percent`: fraction of expected items within `tolerance` of the expected value
+- `order`: fraction of expected items with an exact order match
+
+---
+
+## Cost Estimation
+
+Before running a benchmark, estimate the cost without making any API calls:
+
+```bash
+evalblink run benchmarks/classification.yaml --dry-run
+```
+
+```
+DRY RUN — estimated cost (no API calls)
+ Model                         Prompt  Est prompt tok  Est completion tok  Est cost
+ anthropic/claude-sonnet-4-6   v1      3842            200                 $0.001230
+ anthropic/claude-sonnet-4-6   v2      4610            200                 $0.001476
+ openai/gpt-4o-mini            v1      3842            200                 $0.000210
+ openai/gpt-4o-mini            v2      4610            200                 $0.000252
+
+Estimated total cost: $0.003168
+Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
+✓ Within budget: estimate $0.003168 ≤ max_cost_usd $10.000000.
+```
+
+Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
 ---
 
@@ -357,9 +474,13 @@ evalblink compare results/run_001.json results/run_002.json
 ```
 
 ```
-                   Quality A  Quality B  Quality Δ  Cost A     Cost B     Cost Δ
-gpt-4o / v1        87.0%      91.0%      ↑          $0.0006    $0.0007    +$0.0001
-gpt-4o / v2        82.0%      88.0%      ↑          $0.0004    $0.0004    stable
+ DELTA: 2026-06-08_run_001 → 2026-06-10_run_002
+ Model                         Prompt  Quality Δ    Cost Δ       Notes
+ anthropic/claude-sonnet-4-6   v1      +4.0% ↑      +0.0002 ↑
+ anthropic/claude-sonnet-4-6   v2      stable        stable
+ openai/gpt-4o-mini            v1      +6.0% ↑      stable
+
+Verdict: B improved on A across 2/3 combos.
 ```
 
 ---
@@ -400,7 +521,6 @@ evalblink ships four practitioner guides covering the full evaluation workflow. 
 | Cost tracking incl. judge | ✅ | ❌ |
 | Run comparison (delta) | ✅ | ❌ |
 | Markdown report per run | ✅ | ❌ |
-| JSON-enforced output | ✅ | ❌ |
 | Self-preference detection | ✅ warning at run start | ❌ |
 | Verbosity + style bias guardrails | ✅ baked into judge prompt | ❌ |
 | Reference-guided grading | ✅ optional `reference` field | ❌ |
