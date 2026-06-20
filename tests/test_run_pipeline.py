@@ -2,14 +2,15 @@
 
 No network — the two API seams (``runner.openrouter_request`` for candidate calls,
 ``evaluator.openrouter_request`` for judge calls) are monkeypatched with queued
-canned bodies, and ``runner.time.sleep`` is silenced. Each test runs a config
-through ``runner.run`` and, where relevant, on through ``analysis.summarize`` and
-``reporter.write`` to prove the report is correct for that mode.
+canned bodies. Each test runs a config through ``runner.run`` and, where relevant,
+on through ``analysis.summarize`` and ``reporter.write`` to prove the report is
+correct for that mode.
 """
 
 from __future__ import annotations
 
 import json
+import time
 
 from evalblink import analysis, evaluator, reporter, runner
 
@@ -32,7 +33,6 @@ def _run(monkeypatch, config, candidate_responses, judge_responses=None):
         return next(cand)
 
     monkeypatch.setattr(runner, "openrouter_request", fake_candidate)
-    monkeypatch.setattr(runner.time, "sleep", lambda *a, **k: None)
 
     if judge_responses is not None:
         jud = iter(judge_responses)
@@ -297,3 +297,66 @@ def test_mixed_modes_report_renders(tmp_path, monkeypatch):
     assert data["insights"] is not None
     evals = {tc["evaluation"] for r in data["results"] for tc in r["test_cases"]}
     assert evals == {"exact_match", "weighted_match", "llm_judge"}
+
+
+# --- concurrency ----------------------------------------------------------
+
+
+def test_concurrency_preserves_config_order(monkeypatch):
+    """With workers > 1 and completion order reversed, results stay in config order.
+
+    Responses are keyed by rendered prompt (not a shared iterator) so the mock is
+    thread-safe, and each worker sleeps inversely to its index so earlier-submitted
+    cases finish *last* — proving the runner collects by submission order, not by
+    whichever future resolves first.
+    """
+    n = 6
+    cases = [
+        {
+            "id": f"c{i}",
+            "variables": {"q": str(i)},
+            "expected_output": "ok",
+            "evaluation": "exact_match",
+        }
+        for i in range(n)
+    ]
+    config = _config(cases)
+    config["concurrency"] = 3
+
+    # Even-indexed cases match ("ok"); odd ones miss. Keyed by rendered prompt.
+    responses = {str(i): _resp("ok" if i % 2 == 0 else "miss") for i in range(n)}
+
+    def fake_candidate(client, prompt, model, *a, **k):
+        # Earlier index → longer sleep → finishes later. Reverses completion order.
+        time.sleep((n - int(prompt)) * 0.01)
+        return responses[prompt]
+
+    monkeypatch.setattr(runner, "openrouter_request", fake_candidate)
+
+    [combo] = runner.run(config)[0]
+    ids = [tc["id"] for tc in combo["test_cases"]]
+    assert ids == [f"c{i}" for i in range(n)]  # submission/config order preserved
+    assert combo["success"] == 3  # i = 0, 2, 4 matched "ok"
+    assert combo["scored"] == n
+
+
+def test_concurrency_clamped_to_minimum_one(monkeypatch):
+    """A non-positive ``concurrency`` is clamped to 1 instead of crashing.
+
+    ``ThreadPoolExecutor(max_workers=0)`` raises ``ValueError`` — the runner must
+    guard against a config that sets ``concurrency: 0``.
+    """
+    config = _config(
+        [
+            {
+                "id": "c1",
+                "variables": {"q": "x"},
+                "expected_output": "ok",
+                "evaluation": "exact_match",
+            }
+        ]
+    )
+    config["concurrency"] = 0
+    [combo] = _run(monkeypatch, config, [_resp("ok")])
+    assert combo["success"] == 1
+    assert combo["scored"] == 1

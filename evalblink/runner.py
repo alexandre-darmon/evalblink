@@ -9,7 +9,6 @@ decisions — that's the reporter's job.
 from __future__ import annotations
 
 import datetime
-import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -62,9 +61,6 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
         rendered_system,
         use_cache=use_cache,
     )
-    # Rate-limit only real API calls — cache hits need no backoff.
-    if not response.get("from_cache"):
-        time.sleep(5)
     if verbose:
         print(f"Raw response: {response['response']}")
 
@@ -105,8 +101,6 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
             test_case["criteria"],
             test_case.get("reference"),
         )
-        if not judge_result.get("from_cache"):
-            time.sleep(5)
         match_result = judge_result["match_result"]
         match_score = judge_result["score_normalized"]
         # Carry the judge's status so a pipeline failure (score=None)
@@ -161,12 +155,15 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
 def run(config, verbose=False, use_cache=True):
     """Run every model × prompt × test case concurrently and return ``(results, timestamp)``.
 
-    ``concurrency`` (config key, default 5) controls the ``ThreadPoolExecutor``
-    worker count. ``verbose`` enables per-test-case detail; by default only
+    ``concurrency`` (config key, default 5, clamped to >= 1) controls the
+    ``ThreadPoolExecutor`` worker count. Transient API failures (429/5xx) are
+    handled by the retry/backoff in ``openrouter_request`` rather than a fixed
+    per-call sleep. ``verbose`` enables per-test-case detail; by default only
     per-combo summaries are printed after all cases complete.
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    concurrency = config.get("concurrency", 5)
+    # Clamp to a sane minimum — ThreadPoolExecutor raises on max_workers < 1.
+    concurrency = max(1, config.get("concurrency", 5))
 
     warning = judge_vendor_warning(
         config.get("evaluation", {}).get("judge_model"), config["models"]
