@@ -94,7 +94,7 @@ def cmd_history(args):
             errors = insights.get("errors", 0)
             records.append(
                 {
-                    "run_id": data.get("run_id", fname),
+                    "run_id": data.get("run_id", os.path.basename(fname)),
                     "benchmark": data.get("benchmark", "—"),
                     "timestamp": data.get("timestamp", "—"),
                     "best_score": best_score,
@@ -102,7 +102,7 @@ def cmd_history(args):
                     "errors": errors,
                 }
             )
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, OSError):
             continue
 
     if not records:
@@ -144,6 +144,10 @@ def cmd_cache_stats(args):
 
 def cmd_cache_clear(args):
     """Delete all cached responses."""
+    if not args.yes:
+        s = cache.stats()
+        print(f"{s['entries']} cache entries. Pass --yes to confirm deletion.")
+        sys.exit(0)
     removed = cache.clear()
     print(f"Cleared {removed} cache entries.")
     sys.exit(0)
@@ -294,6 +298,12 @@ def build_parser():
     stats_p.set_defaults(func=cmd_cache_stats)
 
     clear_p = cache_sub.add_parser("clear", help="delete all cached responses")
+    clear_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="confirm deletion without prompting",
+    )
     clear_p.set_defaults(func=cmd_cache_clear)
 
     return parser
