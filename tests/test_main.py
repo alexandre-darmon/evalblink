@@ -317,6 +317,33 @@ def test_models_no_match_exits_gracefully(monkeypatch, capsys):
     assert "No models match" in capsys.readouterr().out
 
 
+def test_models_no_cache_flag(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        main.openrouter,
+        "fetch_models",
+        lambda client, use_cache=True: seen.update(use_cache=use_cache) or _FAKE_MODELS,
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "models", "--no-cache"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+    assert seen["use_cache"] is False
+
+
+def test_models_invalid_min_context_exits_cleanly(monkeypatch):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(
+        main.sys, "argv", ["evalblink", "models", "--min-context", "notanumber"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    # sys.exit(msg) stores the message as the exit code when it's a string.
+    assert "Invalid" in str(exc.value.code)
+
+
 def test_parse_context_helper():
     assert main._parse_context("100k") == 100_000
     assert main._parse_context("8K") == 8_000

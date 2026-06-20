@@ -150,7 +150,12 @@ def _parse_context(value: str) -> int:
         return int(float(v[:-1]) * 1_000)
     if v.endswith("m"):
         return int(float(v[:-1]) * 1_000_000)
-    return int(v)
+    try:
+        return int(v)
+    except ValueError:
+        sys.exit(
+            f"Invalid --min-context value: {value!r}. Use e.g. '100k' or '131072'."
+        )
 
 
 def cmd_models(args):
