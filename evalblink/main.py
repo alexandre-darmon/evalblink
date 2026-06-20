@@ -638,8 +638,8 @@ def build_parser():
         help="lint a benchmark YAML — errors and warnings, no API calls",
     )
     validate_p.add_argument(
-        "-b",
-        "--benchmark",
+        "benchmark",
+        nargs="?",
         default=DEFAULT_CONFIG,
         metavar="FILE",
         help=f"path to a benchmark YAML (default: {DEFAULT_CONFIG})",

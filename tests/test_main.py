@@ -122,6 +122,7 @@ def test_dry_run_estimates_without_running(monkeypatch):
 
 def test_dry_run_exits_1_when_over_budget(monkeypatch):
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {})
     monkeypatch.setattr(
         main.estimate, "estimate", lambda config, meta: {"over_budget": True}
@@ -565,7 +566,7 @@ def test_validate_subcommand_clean_config(monkeypatch, tmp_path):
     }
     f = tmp_path / "ok.yaml"
     f.write_text(yaml.dump(cfg))
-    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", "-b", str(f)])
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", str(f)])
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 0
@@ -575,7 +576,7 @@ def test_validate_subcommand_errors_exit_1(monkeypatch, tmp_path):
     cfg = {"name": "T", "models": ["m"], "prompts": [{"id": "v1", "template": "Hi"}]}
     f = tmp_path / "bad.yaml"
     f.write_text(yaml.dump(cfg))
-    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", "-b", str(f)])
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", str(f)])
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 1

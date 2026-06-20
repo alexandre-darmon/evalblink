@@ -117,6 +117,21 @@ def test_unknown_evaluation_type_is_an_error():
     assert any("magic_scorer" in e for e in errors)
 
 
+def test_weighted_match_without_evaluation_variables_is_an_error():
+    cfg = {
+        "name": "Test",
+        "models": ["openai/gpt-4o"],
+        "inference": {"temperature": 0, "max_tokens": 100},
+        "evaluation": {"quality_threshold": 0.5},
+        "prompts": [{"id": "v1", "template": "Hi"}],
+        "test_cases": [
+            {"id": "tc_001", "evaluation": "weighted_match", "expected_output": []}
+        ],
+    }
+    errors, _ = validate(cfg)
+    assert any("evaluation.variables" in e for e in errors)
+
+
 # --- structural errors ---
 
 
