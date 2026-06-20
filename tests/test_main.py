@@ -64,6 +64,7 @@ def test_run_subcommand_dispatches(monkeypatch):
     calls = {}
 
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X", "config_path": p})
+    monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(
         main.runner, "run", lambda config, verbose=False, use_cache=True: ([], "ts")
     )
@@ -96,6 +97,7 @@ def test_no_subcommand_errors(monkeypatch):
 def test_dry_run_estimates_without_running(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {"m": {}})
     monkeypatch.setattr(
         main.estimate, "estimate", lambda config, meta: {"over_budget": False}
@@ -120,6 +122,7 @@ def test_dry_run_estimates_without_running(monkeypatch):
 
 def test_dry_run_exits_1_when_over_budget(monkeypatch):
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {})
     monkeypatch.setattr(
         main.estimate, "estimate", lambda config, meta: {"over_budget": True}
@@ -547,3 +550,33 @@ def test_jinja_vars_helper():
     assert main._jinja_vars("Hello {{ name }}, score {{ score }}") == ["name", "score"]
     assert main._jinja_vars("{{ x }} and {{ x }} again") == ["x"]
     assert main._jinja_vars("no variables here") == []
+
+
+# ── validate ──────────────────────────────────────────────────────────────────
+
+
+def test_validate_subcommand_clean_config(monkeypatch, tmp_path):
+    cfg = {
+        "name": "T",
+        "models": ["m"],
+        "prompts": [{"id": "v1", "template": "Hi"}],
+        "test_cases": [
+            {"id": "tc1", "evaluation": "exact_match", "expected_output": "y"}
+        ],
+    }
+    f = tmp_path / "ok.yaml"
+    f.write_text(yaml.dump(cfg))
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", str(f)])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+
+def test_validate_subcommand_errors_exit_1(monkeypatch, tmp_path):
+    cfg = {"name": "T", "models": ["m"], "prompts": [{"id": "v1", "template": "Hi"}]}
+    f = tmp_path / "bad.yaml"
+    f.write_text(yaml.dump(cfg))
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "validate", str(f)])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1

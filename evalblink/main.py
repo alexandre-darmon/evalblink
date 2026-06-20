@@ -16,6 +16,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from evalblink import cache, compare, estimate, openrouter, reporter, runner
+from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
 RESULTS_DIR = "results"
@@ -35,6 +36,18 @@ def load_config(filepath):
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
     config = load_config(args.config)
+
+    errors, warnings = _validate_config(config)
+    console = Console()
+    for w in warnings:
+        console.print(f"[yellow]⚠[/yellow]  {w}")
+    if errors:
+        for e in errors:
+            console.print(f"[red]✗[/red]  {e}")
+        console.print(
+            f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]"
+        )
+        sys.exit(1)
 
     if args.dry_run:
         # Estimate cost from the pricing catalog only — no completion calls.
@@ -426,6 +439,24 @@ def cmd_init(args):
     sys.exit(0)
 
 
+def cmd_validate(args):
+    """Lint a benchmark YAML — errors and warnings, no API calls."""
+    config = load_config(args.benchmark)
+    errors, warnings = _validate_config(config)
+    console = Console()
+    for w in warnings:
+        console.print(f"[yellow]⚠[/yellow]  {w}")
+    for e in errors:
+        console.print(f"[red]✗[/red]  {e}")
+    if errors:
+        console.print(
+            f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]"
+        )
+        sys.exit(1)
+    console.print("[green]✓[/green]  Config is valid")
+    sys.exit(0)
+
+
 _RUN_DESCRIPTION = "Run a benchmark YAML against all model × prompt combinations."
 
 _RUN_EPILOG = """\
@@ -600,6 +631,20 @@ def build_parser():
         help="bypass the 24h model catalog cache and fetch fresh data",
     )
     models_p.set_defaults(func=cmd_models)
+
+    # --- validate ---
+    validate_p = subparsers.add_parser(
+        "validate",
+        help="lint a benchmark YAML — errors and warnings, no API calls",
+    )
+    validate_p.add_argument(
+        "benchmark",
+        nargs="?",
+        default=DEFAULT_CONFIG,
+        metavar="FILE",
+        help=f"path to a benchmark YAML (default: {DEFAULT_CONFIG})",
+    )
+    validate_p.set_defaults(func=cmd_validate)
 
     # --- cache ---
     cache_p = subparsers.add_parser(
