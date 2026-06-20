@@ -60,7 +60,7 @@ A run flows through one linear pipeline; module boundaries are deliberate, not i
 - **`reporter.py`** — all output (terminal Rich table, JSON, Markdown to `results/`). Formats only; makes no decisions. `write` is the single entry point for a run; `render_comparison` formats the `compare` delta table; `render_estimate` formats the `--dry-run` output. Filenames are slugified. JSON records carry a `schema_version` (from `schemas.SCHEMA_VERSION`).
 - **`compare.py`** — pure run-to-run diff (no I/O beyond `load_record`). `diff` keys combos by `(model, prompt_id)`, emits per-combo quality/cost deltas (latency is not tracked, so it's out of scope), and tolerates schema-version mismatch rather than hard-blocking. `detailed_diff` (the `compare --detailed` mode) drills into per-test-case transitions — `case_diff` classifies each case as regressed/improved/new_error/recovered/etc. (reusing the `match_score is None` = pipeline-error rule, never a real fail) and aggregates a global summary (change counts, worst-regressed cases across combos, per-tag net).
 - **`schemas.py`** — `TypedDict`s documenting the config and result dict shapes. **Documentation/typing only, zero runtime effect** — the pipeline passes plain dicts straight from the YAML. Runtime validation is `validator.py`'s job.
-
+https://github.com/alexandre-darmon/evalblink/pull/20/conflict?name=PRD.md&ancestor_oid=69184c80118ccdcd91a6ad106a8d1d1226ab5990&base_oid=697ec1fc3337dba731af3f1479d0179d2af241c5&head_oid=949d807782969ecc00d42075cbf12f0d598a4f93
 ## Benchmark config schema (as actually consumed)
 
 Configs live in `benchmarks/*.yaml`. The structure the code reads:

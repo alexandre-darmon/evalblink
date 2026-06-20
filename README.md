@@ -93,7 +93,11 @@ models:
 
 inference:
   temperature: 0
-  max_tokens: 50
+  max_tokens: 200
+
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70
 
 evaluation:
   judge_model: "openai/gpt-4o"
