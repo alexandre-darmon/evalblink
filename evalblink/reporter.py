@@ -226,6 +226,27 @@ def write(config, results, timestamp) -> dict:
     return {"json": json_path, "markdown": md_path, "passed": passed}
 
 
+def write_from_record(record: dict) -> str:
+    """Regenerate the Markdown report from a persisted JSON record.
+
+    The record must be the dict previously written by ``write()`` — it already
+    contains an ``insights`` key from ``analysis.summarize``. Old records that
+    predate the ``run_id`` field get a derived fallback so the filename is stable.
+    """
+    if "run_id" not in record:
+        record = {
+            **record,
+            "run_id": f"{record.get('timestamp', 'unknown')}_{_slugify(record.get('benchmark', 'run'))}",
+        }
+    md_path = _write_markdown(record)
+    console = Console()
+    _print_table(record, console)
+    if record.get("insights"):
+        _print_insights(record["insights"], console)
+    print(f"Markdown report saved to {md_path}")
+    return md_path
+
+
 # Cost deltas within this many dollars read as "stable" rather than a ±.
 _COST_EPS = 1e-6
 

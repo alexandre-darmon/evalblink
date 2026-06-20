@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 
 import yaml
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.table import Table
 
-from evalblink import compare, reporter, runner
+from evalblink import cache, compare, reporter, runner
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
+RESULTS_DIR = "results"
 
 
 def load_config(filepath):
@@ -27,7 +32,8 @@ def load_config(filepath):
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
     config = load_config(args.config)
-    results, timestamp = runner.run(config, verbose=args.verbose)
+    use_cache = not args.no_cache
+    results, timestamp = runner.run(config, verbose=args.verbose, use_cache=use_cache)
     result = reporter.write(config, results, timestamp)
 
     # Top-level CI gate (0-100 %); separate from the per-case scorer thresholds
@@ -57,6 +63,92 @@ def cmd_compare(args):
     sys.exit(0)
 
 
+def cmd_report(args):
+    """Regenerate the Markdown report from an existing JSON result file."""
+    try:
+        record = compare.load_record(args.file)
+    except FileNotFoundError as exc:
+        sys.exit(f"Run record not found: {exc.filename}")
+    reporter.write_from_record(record)
+    sys.exit(0)
+
+
+def cmd_history(args):
+    """List all past runs in the results/ directory."""
+    if not os.path.isdir(RESULTS_DIR):
+        print("No results directory found. Run a benchmark first.")
+        sys.exit(0)
+
+    records = []
+    for fname in os.listdir(RESULTS_DIR):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(RESULTS_DIR, fname)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            total_cost = sum(r.get("total_cost", 0) for r in data.get("results", []))
+            insights = data.get("insights") or {}
+            best = insights.get("best_quality", {})
+            best_score = best.get("score")
+            errors = insights.get("errors", 0)
+            records.append(
+                {
+                    "run_id": data.get("run_id", fname),
+                    "benchmark": data.get("benchmark", "—"),
+                    "timestamp": data.get("timestamp", "—"),
+                    "best_score": best_score,
+                    "total_cost": total_cost,
+                    "errors": errors,
+                }
+            )
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    if not records:
+        print("No run records found in results/.")
+        sys.exit(0)
+
+    records.sort(key=lambda r: r["timestamp"], reverse=True)
+
+    console = Console()
+    table = Table(title="Run History")
+    table.add_column("Run ID")
+    table.add_column("Benchmark")
+    table.add_column("Timestamp")
+    table.add_column("Best Score", justify="right")
+    table.add_column("Total Cost", justify="right")
+    table.add_column("Errors", justify="right")
+    for r in records:
+        score = "—" if r["best_score"] is None else f"{r['best_score']:.1f}%"
+        table.add_row(
+            r["run_id"],
+            r["benchmark"],
+            r["timestamp"],
+            score,
+            f"${r['total_cost']:.6f}",
+            str(r["errors"]) if r["errors"] else "—",
+        )
+    console.print(table)
+    sys.exit(0)
+
+
+def cmd_cache_stats(args):
+    """Print cache entry count and total size."""
+    s = cache.stats()
+    size_kb = s["size_bytes"] / 1024
+    print(f"Cache entries : {s['entries']}")
+    print(f"Cache size    : {size_kb:.1f} KB")
+    sys.exit(0)
+
+
+def cmd_cache_clear(args):
+    """Delete all cached responses."""
+    removed = cache.clear()
+    print(f"Cleared {removed} cache entries.")
+    sys.exit(0)
+
+
 _RUN_DESCRIPTION = "Run a benchmark YAML against all model × prompt combinations."
 
 _RUN_EPILOG = """\
@@ -76,12 +168,14 @@ YAML CONFIG KEYS
   test_cases[].evaluation       exact_match | llm_judge | weighted_match  (required)
   test_cases[].expected_output  required for exact_match
   test_cases[].criteria         required for llm_judge
+  test_cases[].reference        optional gold answer injected into the judge prompt
   test_cases[].variables        per-case variables
   test_cases[].tags             list of strings for per-category breakdown
 
 EXAMPLES
   evalblink run benchmarks/classification.yaml
   evalblink run benchmarks/classification.yaml -v
+  evalblink run benchmarks/classification.yaml --no-cache
 """
 
 _COMPARE_DESCRIPTION = "Diff two run records — quality and cost deltas, no API calls."
@@ -114,6 +208,7 @@ def build_parser():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # --- run ---
     run_p = subparsers.add_parser(
         "run",
         help="run a benchmark config against all model × prompt combinations",
@@ -133,8 +228,14 @@ def build_parser():
         action="store_true",
         help="print per-test-case detail (response, score, status) during the run",
     )
+    run_p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="bypass the local cache and force fresh API calls for all candidate requests",
+    )
     run_p.set_defaults(func=cmd_run)
 
+    # --- compare ---
     compare_p = subparsers.add_parser(
         "compare",
         help="diff two run records — quality and cost deltas, no API calls",
@@ -162,6 +263,38 @@ def build_parser():
         ),
     )
     compare_p.set_defaults(func=cmd_compare)
+
+    # --- report ---
+    report_p = subparsers.add_parser(
+        "report",
+        help="regenerate the Markdown report from an existing JSON result file",
+    )
+    report_p.add_argument(
+        "file",
+        metavar="FILE",
+        help="path to a result JSON file (from results/)",
+    )
+    report_p.set_defaults(func=cmd_report)
+
+    # --- history ---
+    history_p = subparsers.add_parser(
+        "history",
+        help="list all past runs in the results/ directory",
+    )
+    history_p.set_defaults(func=cmd_history)
+
+    # --- cache ---
+    cache_p = subparsers.add_parser(
+        "cache",
+        help="manage the local response cache",
+    )
+    cache_sub = cache_p.add_subparsers(dest="cache_command", required=True)
+
+    stats_p = cache_sub.add_parser("stats", help="show entry count and total size")
+    stats_p.set_defaults(func=cmd_cache_stats)
+
+    clear_p = cache_sub.add_parser("clear", help="delete all cached responses")
+    clear_p.set_defaults(func=cmd_cache_clear)
 
     return parser
 

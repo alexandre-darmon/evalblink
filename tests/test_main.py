@@ -60,7 +60,9 @@ def test_run_subcommand_dispatches(monkeypatch):
     calls = {}
 
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X", "config_path": p})
-    monkeypatch.setattr(main.runner, "run", lambda config, verbose=False: ([], "ts"))
+    monkeypatch.setattr(
+        main.runner, "run", lambda config, verbose=False, use_cache=True: ([], "ts")
+    )
 
     def fake_write(config, results, timestamp):
         calls["config"] = config

@@ -47,3 +47,22 @@ def set(key: str, value: dict) -> None:
     os.makedirs(CACHE_DIR, exist_ok=True)
     with open(_path(key), "w") as f:
         json.dump(value, f, indent=4)
+
+
+def stats() -> dict:
+    """Entry count and total size of the cache directory."""
+    if not os.path.isdir(CACHE_DIR):
+        return {"entries": 0, "size_bytes": 0}
+    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+    size = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in files)
+    return {"entries": len(files), "size_bytes": size}
+
+
+def clear() -> int:
+    """Delete all cached responses. Returns number of files removed."""
+    if not os.path.isdir(CACHE_DIR):
+        return 0
+    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+    for f in files:
+        os.remove(os.path.join(CACHE_DIR, f))
+    return len(files)
