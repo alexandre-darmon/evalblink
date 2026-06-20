@@ -143,6 +143,62 @@ def cmd_history(args):
     sys.exit(0)
 
 
+def _parse_context(value: str) -> int:
+    """Parse a context-length string like '100k', '8K', or '131072' to an int."""
+    v = str(value).strip().lower()
+    if v.endswith("k"):
+        return int(float(v[:-1]) * 1_000)
+    if v.endswith("m"):
+        return int(float(v[:-1]) * 1_000_000)
+    try:
+        return int(v)
+    except ValueError:
+        sys.exit(
+            f"Invalid --min-context value: {value!r}. Use e.g. '100k' or '131072'."
+        )
+
+
+def cmd_models(args):
+    """List available OpenRouter models and their pricing."""
+    with httpx.Client() as client:
+        models_meta = openrouter.fetch_models(client, use_cache=not args.no_cache)
+
+    rows = sorted(models_meta.items())
+
+    if args.provider:
+        prefix = args.provider.rstrip("/") + "/"
+        rows = [(k, v) for k, v in rows if k.startswith(prefix)]
+
+    if args.free:
+        rows = [(k, v) for k, v in rows if v["prompt"] == 0 and v["completion"] == 0]
+
+    if args.min_context:
+        min_tok = _parse_context(args.min_context)
+        rows = [(k, v) for k, v in rows if (v.get("context_length") or 0) >= min_tok]
+
+    if not rows:
+        print("No models match the given filters.")
+        sys.exit(0)
+
+    console = Console()
+    table = Table(title=f"OpenRouter models ({len(rows)} shown)")
+    table.add_column("Model ID")
+    table.add_column("Context", justify="right")
+    table.add_column("Prompt $/1M", justify="right")
+    table.add_column("Completion $/1M", justify="right")
+    for model_id, meta in rows:
+        ctx = meta.get("context_length")
+        ctx_str = f"{ctx // 1000}k" if ctx else "—"
+        table.add_row(
+            model_id,
+            ctx_str,
+            f"{meta['prompt'] * 1_000_000:.3f}" if meta["prompt"] else "free",
+            f"{meta['completion'] * 1_000_000:.3f}" if meta["completion"] else "free",
+        )
+    console.print(table)
+    sys.exit(0)
+
+
 def cmd_cache_stats(args):
     """Print cache entry count and total size."""
     s = cache.stats()
@@ -303,6 +359,33 @@ def build_parser():
         help="list all past runs in the results/ directory",
     )
     history_p.set_defaults(func=cmd_history)
+
+    # --- models ---
+    models_p = subparsers.add_parser(
+        "models",
+        help="list available OpenRouter models and their pricing",
+    )
+    models_p.add_argument(
+        "--provider",
+        metavar="NAME",
+        help="filter by provider prefix, e.g. 'anthropic'",
+    )
+    models_p.add_argument(
+        "--free",
+        action="store_true",
+        help="show only free (zero-cost) models",
+    )
+    models_p.add_argument(
+        "--min-context",
+        metavar="N",
+        help="minimum context window, e.g. '100k' or '131072'",
+    )
+    models_p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="bypass the 24h model catalog cache and fetch fresh data",
+    )
+    models_p.set_defaults(func=cmd_models)
 
     # --- cache ---
     cache_p = subparsers.add_parser(
