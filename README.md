@@ -81,34 +81,35 @@ export OPENROUTER_API_KEY=your_key_here
 ```yaml
 # benchmarks/classification.yaml
 name: "Customer Support Classification"
-description: "Compare 2 prompt versions across 3 models on 50 labelled conversations"
-judge_model: "anthropic/claude-sonnet-4-6"
-max_cost_usd: 10.00
 quality_threshold: 85
-cache: true
-
-inference:
-  temperature: 0
-  max_tokens: 50
-
-prompts:
-  - id: "v1"
-    template: >
-      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
-      Choose from: {labels}.
-      Conversation: {conversation}
-
-  - id: "v2"
-    system: "You are an expert classification assistant."
-    template: >
-      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
-      Choose exactly one label from: {labels}.
-      Conversation: {conversation}
+max_cost_usd: 10.00
 
 models:
   - "openai/gpt-4o-mini"
   - "anthropic/claude-sonnet-4-6"
   - "mistralai/mistral-small-3"
+
+inference:
+  temperature: 0
+  max_tokens: 200
+
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation. Return only valid JSON: {"label": "<label>"}.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
+  - id: "v2"
+    system: "You are an expert classification assistant."
+    template: >
+      Analyze the following conversation and return only valid JSON: {"label": "<label>"}.
+      Choose exactly one label from: {{ labels }}.
+      Conversation: {{ conversation }}
 
 variables:
   labels: "order_issue, billing, product_question, other"
@@ -159,25 +160,27 @@ evalblink run benchmarks/classification.yaml
 | Field | Required | Description |
 |---|---|---|
 | `name` | ✅ | Benchmark display name |
-| `description` | — | Optional context |
-| `judge_model` | ✅ if `llm_judge` used | OpenRouter model ID for evaluation |
-| `max_cost_usd` | — | Hard stop if total estimated cost (models + judge) exceeds limit |
-| `quality_threshold` | — | Minimum quality % for CI/CD pass |
-| `cache` | — | Enable local response caching (default: `true`) |
+| `models` | ✅ | List of OpenRouter model IDs |
+| `quality_threshold` | — | Minimum quality % for CI/CD pass (`evalblink run` exits 1 if best score is below this) |
+| `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
+| `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
+| `evaluation.judge_threshold` | — | Minimum judge score to count as pass (default: `0.70`) |
+| `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-dimension pass threshold |
+| `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions |
 | `prompts[].id` | ✅ | Unique identifier used in reports |
-| `prompts[].template` | ✅ | Prompt template using `{variable}` placeholders |
-| `prompts[].system` | — | Optional system message |
-| `models` | ✅ | List of OpenRouter model IDs |
-| `variables` | — | Global variables injected into all templates |
-| `test_cases[].evaluation` | ✅ | `exact_match` or `llm_judge` |
-| `test_cases[].expected_output` | ✅ if `exact_match` | Ground truth label |
-| `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric for the judge |
-| `test_cases[].reference` | — | Optional gold reference answer injected into the judge prompt |
+| `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces) |
+| `prompts[].system` | — | Optional system message (also a Jinja2 template) |
+| `variables` | — | Global key/value pairs injected into all templates |
+| `test_cases[].id` | ✅ | Unique identifier |
+| `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
+| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth |
+| `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
+| `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
+| `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
 | `test_cases[].tags` | — | Free-form strings for per-category result breakdown |
-| `test_cases[].human_score` | — | Integer 1–5 from a human reviewer, used by `evalblink calibrate` (V1.1) |
 
 ---
 
@@ -186,18 +189,16 @@ evalblink run benchmarks/classification.yaml
 ```bash
 # Run a benchmark
 evalblink run benchmarks/classification.yaml
+evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
+evalblink run benchmarks/classification.yaml --no-cache  # bypass local cache
+evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no API calls
 
-# Run all benchmarks in a folder
-evalblink run benchmarks/
+# Validate a config file (errors and warnings, no API calls)
+evalblink validate benchmarks/classification.yaml
 
-# Estimate cost without calling APIs (includes judge cost)
-evalblink run benchmarks/classification.yaml --dry-run
-
-# Force fresh API calls, bypass cache
-evalblink run benchmarks/classification.yaml --no-cache
-
-# Compare two runs (delta view)
+# Compare two runs (quality + cost deltas)
 evalblink compare results/run_001.json results/run_002.json
+evalblink compare results/run_001.json results/run_002.json --detailed  # per-case transitions
 
 # Regenerate a Markdown report from an existing JSON result
 evalblink report results/run_001.json
@@ -206,18 +207,17 @@ evalblink report results/run_001.json
 evalblink history
 
 # Browse available models from OpenRouter
-evalblink available-models
-evalblink available-models --provider mistral --min-context 100k
+evalblink models
+evalblink models --provider anthropic
+evalblink models --free
+evalblink models --min-context 100k
 
 # Scaffold a new benchmark interactively
 evalblink init
 
 # Cache management
 evalblink cache stats
-evalblink cache clear
-
-# [V1.1] Validate judge calibration against human-labelled cases
-evalblink calibrate results/run_001.json
+evalblink cache clear --yes
 ```
 
 ---
@@ -226,23 +226,31 @@ evalblink calibrate results/run_001.json
 
 ### Exact match
 
-For classification and structured output tasks. The model is instructed to return a specific JSON structure — evalblink parses it deterministically. No regex, no fragile text extraction.
+For classification and structured output tasks.
 
 ```yaml
-evaluation: "exact_match"
-expected_output: "billing"
+test_cases:
+  - id: "tc_001"
+    evaluation: "exact_match"
+    expected_output: "billing"
 ```
 
-If the model returns malformed JSON, the case is scored 0 and logged under "Parse Errors" — separate from correct/incorrect results.
+evalblink strips markdown fences and parses the response as JSON, then compares against `expected_output`. If the model returns malformed JSON, the case is scored 0 and logged under "Parse Errors".
 
 ### LLM-as-judge
 
 For open-ended tasks (summarization, generation, explanation) where no single correct output exists.
 
 ```yaml
-evaluation: "llm_judge"
-criteria: "Should identify a billing inquiry. Must return a single label."
-reference: "billing"   # optional — grounds the judge in a known-good answer
+evaluation:
+  judge_model: "openai/gpt-4o"
+  judge_threshold: 0.70        # optional, default 0.70
+
+test_cases:
+  - id: "tc_002"
+    evaluation: "llm_judge"
+    criteria: "Should identify a billing inquiry. Must return a single label."
+    reference: "billing"       # optional — grounds the judge in a known-good answer
 ```
 
 The judge reasons step by step before committing to a score — this chain-of-thought-first approach (G-Eval, MT-Bench) produces more calibrated results than scoring first and justifying retroactively. Judge reasoning surfaces in the report so you know *why* a response scored poorly.
@@ -250,7 +258,31 @@ The judge reasons step by step before committing to a score — this chain-of-th
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)
 - Judge prompt instructs against rewarding confident tone over accuracy (style bias)
-- If `judge_model` shares a vendor with any candidate model, evalblink warns you at run start (self-preference bias: 10–25% magnitude)
+- If `evaluation.judge_model` shares a vendor with any candidate model, evalblink warns you at run start (self-preference bias: 10–25% magnitude)
+
+### Weighted match
+
+For structured outputs with multiple scored dimensions (e.g. JSON arrays with `use_case`, `percent`, and `order` fields).
+
+```yaml
+evaluation:
+  quality_threshold: 0.80
+  variables:
+    - name: use_case
+      weight: 0.5
+    - name: percent
+      weight: 0.3
+      tolerance: 0.05
+    - name: order
+      weight: 0.2
+
+test_cases:
+  - id: "tc_003"
+    evaluation: "weighted_match"
+    expected_output: [{"use_case": "billing", "percent": 0.60, "order": 1}]
+```
+
+Returns a weighted score 0.0–1.0. Cases scoring below `evaluation.quality_threshold` are counted as failures.
 
 ---
 
@@ -296,8 +328,8 @@ Failed API calls are retried with exponential backoff (up to 3 attempts). After 
 Every API response is cached locally by SHA256 key including model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost.
 
 ```bash
-evalblink cache stats    # hit rate from last run
-evalblink cache clear    # wipe cache
+evalblink cache stats    # entry count and total size on disk
+evalblink cache clear    # wipe cache (--yes to skip confirmation)
 ```
 
 > Cache + `temperature: 0` = fully reproducible benchmarks. evalblink warns you if you enable cache with temperature > 0.
@@ -325,16 +357,9 @@ evalblink compare results/run_001.json results/run_002.json
 ```
 
 ```
-DELTA: run_001 → run_002
-
-Model             | Quality    | Cost       | Latency
-------------------|------------|------------|----------
-gpt-4o-mini       | +4% ↑      | +$0.01     | +0.1s
-claude-sonnet     | +2% ↑      | stable     | stable
-mistral-small-3   | +6% ↑      | stable     | -0.1s ↓
-
-Verdict: prompt_v2 improves quality across all models.
-         mistral-small-3: +6% quality at no additional cost.
+                   Quality A  Quality B  Quality Δ  Cost A     Cost B     Cost Δ
+gpt-4o / v1        87.0%      91.0%      ↑          $0.0006    $0.0007    +$0.0001
+gpt-4o / v2        82.0%      88.0%      ↑          $0.0004    $0.0004    stable
 ```
 
 ---
@@ -380,8 +405,8 @@ evalblink ships four practitioner guides covering the full evaluation workflow. 
 | Verbosity + style bias guardrails | ✅ baked into judge prompt | ❌ |
 | Reference-guided grading | ✅ optional `reference` field | ❌ |
 | Per-tag result breakdown | ✅ with ⚠️ auto-warnings | ❌ |
-| Judge calibration vs human labels | ✅ V1.1 `evalblink calibrate` | ❌ |
-| Pairwise judge mode | ✅ V1.1 with order-swap tie detection | ❌ |
+| Judge calibration vs human labels | V1.1 `evalblink calibrate` | ❌ |
+| Pairwise judge mode | V1.1 with order-swap tie detection | ❌ |
 | Caching | ✅ | ✅ |
 | Concurrency | ✅ | ✅ |
 | CI/CD | ✅ | ✅ |
@@ -393,17 +418,19 @@ evalblink ships four practitioner guides covering the full evaluation workflow. 
 ## Roadmap
 
 **V1 — CLI (current)**
-- Exact match + LLM-as-judge evaluation
+- Exact match + LLM-as-judge + weighted match evaluation
 - Per-tag result stratification with auto-warnings
 - Self-preference, verbosity, and style bias mitigations
 - Reference-guided grading
-- Concurrent API calls, exponential backoff retry
-- Local caching, schema versioning, run compare
+- Concurrent API calls (`ThreadPoolExecutor`), exponential backoff retry
+- Local caching, schema versioning, run compare (`--detailed` per-case transitions)
+- `evalblink validate` — static config validation, no API calls
+- `evalblink init` — interactive YAML scaffolding
+- `evalblink models` — live OpenRouter model catalog with filtering
 - `/docs/skills/` methodology guides
 
 **V1.1**
 - `evalblink calibrate` — validate judge scores against human labels (Pearson + Cohen's Kappa)
-- `evalblink init` — interactive YAML scaffolding with correct tag distribution
 - Pairwise judge mode with double-pass order-swap tie detection
 
 **V2**
