@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 
 import pytest
+import yaml
 
 from evalblink import main
 
@@ -349,3 +351,199 @@ def test_parse_context_helper():
     assert main._parse_context("8K") == 8_000
     assert main._parse_context("1m") == 1_000_000
     assert main._parse_context("4096") == 4096
+
+
+# ── init ──────────────────────────────────────────────────────────────────────
+
+
+def _make_fake_prompt(answers: deque):
+    class FakePrompt:
+        @classmethod
+        def ask(cls, question, **kwargs):
+            return answers.popleft()
+
+    return FakePrompt
+
+
+def _make_fake_confirm(answers: deque):
+    class FakeConfirm:
+        @classmethod
+        def ask(cls, question, **kwargs):
+            return answers.popleft()
+
+    return FakeConfirm
+
+
+def test_init_exact_match_creates_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "init"])
+
+    prompt_answers = deque(
+        [
+            "My Test",  # name
+            "exact_match",  # mode
+            "anthropic/claude-3-haiku",  # model 1
+            "",  # blank → stop
+            "Classify: {{ text }}",  # template
+            "",  # system (skip)
+            "p",  # 'text' is per-case
+            "0",  # temperature
+            "100",  # max_tokens
+            "tc_001",  # test case id
+            "some text here",  # {{ text }}
+            "positive",  # expected_output
+            "",  # tags (skip)
+            "",  # quality threshold (skip)
+            str(tmp_path / "my-test.yaml"),  # output path
+        ]
+    )
+    confirm_answers = deque([False])  # "Add another test case?" → No
+
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(prompt_answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(confirm_answers))
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+    out_file = tmp_path / "my-test.yaml"
+    assert out_file.exists()
+    config = yaml.safe_load(out_file.read_text())
+    assert config["name"] == "My Test"
+    assert config["models"] == ["anthropic/claude-3-haiku"]
+    assert config["prompts"][0]["template"] == "Classify: {{ text }}"
+    assert config["test_cases"][0]["expected_output"] == "positive"
+    assert config["test_cases"][0]["evaluation"] == "exact_match"
+
+
+def test_init_llm_judge_creates_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "init"])
+
+    prompt_answers = deque(
+        [
+            "LLM Judge Test",  # name
+            "llm_judge",  # mode
+            "openai/gpt-4o",  # model
+            "",  # stop
+            "Summarize: {{ text }}",  # template
+            "",  # system (skip)
+            "p",  # 'text' is per-case
+            "openai/gpt-4o",  # judge_model
+            "0.70",  # judge_threshold
+            "0",  # temperature
+            "1024",  # max_tokens
+            "tc_001",  # test case id
+            "A mountain scene",  # {{ text }}
+            "Must be concise and accurate",  # criteria
+            "",  # tags (skip)
+            "",  # quality threshold (skip)
+            str(tmp_path / "llm-judge-test.yaml"),  # output path
+        ]
+    )
+    confirm_answers = deque([False])
+
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(prompt_answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(confirm_answers))
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+    config = yaml.safe_load((tmp_path / "llm-judge-test.yaml").read_text())
+    assert config["evaluation"]["judge_model"] == "openai/gpt-4o"
+    assert config["test_cases"][0]["criteria"] == "Must be concise and accurate"
+    assert config["test_cases"][0]["evaluation"] == "llm_judge"
+
+
+def test_init_global_variable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "init"])
+
+    out_file = tmp_path / "global-var-test.yaml"
+    prompt_answers = deque(
+        [
+            "Global Var Test",  # name
+            "exact_match",  # mode
+            "anthropic/claude-3-haiku",  # model
+            "",  # stop
+            "Classify: {{ text }}. Labels: {{ labels }}",  # template (2 vars)
+            "",  # system (skip)
+            "p",  # 'text' is per-case
+            "g",  # 'labels' is global
+            "yes, no, maybe",  # value for labels
+            "0",  # temperature
+            "100",  # max_tokens
+            "tc_001",  # test case id
+            "some text",  # {{ text }}
+            "yes",  # expected_output
+            "",  # tags (skip)
+            "",  # quality threshold (skip)
+            str(out_file),  # output path
+        ]
+    )
+    confirm_answers = deque([False])
+
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(prompt_answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(confirm_answers))
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+    config = yaml.safe_load(out_file.read_text())
+    assert config["variables"] == {"labels": "yes, no, maybe"}
+    assert config["test_cases"][0]["variables"] == {"text": "some text"}
+
+
+def test_init_no_template_variables(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "init"])
+
+    out_file = tmp_path / "static.yaml"
+    prompt_answers = deque(
+        [
+            "Static Test",  # name
+            "exact_match",  # mode
+            "anthropic/claude-3-haiku",  # model
+            "",  # stop
+            "What is 2+2?",  # template — no {{ }} vars
+            "",  # system (skip)
+            # no variable-scoping prompts (all_vars is empty)
+            "0",  # temperature
+            "100",  # max_tokens
+            "tc_001",  # test case id
+            # no per-case variable prompts
+            "4",  # expected_output
+            "",  # tags (skip)
+            "",  # quality threshold (skip)
+            str(out_file),  # output path
+        ]
+    )
+    confirm_answers = deque([False])
+
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(prompt_answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(confirm_answers))
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 0
+
+    config = yaml.safe_load(out_file.read_text())
+    assert config["prompts"][0]["template"] == "What is 2+2?"
+    assert "variables" not in config
+    assert "variables" not in config["test_cases"][0]
+
+
+def test_jinja_vars_helper():
+    assert main._jinja_vars("Hello {{ name }}, score {{ score }}") == ["name", "score"]
+    assert main._jinja_vars("{{ x }} and {{ x }} again") == ["x"]
+    assert main._jinja_vars("no variables here") == []

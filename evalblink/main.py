@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 import httpx
 import yaml
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from evalblink import cache, compare, estimate, openrouter, reporter, runner
@@ -219,6 +221,211 @@ def cmd_cache_clear(args):
     sys.exit(0)
 
 
+def _jinja_vars(text: str) -> list[str]:
+    """Return unique variable names found in a Jinja2 template string."""
+    return list(dict.fromkeys(re.findall(r"\{\{\s*(\w+)\s*\}\}", text)))
+
+
+def cmd_init(args):
+    """Interactively scaffold a new benchmark YAML file."""
+    console = Console()
+    console.print("\n[bold]evalblink init[/bold] — scaffold a new benchmark\n")
+
+    # 1. Name
+    name = Prompt.ask("Benchmark name")
+
+    # 2. Evaluation mode
+    mode = Prompt.ask(
+        "Evaluation mode",
+        choices=["exact_match", "llm_judge"],
+        default="exact_match",
+    )
+
+    # 3. Models — fetch catalog for free-model suggestions
+    with httpx.Client() as client:
+        models_meta = openrouter.fetch_models(client, use_cache=True)
+
+    free_suggestions = [
+        (k, v)
+        for k, v in sorted(models_meta.items())
+        if v.get("prompt") == 0 and v.get("completion") == 0
+    ][:5]
+
+    console.print("\n[bold]Models[/bold]")
+    if free_suggestions:
+        console.print("Here are some free OpenRouter models:")
+        free_table = Table(show_header=True, header_style="bold", box=None)
+        free_table.add_column("Model ID", style="cyan")
+        free_table.add_column("Context", justify="right")
+        for mid, meta in free_suggestions:
+            ctx = meta.get("context_length")
+            free_table.add_row(mid, f"{ctx // 1000}k" if ctx else "—")
+        console.print(free_table)
+        console.print(
+            "Use an ID from above, or paste any OpenRouter model ID. "
+            "Tip: [bold]evalblink models --free[/bold] shows all free options.\n"
+        )
+
+    models: list = []
+    while True:
+        label = "Model ID" if not models else "Another model (blank to finish)"
+        m = Prompt.ask(f"  {label}", default="")
+        if not m:
+            if not models:
+                console.print("[yellow]At least one model is required.[/yellow]")
+                continue
+            break
+        models.append(m)
+
+    # 4. Prompt template
+    console.print(
+        "\n[bold]Prompt template[/bold] — use [cyan]{{ variable }}[/cyan] for dynamic values"
+    )
+    if mode == "exact_match":
+        console.print(
+            "  Example: [dim]Classify this text: {{ text }}. Choose from: {{ labels }}[/dim]"
+        )
+    else:
+        console.print("  Example: [dim]Write a concise summary of: {{ text }}[/dim]")
+    template = Prompt.ask("  Template")
+    system = Prompt.ask("  System message (optional)", default="")
+
+    # 5. Variable scoping
+    all_vars = _jinja_vars(template + " " + system)
+    global_vars: dict = {}
+    per_case_vars: list = []
+    if all_vars:
+        console.print(
+            f"\n[bold]Template variables:[/bold] {', '.join(all_vars)}\n"
+            "Mark each as [g]lobal (same for all test cases) or [p]er-case (varies)."
+        )
+        for var in all_vars:
+            choice = Prompt.ask(f"  '{var}'", choices=["g", "p"], default="p")
+            if choice == "g":
+                val = Prompt.ask(f"    Value for [cyan]{var}[/cyan]")
+                global_vars[var] = val
+            else:
+                per_case_vars.append(var)
+
+    # 6. Judge config (llm_judge only)
+    eval_config: dict = {}
+    if mode == "llm_judge":
+        console.print("\n[bold]Judge configuration[/bold]")
+        judge_model = Prompt.ask("  Judge model", default="openai/gpt-4o")
+        while True:
+            raw = Prompt.ask("  Judge threshold (0.0–1.0)", default="0.70")
+            try:
+                judge_threshold = float(raw)
+                break
+            except ValueError:
+                console.print("[yellow]Enter a decimal, e.g. 0.70[/yellow]")
+        eval_config = {"judge_model": judge_model, "judge_threshold": judge_threshold}
+
+    # 7. Inference
+    console.print("\n[bold]Inference settings[/bold]")
+    while True:
+        raw = Prompt.ask("  Temperature", default="0")
+        try:
+            temperature = float(raw)
+            break
+        except ValueError:
+            console.print("[yellow]Enter a number, e.g. 0 or 0.7[/yellow]")
+    max_tokens_default = "1024" if mode == "llm_judge" else "100"
+    while True:
+        raw = Prompt.ask("  Max tokens", default=max_tokens_default)
+        try:
+            max_tokens = int(raw)
+            break
+        except ValueError:
+            console.print("[yellow]Enter a whole number, e.g. 100 or 1024[/yellow]")
+
+    # 8. Test cases
+    test_cases: list = []
+    tc_num = 1
+    console.print("\n[bold]Test cases[/bold]")
+    while True:
+        console.print(f"\n  [bold]Test case {tc_num}[/bold]")
+        tc_id = Prompt.ask("    ID", default=f"tc_{tc_num:03d}")
+        tc: dict = {"id": tc_id, "evaluation": mode}
+
+        if per_case_vars:
+            tc_vars: dict = {}
+            for var in per_case_vars:
+                tc_vars[var] = Prompt.ask(f"    {{{{ {var} }}}}")
+            tc["variables"] = tc_vars
+
+        if mode == "exact_match":
+            tc["expected_output"] = Prompt.ask("    Expected output")
+        else:
+            tc["criteria"] = Prompt.ask("    Evaluation criteria")
+
+        tags_str = Prompt.ask("    Tags (comma-separated, optional)", default="")
+        if tags_str.strip():
+            tc["tags"] = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+        test_cases.append(tc)
+        tc_num += 1
+
+        if not Confirm.ask("\n  Add another test case?", default=False):
+            break
+
+    # 9. CI/CD gate
+    console.print("\n[bold]CI/CD quality gate[/bold]")
+    while True:
+        qt_str = Prompt.ask("  Quality threshold 0–100 (Enter to skip)", default="")
+        if not qt_str.strip():
+            quality_threshold = None
+            break
+        try:
+            quality_threshold = int(qt_str)
+            break
+        except ValueError:
+            console.print(
+                "[yellow]Enter a whole number 0–100, or press Enter to skip[/yellow]"
+            )
+
+    # 10. Output path
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    default_path = f"benchmarks/{slug}.yaml"
+    out_path = Prompt.ask("\nOutput file", default=default_path)
+
+    if os.path.exists(out_path):
+        if not Confirm.ask(f"  {out_path} already exists — overwrite?", default=False):
+            sys.exit(0)
+
+    # 11-12. Build config and write
+    config: dict = {"name": name}
+    if quality_threshold is not None:
+        config["quality_threshold"] = quality_threshold
+    config["models"] = models
+    config["inference"] = {"temperature": temperature, "max_tokens": max_tokens}
+    if eval_config:
+        config["evaluation"] = eval_config
+    if global_vars:
+        config["variables"] = global_vars
+    prompt_entry: dict = {"id": "v1", "template": template}
+    if system:
+        prompt_entry["system"] = system
+    config["prompts"] = [prompt_entry]
+    config["test_cases"] = test_cases
+
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(out_path, "w") as f:
+        yaml.dump(
+            config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+        )
+
+    # 13. Success
+    console.print(f"\n[green]✓ Created[/green] [bold]{out_path}[/bold]\n")
+    console.print("Next steps:")
+    console.print(f"  [bold]evalblink run {out_path}[/bold]      run the benchmark")
+    console.print(f"  [bold]evalblink run {out_path} -v[/bold]   verbose output")
+    console.print("  [bold]evalblink -h[/bold]                   full CLI help")
+    sys.exit(0)
+
+
 _RUN_DESCRIPTION = "Run a benchmark YAML against all model × prompt combinations."
 
 _RUN_EPILOG = """\
@@ -359,6 +566,13 @@ def build_parser():
         help="list all past runs in the results/ directory",
     )
     history_p.set_defaults(func=cmd_history)
+
+    # --- init ---
+    init_p = subparsers.add_parser(
+        "init",
+        help="interactively scaffold a new benchmark YAML",
+    )
+    init_p.set_defaults(func=cmd_init)
 
     # --- models ---
     models_p = subparsers.add_parser(
