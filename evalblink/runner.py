@@ -39,7 +39,7 @@ def render_template(prompt, variables, test_case):
     return rendered_prompt, rendered_system
 
 
-def run(config, verbose=False):
+def run(config, verbose=False, use_cache=True):
     """Run every model × prompt × test case and return ``(results, timestamp)``.
 
     ``verbose`` enables per-test-case detail (rendered prompts, raw responses);
@@ -81,6 +81,7 @@ def run(config, verbose=False):
                         config["inference"]["temperature"],
                         config["inference"]["max_tokens"],
                         rendered_system,
+                        use_cache=use_cache,
                     )
                     # Rate-limit only real API calls — cache hits need no backoff.
                     if not response.get("from_cache"):
@@ -123,7 +124,7 @@ def run(config, verbose=False):
                             response["response"],
                             rendered,  # full rendered prompt — no variable-name coupling
                             test_case["criteria"],
-                            test_case.get("expected_output"),  # reference (None here)
+                            test_case.get("reference"),
                         )
                         if not judge_result.get("from_cache"):
                             time.sleep(5)
