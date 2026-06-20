@@ -65,6 +65,11 @@ Best value   : mistral-small-3 / prompt_v2 (88% quality · $0.04/run)
 pip install evalblink
 ```
 
+> **Local development (from the repo root):**
+> ```bash
+> pip install -e ".[dev]"
+> ```
+
 **2. Set your API key**
 
 ```bash

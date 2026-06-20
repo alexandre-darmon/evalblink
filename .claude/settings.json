@@ -4,7 +4,8 @@
       "Bash(python -m evalblink.main *)",
       "Bash(pytest *)",
       "Bash(ruff check *)",
-      "Bash(ruff format *)"
+      "Bash(ruff format *)",
+      "Bash(gh pr *)"
     ]
   }
 }

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalblink"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28",
+    "Jinja2>=3.1",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+evalblink = "evalblink.main:main"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.15", "pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evalblink*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
