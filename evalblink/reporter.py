@@ -14,6 +14,8 @@ from rich.console import Console
 from rich.table import Table
 
 from . import analysis
+from .compare import CHANGED_TRANSITIONS
+from .schemas import SCHEMA_VERSION
 
 RESULTS_DIR = "results"
 
@@ -32,6 +34,7 @@ def _build_data(config, results, timestamp) -> dict:
     benchmark_name = config["name"]
     run_id = f"{timestamp}_{_slugify(benchmark_name)}"
     return {
+        "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "benchmark": config["name"],
         "judge_model": config.get("evaluation", {}).get("judge_model"),
@@ -221,3 +224,152 @@ def write(config, results, timestamp) -> dict:
     print(f"Markdown report saved to {md_path}")
     passed = True if summary is None else summary["passed"]
     return {"json": json_path, "markdown": md_path, "passed": passed}
+
+
+# Cost deltas within this many dollars read as "stable" rather than a ±.
+_COST_EPS = 1e-6
+
+
+def _fmt_score_delta(delta) -> str:
+    if delta is None:
+        return "—"
+    if abs(delta) < 0.05:
+        return "stable"
+    arrow = "↑" if delta > 0 else "↓"
+    return f"{delta:+.1f}% {arrow}"
+
+
+def _fmt_cost_delta(delta) -> str:
+    if delta is None:
+        return "—"
+    if abs(delta) < _COST_EPS:
+        return "stable"
+    arrow = "↑" if delta > 0 else "↓"
+    return f"{delta:+.4f} {arrow}"
+
+
+def render_comparison(diff_result, console: Console | None = None) -> None:
+    """Print the run-to-run delta table (quality + cost) for ``compare``.
+
+    Terminal-only — mirrors ``_print_table``'s columns and styling. ``a_only`` /
+    ``b_only`` combos are flagged in a Notes column; the verdict and any schema
+    version note follow.
+    """
+    console = console or Console()
+    table = Table(title=f"DELTA: {diff_result['run_a']} → {diff_result['run_b']}")
+    table.add_column("Model")
+    table.add_column("Prompt")
+    table.add_column("Quality Δ", justify="right")
+    table.add_column("Cost Δ", justify="right")
+    table.add_column("Notes")
+    note_for = {"a_only": "only in A", "b_only": "only in B", "both": ""}
+    for row in diff_result["rows"]:
+        delta = row["score_delta"]
+        style = None
+        if delta is not None:
+            if delta > 0.05:
+                style = "green"
+            elif delta < -0.05:
+                style = "red"
+        table.add_row(
+            row["model"],
+            row["prompt_id"],
+            _fmt_score_delta(delta),
+            _fmt_cost_delta(row["cost_delta"]),
+            note_for[row["present_in"]],
+            style=style,
+        )
+    console.print(table)
+    if diff_result.get("version_note"):
+        console.print(f"[dim]{diff_result['version_note']}[/dim]")
+    console.print(f"\n[bold]Verdict:[/bold] {diff_result['verdict']}")
+
+
+# How each case transition is labelled and coloured in the detailed view.
+_TRANSITION_STYLE = {
+    "regressed": ("regressed", "red"),
+    "improved": ("improved", "green"),
+    "new_error": ("new error", "yellow"),
+    "recovered": ("recovered", "green"),
+    "added": ("only in B", "dim"),
+    "removed": ("only in A", "dim"),
+}
+
+
+def _fmt_case_score_delta(delta) -> str:
+    if delta is None:
+        return "—"
+    if abs(delta) < 1e-9:
+        return "0"
+    arrow = "↑" if delta > 0 else "↓"
+    return f"{delta:+.2f} {arrow}"
+
+
+def _render_case_combo(combo, console: Console) -> None:
+    """One shared combo's changed test cases, with an unchanged-count footer."""
+    changed = [r for r in combo["rows"] if r["transition"] in CHANGED_TRANSITIONS]
+    label = f"{combo['model']} / {combo['prompt_id']}"
+    if not changed:
+        console.print(f"[dim]{label}: no case changes[/dim]")
+        return
+    table = Table(title=f"CASE CHANGES — {label}")
+    table.add_column("Test case")
+    table.add_column("Change")
+    table.add_column("A → B")
+    table.add_column("Score Δ", justify="right")
+    for row in changed:
+        text, style = _TRANSITION_STYLE[row["transition"]]
+        a_to_b = f"{row['a_state'] or '—'} → {row['b_state'] or '—'}"
+        table.add_row(
+            row["id"],
+            text,
+            a_to_b,
+            _fmt_case_score_delta(row["score_delta"]),
+            style=style,
+        )
+    console.print(table)
+    rollup = combo["rollup"]
+    unchanged = rollup["unchanged"] + rollup["still_error"]
+    console.print(f"[dim]{unchanged} unchanged[/dim]")
+
+
+def render_detailed(detailed_result, console: Console | None = None) -> None:
+    """Print the combo table, per-combo case changes, and the global summary."""
+    console = console or Console()
+    render_comparison(detailed_result, console)
+
+    console.print("\n[bold]── TEST-LEVEL CHANGES ──[/bold]")
+    if not detailed_result["case_combos"]:
+        console.print("[dim]No combos shared between the two runs.[/dim]")
+        return
+    for combo in detailed_result["case_combos"]:
+        console.print()
+        _render_case_combo(combo, console)
+
+    summary = detailed_result["summary"]
+    console.print("\n[bold]GLOBAL SUMMARY[/bold]")
+    console.print(
+        f"{summary['improved']} improved · {summary['regressed']} regressed · "
+        f"{summary['new_error']} new error(s) · {summary['recovered']} recovered"
+    )
+    console.print(f"[bold]Verdict:[/bold] {summary['verdict']}")
+
+    if summary["worst_regressed"]:
+        total_combos = len(detailed_result["case_combos"])
+        worst = Table(title="WORST-REGRESSED CASES")
+        worst.add_column("Test case")
+        worst.add_column("Regressed in", justify="right")
+        for item in summary["worst_regressed"]:
+            worst.add_row(item["id"], f"{item['count']}/{total_combos} combos")
+        console.print(worst)
+
+    if summary["tag_net"]:
+        tags = Table(title="PER-TAG CONCENTRATION (net case change)")
+        tags.add_column("Tag")
+        tags.add_column("Net", justify="right")
+        for item in summary["tag_net"]:
+            net = item["net"]
+            style = "red" if net < 0 else "green" if net > 0 else None
+            arrow = " ↓" if net < 0 else " ↑" if net > 0 else ""
+            tags.add_row(item["tag"], f"{net:+d}{arrow}", style=style)
+        console.print(tags)

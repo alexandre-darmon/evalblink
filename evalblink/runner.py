@@ -14,7 +14,12 @@ import time
 import httpx
 from jinja2 import Template
 
-from .evaluator import evaluate_llm_judge, exact_match, weighted_match
+from .evaluator import (
+    evaluate_llm_judge,
+    exact_match,
+    judge_vendor_warning,
+    weighted_match,
+)
 from .openrouter import openrouter_request
 
 
@@ -42,6 +47,12 @@ def run(config, verbose=False):
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     results = []
+
+    warning = judge_vendor_warning(
+        config.get("evaluation", {}).get("judge_model"), config["models"]
+    )
+    if warning:
+        print(f"{warning}\n")
 
     with httpx.Client() as client:
         for model in config["models"]:

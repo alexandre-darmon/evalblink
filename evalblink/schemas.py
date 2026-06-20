@@ -10,6 +10,12 @@ from __future__ import annotations
 
 from typing import Any, Optional, TypedDict
 
+# Bumped whenever the persisted run-record shape changes incompatibly. Written
+# into every record by ``reporter._build_data`` and read by ``compare`` so it can
+# degrade gracefully across versions instead of hard-blocking. Legacy records
+# written before this field existed are treated as version 0.
+SCHEMA_VERSION = 1
+
 
 # ----------------------------------------------------------------------------
 # Config side — the shape of a parsed benchmark YAML file.
@@ -105,3 +111,22 @@ class RunResult(TypedDict):
     total_completion_tokens: int
     total_cost: float
     test_cases: list[TestCaseResult]
+
+
+class RunRecord(TypedDict, total=False):
+    """The full record persisted to ``results/<run_id>.json`` by the reporter.
+
+    ``schema_version`` is what ``compare`` reads to stay backward-compatible; a
+    record missing the field predates it and is treated as version 0.
+    """
+
+    schema_version: int
+    run_id: str
+    benchmark: str
+    judge_model: Optional[str]
+    temperature: float
+    max_tokens: int
+    quality_threshold: Optional[float]
+    timestamp: str
+    results: list[RunResult]
+    insights: Optional[dict[str, Any]]

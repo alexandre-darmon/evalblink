@@ -10,6 +10,7 @@ from evalblink.evaluator import (
     _extract_json,
     evaluate_llm_judge,
     exact_match,
+    judge_vendor_warning,
     weighted_match,
 )
 
@@ -47,6 +48,29 @@ def test_extract_json_plain_and_fenced():
 def test_extract_json_raises_on_garbage():
     with pytest.raises(json.JSONDecodeError):
         _extract_json("not json at all")
+
+
+# --- judge_vendor_warning ---------------------------------------------------
+
+
+def test_vendor_warning_fires_on_shared_vendor():
+    msg = judge_vendor_warning(
+        "anthropic/claude-sonnet-4-6", ["anthropic/claude-haiku"]
+    )
+    assert msg is not None
+    assert "anthropic" in msg
+    assert "anthropic/claude-haiku" in msg
+
+
+def test_vendor_warning_silent_when_no_overlap():
+    assert (
+        judge_vendor_warning("anthropic/claude-sonnet", ["openai/gpt-4o", "m/x"])
+        is None
+    )
+
+
+def test_vendor_warning_silent_without_judge():
+    assert judge_vendor_warning(None, ["anthropic/claude"]) is None
 
 
 # --- weighted_match ---------------------------------------------------------
