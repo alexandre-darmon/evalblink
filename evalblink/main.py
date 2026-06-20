@@ -7,12 +7,13 @@ import json
 import os
 import sys
 
+import httpx
 import yaml
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from evalblink import cache, compare, reporter, runner
+from evalblink import cache, compare, estimate, openrouter, reporter, runner
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
 RESULTS_DIR = "results"
@@ -32,6 +33,15 @@ def load_config(filepath):
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
     config = load_config(args.config)
+
+    if args.dry_run:
+        # Estimate cost from the pricing catalog only — no completion calls.
+        with httpx.Client() as client:
+            models_meta = openrouter.fetch_models(client)
+        est = estimate.estimate(config, models_meta)
+        reporter.render_estimate(est)
+        sys.exit(1 if est["over_budget"] else 0)
+
     use_cache = not args.no_cache
     results, timestamp = runner.run(config, verbose=args.verbose, use_cache=use_cache)
     result = reporter.write(config, results, timestamp)
@@ -175,11 +185,13 @@ YAML CONFIG KEYS
   test_cases[].reference        optional gold answer injected into the judge prompt
   test_cases[].variables        per-case variables
   test_cases[].tags             list of strings for per-category breakdown
+  max_cost_usd                  --dry-run exits 1 if the estimate exceeds this
 
 EXAMPLES
   evalblink run benchmarks/classification.yaml
   evalblink run benchmarks/classification.yaml -v
   evalblink run benchmarks/classification.yaml --no-cache
+  evalblink run benchmarks/classification.yaml --dry-run
 """
 
 _COMPARE_DESCRIPTION = "Diff two run records — quality and cost deltas, no API calls."
@@ -236,6 +248,11 @@ def build_parser():
         "--no-cache",
         action="store_true",
         help="bypass the local cache and force fresh API calls for all candidate requests",
+    )
+    run_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="estimate cost from the OpenRouter pricing catalog without running the benchmark",
     )
     run_p.set_defaults(func=cmd_run)
 
