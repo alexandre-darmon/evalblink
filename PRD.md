@@ -956,6 +956,13 @@ The `/docs/skills/` folder makes the eval workflow explicit: design test set →
 
 `evalblink suggest` reads a benchmark result and proposes *hypotheses* — not a rewritten prompt, but diagnostic observations grounded in the results:
 
+`evalblink generate` — natural language → draft YAML, with the same self-preference warning logic reused, and an explicit "human review required" banner on output
+
+Expand the existing `evalblink suggest` mockup to show three distinct suggestion types (test case / model / prompt hypothesis) with the accept/reject framing made explicit in the CLI output
+
+A short subsection codifying the risk table above as a design principle — same spirit as your "why not a fully autonomous agent" paragraph, just applied to suggestion-type by suggestion-type
+
+
 ```
 evalblink suggest results/run_002.json
 
