@@ -44,7 +44,9 @@ def cmd_run(args):
     if errors:
         for e in errors:
             console.print(f"[red]✗[/red]  {e}")
-        console.print(f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]")
+        console.print(
+            f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]"
+        )
         sys.exit(1)
 
     if args.dry_run:

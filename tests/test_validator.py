@@ -42,6 +42,7 @@ def _llm_judge_config(**overrides) -> dict:
 
 # --- valid configs ---
 
+
 def test_valid_exact_match_returns_no_issues():
     errors, warnings = validate(_exact_match_config())
     assert errors == []
@@ -55,6 +56,7 @@ def test_valid_llm_judge_returns_no_issues():
 
 
 # --- required field errors ---
+
 
 def test_missing_name_is_an_error():
     cfg = _exact_match_config()
@@ -86,6 +88,7 @@ def test_missing_test_cases_is_an_error():
 
 # --- evaluation-mode-specific errors ---
 
+
 def test_exact_match_without_expected_output_is_an_error():
     cfg = _exact_match_config()
     del cfg["test_cases"][0]["expected_output"]
@@ -116,6 +119,7 @@ def test_unknown_evaluation_type_is_an_error():
 
 # --- structural errors ---
 
+
 def test_duplicate_test_case_ids_is_an_error():
     cfg = _exact_match_config()
     cfg["test_cases"].append(
@@ -140,6 +144,7 @@ def test_prompt_missing_template_is_an_error():
 
 
 # --- template variable coverage errors ---
+
 
 def test_template_var_missing_from_test_case_is_an_error():
     cfg = {
@@ -191,6 +196,7 @@ def test_template_var_provided_per_case_is_ok():
 
 # --- warnings ---
 
+
 def test_single_brace_in_template_is_a_warning():
     cfg = _exact_match_config()
     cfg["prompts"] = [{"id": "v1", "template": "Choose from: {labels}"}]
@@ -229,6 +235,7 @@ def test_long_expected_output_relative_to_max_tokens_is_a_warning():
 
 # --- type checks for list fields ---
 
+
 def test_non_list_prompts_is_an_error():
     cfg = _exact_match_config()
     cfg["prompts"] = "not a list"
@@ -252,14 +259,20 @@ def test_non_list_models_is_an_error():
 
 # --- falsy-value edge cases ---
 
+
 def test_quality_threshold_zero_is_not_an_error():
     cfg = {
         "name": "Test",
         "models": ["openai/gpt-4o"],
         "inference": {"temperature": 0, "max_tokens": 100},
-        "evaluation": {"quality_threshold": 0.0, "variables": [{"name": "use_case", "weight": 1.0}]},
+        "evaluation": {
+            "quality_threshold": 0.0,
+            "variables": [{"name": "use_case", "weight": 1.0}],
+        },
         "prompts": [{"id": "v1", "template": "Hi"}],
-        "test_cases": [{"id": "tc_001", "evaluation": "weighted_match", "expected_output": []}],
+        "test_cases": [
+            {"id": "tc_001", "evaluation": "weighted_match", "expected_output": []}
+        ],
     }
     errors, _ = validate(cfg)
     assert not any("quality_threshold" in e for e in errors)
@@ -273,6 +286,7 @@ def test_float_max_tokens_is_not_an_error():
 
 
 # --- jinja2 filter variable detection ---
+
 
 def test_filtered_template_variable_is_detected():
     cfg = {

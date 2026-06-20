@@ -559,7 +559,9 @@ def test_validate_subcommand_clean_config(monkeypatch, tmp_path):
         "name": "T",
         "models": ["m"],
         "prompts": [{"id": "v1", "template": "Hi"}],
-        "test_cases": [{"id": "tc1", "evaluation": "exact_match", "expected_output": "y"}],
+        "test_cases": [
+            {"id": "tc1", "evaluation": "exact_match", "expected_output": "y"}
+        ],
     }
     f = tmp_path / "ok.yaml"
     f.write_text(yaml.dump(cfg))

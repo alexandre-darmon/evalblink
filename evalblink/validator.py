@@ -42,7 +42,9 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         or isinstance(max_tokens, bool)
         or max_tokens <= 0
     ):
-        errors.append(f"inference.max_tokens must be a positive number (got {max_tokens!r})")
+        errors.append(
+            f"inference.max_tokens must be a positive number (got {max_tokens!r})"
+        )
         max_tokens = 100
 
     # Prompts
@@ -109,7 +111,9 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
 
         if eval_type == "exact_match":
             if tc.get("expected_output") is None:
-                errors.append(f"test_cases[{label}]: exact_match requires 'expected_output'")
+                errors.append(
+                    f"test_cases[{label}]: exact_match requires 'expected_output'"
+                )
             elif isinstance(tc["expected_output"], str):
                 if len(tc["expected_output"]) > max_tokens * 4:
                     warnings.append(
@@ -126,7 +130,9 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         if eval_type == "weighted_match":
             has_weighted = True
             if tc.get("expected_output") is None:
-                errors.append(f"test_cases[{label}]: weighted_match requires 'expected_output'")
+                errors.append(
+                    f"test_cases[{label}]: weighted_match requires 'expected_output'"
+                )
 
         # Template variable coverage
         tc_vars = set((tc.get("variables") or {}).keys())
