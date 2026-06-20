@@ -57,6 +57,8 @@ def _config(test_cases, evaluation=None, prompt=None):
         "prompts": [prompt or {"id": "v1", "template": "{{ q }}"}],
         "variables": {},
         "test_cases": test_cases,
+        # Force sequential execution so iterator-based mocks remain deterministic.
+        "concurrency": 1,
     }
     if evaluation is not None:
         config["evaluation"] = evaluation
