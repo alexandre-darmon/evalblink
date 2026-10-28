@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 from evalblink import analysis, evaluator, reporter, runner
 
@@ -319,7 +320,7 @@ def test_mixed_modes_report_renders(tmp_path, monkeypatch):
         judge_responses=[_resp(json.dumps({"score": 5}))],
     )
     out = reporter.write(config, results, "2026-01-01_000000")
-    data = json.loads(open(out["json"]).read())
+    data = json.loads(Path(out["json"]).read_text())
     # All three eval modes present and well-formed in the persisted insights.
     assert data["insights"] is not None
     evals = {tc["evaluation"] for r in data["results"] for tc in r["test_cases"]}

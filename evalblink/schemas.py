@@ -11,7 +11,7 @@ Pydantic's generic ValidationError cannot match for YAML config authoring.
 
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 # Bumped whenever the persisted run-record shape changes incompatibly. Written
 # into every record by ``reporter._build_data`` and read by ``compare`` so it can
@@ -91,9 +91,9 @@ class TestCaseResult(TypedDict):
     tags: list[str]
     evaluation: str
     match_result: bool
-    match_score: Optional[float]
+    match_score: float | None
     response: str
-    reasoning: Optional[str]
+    reasoning: str | None
     expected: Any
     prompt_tokens: int
     completion_tokens: int
@@ -126,10 +126,10 @@ class RunRecord(TypedDict, total=False):
     schema_version: int
     run_id: str
     benchmark: str
-    judge_model: Optional[str]
+    judge_model: str | None
     temperature: float
     max_tokens: int
-    quality_threshold: Optional[float]
+    quality_threshold: float | None
     timestamp: str
     results: list[RunResult]
-    insights: Optional[dict[str, Any]]
+    insights: dict[str, Any] | None

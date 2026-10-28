@@ -121,8 +121,10 @@ def _write_markdown(data) -> str:
             "## Recommendation",
             "",
             f"- **Best quality:** {_combo_label(top)} ({top['score']:.1f}%)",
-            f"- **Best value:** {_combo_label(value)} "
-            f"({value['score']:.1f}% · ${value['total_cost']:.4f})",
+            (
+                f"- **Best value:** {_combo_label(value)} "
+                f"({value['score']:.1f}% · ${value['total_cost']:.4f})"
+            ),
         ]
         for tag in summary["warnings"]:
             lines.append(f"- ⚠️ **Warning:** `{tag}` quality is below 70%.")

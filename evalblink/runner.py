@@ -83,11 +83,7 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
             response["response"],
             test_case["expected_output"],
         )
-        threshold = (
-            config["evaluation"]["quality_threshold"]
-            if "quality_threshold" in config["evaluation"]
-            else 0.70
-        )
+        threshold = config["evaluation"].get("quality_threshold", 0.7)
         match_result = match_score >= threshold
         if verbose:
             print(
@@ -180,23 +176,25 @@ def run(config, verbose=False, use_cache=True):
         for test_case in config["test_cases"]
     ]
 
-    with httpx.Client() as client:
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [
-                executor.submit(
-                    _run_case,
-                    client,
-                    model,
-                    prompt,
-                    config,
-                    test_case,
-                    verbose,
-                    use_cache,
-                )
-                for model, prompt, test_case in tasks
-            ]
-            # .result() blocks until each future completes; submission order is preserved.
-            case_results = [f.result() for f in futures]
+    with (
+        httpx.Client() as client,
+        ThreadPoolExecutor(max_workers=concurrency) as executor,
+    ):
+        futures = [
+            executor.submit(
+                _run_case,
+                client,
+                model,
+                prompt,
+                config,
+                test_case,
+                verbose,
+                use_cache,
+            )
+            for model, prompt, test_case in tasks
+        ]
+        # .result() blocks until each future completes; submission order is preserved.
+        case_results = [f.result() for f in futures]
 
     # Re-group by (model, prompt_id), maintaining config order within each group.
     groups: dict = defaultdict(list)
