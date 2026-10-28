@@ -7,3 +7,6 @@ results/*
 .ruff_cache/
 .evalblink_cache/
 .claude/settings.local.json
+.DS_Store
+dist/
+build/

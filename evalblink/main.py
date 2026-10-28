@@ -15,7 +15,15 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from evalblink import cache, compare, estimate, openrouter, reporter, runner
+from evalblink import (
+    __version__,
+    cache,
+    compare,
+    estimate,
+    openrouter,
+    reporter,
+    runner,
+)
 from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
@@ -28,7 +36,10 @@ def load_config(filepath):
         with open(filepath) as stream:
             return yaml.safe_load(stream)
     except FileNotFoundError:
-        sys.exit(f"Config not found: {filepath}")
+        sys.exit(
+            f"Config not found: {filepath}\n"
+            "Create one with `evalblink init` or pass a path: evalblink run <config.yaml>"
+        )
     except yaml.YAMLError as exc:
         sys.exit(f"Invalid YAML in {filepath}: {exc}")
 
@@ -517,6 +528,7 @@ def build_parser():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # --- run ---
