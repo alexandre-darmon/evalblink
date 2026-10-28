@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from evalblink import evaluator
 from evalblink.evaluator import (
     _extract_json,
     evaluate_llm_judge,
@@ -99,6 +100,18 @@ def test_weighted_match_wrong_shape_returns_zero():
     )  # missing percent/order
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        '[{"use_case": "A", "percent": "50%", "order": 1}]',  # non-numeric percent
+        '[{"use_case": ["A"], "percent": 0.5, "order": 1}]',  # unhashable label
+    ],
+)
+def test_weighted_match_wrong_value_types_return_zero(response):
+    # Would raise TypeError mid-run without the guard — a task failure instead.
+    assert weighted_match(WEIGHTED_PARAMS, response, EXPECTED) == 0.0
+
+
 def test_weighted_match_partial_percent_out_of_tolerance():
     # B's percent is off by 0.6 (> 0.2 tolerance): labels F1=1, percent=1/2, order=1.
     response = json.dumps(
@@ -172,3 +185,82 @@ def test_judge_requires_judge_model(client_factory, completion):
     client = client_factory(completion("{}"))
     with pytest.raises(ValueError, match="Judge model"):
         evaluate_llm_judge(client, {}, "answer", "task", "criteria")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"score": Infinity}',
+        '{"score": NaN}',
+        '{"score": "four"}',
+        '{"score": null}',
+        '{"score": [4]}',
+        "[4]",
+        "[" * 100_000 + "]" * 100_000,
+    ],
+)
+def test_judge_unusable_score_is_pipeline_error(
+    disable_cache, client_factory, completion, reply
+):
+    client = client_factory(completion(reply))
+    result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert result["status"] == "judge_error"
+    assert result["score_normalized"] is None
+
+
+def test_judge_out_of_range_score_is_clamped(disable_cache, client_factory, completion):
+    client = client_factory(completion('{"score": 99}'))
+    result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert result["score_raw"] == 5 and result["score_normalized"] == 1.0
+
+
+def test_weighted_match_deeply_nested_json_scores_zero():
+    deep = "[" * 100_000 + "]" * 100_000
+    assert weighted_match(WEIGHTED_PARAMS, deep, EXPECTED) == 0.0
+
+
+def test_extract_json_huge_int_is_a_decode_error():
+    # Past Python's 4300-digit int-conversion limit json.loads raises a plain
+    # ValueError; it must surface as JSONDecodeError like any other bad JSON.
+    with pytest.raises(json.JSONDecodeError):
+        _extract_json("[" + "1" * 5000 + "]")
+
+
+@pytest.mark.parametrize(
+    "percent",
+    ["1" * 5000, "1" + "0" * 400, "1e400", "NaN", "-Infinity"],
+)
+def test_weighted_match_non_finite_percent_scores_zero(percent):
+    response = f'[{{"use_case": "x", "percent": {percent}, "order": 1}}]'
+    expected = [{"use_case": "x", "percent": 0.5, "order": 1}]
+    assert weighted_match(WEIGHTED_PARAMS, response, expected) == 0.0
+
+
+def test_judge_huge_int_score_is_pipeline_error(
+    disable_cache, client_factory, completion
+):
+    client = client_factory(completion('{"score": ' + "9" * 5000 + "}"))
+    result = evaluate_llm_judge(client, {"judge_model": "j/m"}, "r", "t", "c")
+    assert result["status"] == "judge_error" and result["score_normalized"] is None
+
+
+def test_judge_use_cache_is_passed_through(monkeypatch):
+    seen = {}
+
+    def fake(client, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(evaluator, "openrouter_request", fake)
+    evaluate_llm_judge(None, {"judge_model": "j/m"}, "r", "t", "c", use_cache=False)
+    assert seen["use_cache"] is False
+
+
+def test_judge_null_threshold_uses_the_default(
+    disable_cache, client_factory, completion
+):
+    # A bare `judge_threshold:` loads as None and means "default 0.70".
+    client = client_factory(completion(json.dumps({"reasoning": "r", "score": 4})))
+    params = {**JUDGE_PARAMS, "judge_threshold": None}
+    result = evaluate_llm_judge(client, params, "answer", "task", "criteria")
+    assert result["match_result"] is True  # 0.75 >= 0.70

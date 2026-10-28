@@ -34,12 +34,21 @@ def _path(key: str) -> str:
 
 
 def get(key: str) -> dict | None:
-    """Return the cached value for ``key``, or ``None`` on a miss."""
+    """Return the cached value for ``key``, or ``None`` on a miss.
+
+    A corrupt, truncated or unreadable entry also reads as a miss (it is
+    overwritten on the next successful call) rather than aborting the run. The
+    caller still validates the entry's contents.
+    """
     path = _path(key)
     if not os.path.exists(path):
         return None
-    with open(path) as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            value = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) and "response" in value else None
 
 
 def set(key: str, value: dict) -> None:
@@ -63,11 +72,15 @@ def set(key: str, value: dict) -> None:
         raise
 
 
+def _is_file(name: str) -> bool:
+    return os.path.isfile(os.path.join(CACHE_DIR, name))
+
+
 def stats() -> dict:
     """Entry count and total size of the cache directory."""
     if not os.path.isdir(CACHE_DIR):
         return {"entries": 0, "size_bytes": 0}
-    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json") and _is_file(f)]
     size = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in files)
     return {"entries": len(files), "size_bytes": size}
 
@@ -76,7 +89,7 @@ def clear() -> int:
     """Delete all cached responses. Returns number of files removed."""
     if not os.path.isdir(CACHE_DIR):
         return 0
-    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json") and _is_file(f)]
     for f in files:
         os.remove(os.path.join(CACHE_DIR, f))
     return len(files)

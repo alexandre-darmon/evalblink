@@ -13,7 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
-from jinja2 import Template
+from jinja2.sandbox import SandboxedEnvironment
 
 from .evaluator import (
     evaluate_llm_judge,
@@ -21,8 +21,12 @@ from .evaluator import (
     judge_vendor_warning,
     weighted_match,
 )
-from .openrouter import openrouter_request
+from .openrouter import CANCELLED, openrouter_request
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+
+# Templates come from user-supplied YAML: parse (validator) and render them in a
+# sandbox so a template can't reach Python internals via attribute access.
+JINJA_ENV = SandboxedEnvironment()
 
 
 def render_template(prompt, variables, test_case):
@@ -32,9 +36,9 @@ def render_template(prompt, variables, test_case):
         render_kwargs = {}
     if test_case.get("variables"):
         render_kwargs.update(test_case["variables"])
-    rendered_prompt = Template(prompt["template"]).render(**render_kwargs)
+    rendered_prompt = JINJA_ENV.from_string(prompt["template"]).render(**render_kwargs)
     rendered_system = (
-        Template(prompt["system"]).render(**render_kwargs)
+        JINJA_ENV.from_string(prompt["system"]).render(**render_kwargs)
         if prompt.get("system")
         else None
     )
@@ -42,6 +46,47 @@ def render_template(prompt, variables, test_case):
 
 
 def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
+    """``_evaluate_case``, but no single case can crash the run.
+
+    Anything unexpected (a template that only fails on some renders, a value the
+    scorer can't handle) is recorded as an ``internal_error`` pipeline-error case
+    instead of discarding every other, already-paid-for result.
+    """
+    try:
+        return _evaluate_case(
+            client, model, prompt, config, test_case, verbose, use_cache
+        )
+    except Exception as exc:  # noqa: BLE001 — the point: one case never kills a run
+        error = f"{type(exc).__name__}: {exc}"
+        print(
+            f"⚠️  Internal error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+        )
+        return {
+            "model": model,
+            "prompt_id": prompt["id"],
+            "test_case": {
+                "id": test_case["id"],
+                "tags": test_case.get("tags") or [],
+                "evaluation": test_case.get("evaluation"),
+                "status": "internal_error",
+                "match_result": False,
+                "match_score": None,
+                "response": "",
+                "reasoning": None,
+                "expected": test_case.get("expected_output"),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost": 0.0,
+                "judge_prompt_tokens": 0,
+                "judge_completion_tokens": 0,
+                "judge_cost": 0.0,
+                "total_cost": 0.0,
+                "error": error,
+            },
+        }
+
+
+def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache):
     """Run one (model × prompt × test_case) triple and return a tagged result.
 
     Returned dict has ``"model"``, ``"prompt_id"``, and ``"test_case"`` keys.
@@ -54,15 +99,32 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
     if verbose:
         print(f"Rendered prompt: {rendered}")
     inference = config.get("inference") or {}
-    response = openrouter_request(
-        client,
-        rendered,
-        model,
-        inference.get("temperature", DEFAULT_TEMPERATURE),
-        inference.get("max_tokens", DEFAULT_MAX_TOKENS),
-        rendered_system,
-        use_cache=use_cache,
-    )
+    eval_config = config.get("evaluation") or {}
+    error = None
+    try:
+        response = openrouter_request(
+            client,
+            rendered,
+            model,
+            inference.get("temperature", DEFAULT_TEMPERATURE),
+            inference.get("max_tokens", DEFAULT_MAX_TOKENS),
+            rendered_system,
+            use_cache=use_cache,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        # Candidate API failed after retries — a pipeline failure, not a real
+        # score of 0. Record it and keep the run going (mirrors the judge).
+        error = str(exc) or type(exc).__name__
+        if not CANCELLED.is_set():
+            print(
+                f"⚠️  API error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+            )
+        response = {
+            "response": "",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cost": 0.0,
+        }
     if verbose:
         print(f"Raw response: {response['response']}")
 
@@ -75,16 +137,18 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
     judge_cost = 0.0
     evaluation = test_case.get("evaluation")
 
-    if evaluation == "exact_match":
+    if error is not None:
+        status = "api_error"
+    elif evaluation == "exact_match":
         match_result = exact_match(response["response"], test_case["expected_output"])
         match_score = 1.0 if match_result else 0.0
     elif evaluation == "weighted_match":
         match_score = weighted_match(
-            config["evaluation"],
+            eval_config,
             response["response"],
             test_case["expected_output"],
         )
-        threshold = config["evaluation"].get("quality_threshold", 0.7)
+        threshold = eval_config.get("quality_threshold", 0.7)
         match_result = match_score >= threshold
         if verbose:
             print(
@@ -93,11 +157,12 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
     elif evaluation == "llm_judge":
         judge_result = evaluate_llm_judge(
             client,
-            config["evaluation"],
+            eval_config,
             response["response"],
             rendered,  # full rendered prompt — no variable-name coupling
             test_case["criteria"],
             test_case.get("reference"),
+            use_cache=use_cache,
         )
         match_result = judge_result["match_result"]
         match_score = judge_result["score_normalized"]
@@ -126,7 +191,7 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
         print(f"Match result: {match_result}\n")
 
     cost = response["cost"]
-    return {
+    result = {
         "model": model,
         "prompt_id": prompt["id"],
         "test_case": {
@@ -148,6 +213,9 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
             "total_cost": cost + judge_cost,
         },
     }
+    if error is not None:
+        result["test_case"]["error"] = error
+    return result
 
 
 def run(config, verbose=False, use_cache=True):
@@ -156,15 +224,19 @@ def run(config, verbose=False, use_cache=True):
     ``concurrency`` (config key, default 5, clamped to >= 1) controls the
     ``ThreadPoolExecutor`` worker count. Transient API failures (429/5xx) are
     handled by the retry/backoff in ``openrouter_request`` rather than a fixed
-    per-call sleep. ``verbose`` enables per-test-case detail; by default only
-    per-combo summaries are printed after all cases complete.
+    per-call sleep; a candidate call that still fails is recorded as an
+    ``api_error`` case (``match_score=None``) and the run continues. ``verbose``
+    enables per-test-case detail; by default only per-combo summaries are
+    printed after all cases complete.
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    # Clamp to a sane minimum — ThreadPoolExecutor raises on max_workers < 1.
-    concurrency = max(1, config.get("concurrency", 5))
+    # A bare `concurrency:` (None) means the default. Clamp to a sane minimum —
+    # ThreadPoolExecutor raises on max_workers < 1.
+    concurrency = config.get("concurrency")
+    concurrency = max(1, 5 if concurrency is None else concurrency)
 
     warning = judge_vendor_warning(
-        config.get("evaluation", {}).get("judge_model"), config["models"]
+        (config.get("evaluation") or {}).get("judge_model"), config["models"]
     )
     if warning:
         print(f"{warning}\n")
@@ -177,10 +249,10 @@ def run(config, verbose=False, use_cache=True):
         for test_case in config["test_cases"]
     ]
 
-    with (
-        httpx.Client() as client,
-        ThreadPoolExecutor(max_workers=concurrency) as executor,
-    ):
+    CANCELLED.clear()
+    # Not a `with`: its exit would wait for in-flight calls, even after Ctrl-C.
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    with httpx.Client() as client:
         futures = [
             executor.submit(
                 _run_case,
@@ -194,8 +266,17 @@ def run(config, verbose=False, use_cache=True):
             )
             for model, prompt, test_case in tasks
         ]
-        # .result() blocks until each future completes; submission order is preserved.
-        case_results = [f.result() for f in futures]
+        try:
+            # .result() blocks until each future completes; submission order is preserved.
+            case_results = [f.result() for f in futures]
+        except KeyboardInterrupt:
+            # Ctrl-C: stop retries, drop every queued call and don't wait for
+            # in-flight ones (a socket read can block until the timeout);
+            # main() exits without joining the workers.
+            CANCELLED.set()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        executor.shutdown()
 
     # Re-group by (model, prompt_id), maintaining config order within each group.
     groups: dict = defaultdict(list)

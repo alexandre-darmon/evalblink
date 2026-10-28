@@ -154,7 +154,7 @@ def test_summarize_no_threshold_passes():
     assert s["warnings"] == ["t"]
 
 
-def test_summarize_reports_best_combo_error_total():
+def test_summarize_reports_single_combo_error_total():
     top = {
         "model": "m",
         "prompt_id": "p",
@@ -168,3 +168,9 @@ def test_summarize_reports_best_combo_error_total():
 
 def test_summarize_empty_results_is_none():
     assert summarize([], 90) is None
+
+
+def test_summarize_errors_is_the_run_total_not_the_best_combo():
+    best = {**_combo("m", "a", 100.0, 0.0, [_case(["t"], True)]), "errors": 0}
+    worse = {**_combo("m", "b", 50.0, 0.0, [_case(["t"], False)]), "errors": 3}
+    assert summarize([best, worse], None)["errors"] == 3

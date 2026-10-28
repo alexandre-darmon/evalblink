@@ -13,9 +13,11 @@ import json
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
-from evalblink import analysis, evaluator, reporter, runner
+from evalblink import analysis, estimate, evaluator, reporter, runner
+from evalblink.validator import validate
 
 
 def _resp(content, cost=0.0):
@@ -243,6 +245,81 @@ def test_llm_judge_pipeline_failure_excluded_from_scoring(monkeypatch):
     assert row["scored"] == 0 and row["errors"] == 1 and row["quality"] is None
 
 
+# --- candidate API failure: recorded, run continues -----------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError("OpenRouter error 400: bad model"), httpx.ConnectError("refused")],
+)
+def test_candidate_api_error_is_recorded_and_run_continues(
+    tmp_path, monkeypatch, capsys, exc
+):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    cases = [
+        {
+            "id": f"c{i}",
+            "variables": {"q": str(i)},
+            "expected_output": "ok",
+            "evaluation": "exact_match",
+            "tags": ["t"],
+        }
+        for i in range(3)
+    ]
+    config = _config(cases)
+    responses = iter([_resp("ok", cost=0.1), exc, _resp("ok", cost=0.1)])
+
+    def fake_candidate(client, prompt, model, *a, **k):
+        item = next(responses)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(runner, "openrouter_request", fake_candidate)
+    results, ts = runner.run(config)
+    assert f"API error on m/x / v1 / c1: {exc}" in capsys.readouterr().out
+    [combo] = results
+    assert (combo["success"], combo["scored"], combo["errors"]) == (2, 2, 1)
+    assert combo["score"] == 100.0  # the error is excluded, not a real fail
+    failed = combo["test_cases"][1]
+    assert failed["status"] == "api_error"
+    assert failed["match_score"] is None and failed["match_result"] is False
+    assert failed["response"] == "" and failed["error"] == str(exc)
+    assert failed["total_cost"] == 0.0 and failed["prompt_tokens"] == 0
+    assert "error" not in combo["test_cases"][0]
+
+    out = reporter.write(config, results, ts)
+    data = json.loads(Path(out["json"]).read_text())
+    assert data["results"][0]["test_cases"][1]["status"] == "api_error"
+    assert data["insights"]["errors"] == 1
+    assert (
+        "| c1 | exact_match | False | API error |" in Path(out["markdown"]).read_text()
+    )
+
+
+# A bare `evaluation:` line in YAML parses as None — must read as absent.
+def test_null_evaluation_block_through_runner_estimate_reporter(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    config = _config(
+        [
+            {
+                "id": "c1",
+                "variables": {"q": "a"},
+                "expected_output": "ok",
+                "evaluation": "exact_match",
+            }
+        ]
+    )
+    config["evaluation"] = None
+    assert validate(config) == ([], [])
+    est = estimate.estimate(config, {"m/x": {"prompt": 0.0, "completion": 0.0}})
+    assert est["judge_cost"] == 0.0
+    results = _run(monkeypatch, config, [_resp("ok")])
+    out = reporter.write(config, results, "2026-01-01_000000")
+    data = json.loads(Path(out["json"]).read_text())
+    assert data["judge_model"] is None and data["quality_threshold"] is None
+
+
 # --- robustness -----------------------------------------------------------
 
 
@@ -259,7 +336,9 @@ def test_missing_tags_and_variables_do_not_crash(monkeypatch):
     assert combo["test_cases"][0]["tags"] == []
 
 
-def test_unknown_evaluation_type_raises(monkeypatch):
+def test_unexpected_case_failure_is_recorded_not_raised(monkeypatch):
+    # The validator rejects this typo; if anything still slips past it, that one
+    # case becomes an internal_error pipeline error and the run survives.
     config = _config(
         [
             {
@@ -267,15 +346,22 @@ def test_unknown_evaluation_type_raises(monkeypatch):
                 "variables": {"q": "x"},
                 "evaluation": "exactmatch",  # typo
                 "expected_output": "x",
-            }
+            },
+            {
+                "id": "c2",
+                "variables": {"q": "x"},
+                "evaluation": "exact_match",
+                "expected_output": "x",
+            },
         ]
     )
-    try:
-        _run(monkeypatch, config, [_resp("x")])
-        raised = False
-    except ValueError as exc:
-        raised = "exactmatch" in str(exc)
-    assert raised
+    results = _run(monkeypatch, config, [_resp("x"), _resp("x")])
+    bad, good = results[0]["test_cases"]
+    assert bad["status"] == "internal_error"
+    assert bad["match_score"] is None
+    assert "exactmatch" in bad["error"]
+    assert good["match_result"] is True
+    assert results[0]["errors"] == 1
 
 
 # --- mixed config: all three modes in one run -----------------------------
@@ -375,11 +461,13 @@ def test_concurrency_preserves_config_order(monkeypatch):
     assert combo["scored"] == n
 
 
-def test_concurrency_clamped_to_minimum_one(monkeypatch):
+@pytest.mark.parametrize("concurrency", [0, None])
+def test_concurrency_clamped_to_minimum_one(monkeypatch, concurrency):
     """A non-positive ``concurrency`` is clamped to 1 instead of crashing.
 
     ``ThreadPoolExecutor(max_workers=0)`` raises ``ValueError`` — the runner must
-    guard against a config that sets ``concurrency: 0``.
+    guard against a config that sets ``concurrency: 0``. A bare ``concurrency:``
+    (None) falls back to the default.
     """
     config = _config(
         [
@@ -391,7 +479,24 @@ def test_concurrency_clamped_to_minimum_one(monkeypatch):
             }
         ]
     )
-    config["concurrency"] = 0
+    config["concurrency"] = concurrency
     [combo] = _run(monkeypatch, config, [_resp("ok")])
     assert combo["success"] == 1
     assert combo["scored"] == 1
+
+
+def test_no_cache_also_bypasses_the_judge_cache(monkeypatch):
+    seen = []
+
+    def fake(client, *a, use_cache=True, **k):
+        seen.append(use_cache)
+        return _resp('{"score": 5}')
+
+    monkeypatch.setattr(runner, "openrouter_request", fake)
+    monkeypatch.setattr(evaluator, "openrouter_request", fake)
+    config = _config(
+        [{"id": "j", "evaluation": "llm_judge", "criteria": "c"}],
+        evaluation={"judge_model": "j/m"},
+    )
+    runner.run(config, use_cache=False)
+    assert seen == [False, False]  # candidate and judge

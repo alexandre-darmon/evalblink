@@ -93,7 +93,8 @@ def summarize(results, quality_threshold) -> dict | None:
         "best_value": best_value(results),
         "tag_breakdown": breakdown,
         "warnings": [r["tag"] for r in breakdown if r["warn"]],
-        "errors": top.get("errors", 0),
+        # Run total (every combo), matching the end-of-run pipeline-error warning.
+        "errors": sum(c.get("errors") or 0 for c in results),
         "passed": quality_threshold is None or top["score"] >= quality_threshold,
         "quality_threshold": quality_threshold,
     }

@@ -30,9 +30,11 @@ def _est_tokens(text) -> int:
 
 
 def _price(models_meta, model, missing):
-    """Pricing for ``model``; records a miss (and returns zeros) when unknown."""
+    """Pricing for ``model``; records a miss (and returns zeros) when unknown —
+    absent from the catalog, or priced ``None`` there (``openrouter`` maps a
+    negative / non-numeric catalog price to ``None``)."""
     meta = models_meta.get(model)
-    if meta is None:
+    if meta is None or meta.get("prompt") is None or meta.get("completion") is None:
         if model not in missing:
             missing.append(model)
         return 0.0, 0.0
@@ -47,7 +49,7 @@ def estimate(config, models_meta) -> dict:
     """
     inference = config.get("inference") or {}
     max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    judge_model = config.get("evaluation", {}).get("judge_model")
+    judge_model = (config.get("evaluation") or {}).get("judge_model")
     missing: list = []
 
     rows = []

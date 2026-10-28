@@ -14,19 +14,104 @@ from __future__ import annotations
 
 import json
 
+from .openrouter import is_number
+
 # Score deltas smaller than this (in percentage points) read as "stable" — keeps
 # floating-point noise from showing as spurious ↑/↓.
 _SCORE_EPS = 0.05
 
 
-def load_record(path) -> dict:
-    """Load a persisted run record, defaulting a missing ``schema_version`` to 0.
+class RecordError(ValueError):
+    """A run record that can't be read or isn't the shape ``reporter.write`` persists."""
 
-    Records written before the field existed are legacy version 0; ``diff`` still
-    compares them rather than hard-blocking.
+
+def _record_problem(record) -> str | None:
+    """What makes ``record`` unusable by report / compare / history, or ``None``.
+
+    Checks exactly the fields those commands read, with the types they need:
+    strings where they are sorted or used as keys/filenames, finite numbers where
+    they are formatted or subtracted.
     """
-    with open(path) as f:
-        record = json.load(f)
+    if not isinstance(record, dict):
+        return f"expected a JSON object, got {type(record).__name__}"
+    for key in ("benchmark", "timestamp"):
+        if not isinstance(record.get(key), str):
+            return f"'{key}' is missing or not a string"
+    if record.get("run_id") is not None and not isinstance(record["run_id"], str):
+        return "'run_id' is not a string"
+    results = record.get("results")
+    if not isinstance(results, list):
+        return "'results' is missing or not a list"
+    for i, combo in enumerate(results):
+        where = f"results[{i}]"
+        if not isinstance(combo, dict):
+            return f"{where} is not an object"
+        for key in ("model", "prompt_id"):
+            if not isinstance(combo.get(key), str):
+                return f"{where}.{key} is missing or not a string"
+        for key in (
+            "score",
+            "total_cost",
+            "success",
+            "total",
+            "total_prompt_tokens",
+            "total_completion_tokens",
+        ):
+            if not is_number(combo.get(key)):
+                return f"{where}.{key} is missing or not a finite number"
+        for key in ("scored", "errors"):
+            if combo.get(key) is not None and not is_number(combo[key]):
+                return f"{where}.{key} is not a finite number"
+        cases = combo.get("test_cases")
+        if not isinstance(cases, list):
+            return f"{where}.test_cases is missing or not a list"
+        for j, tc in enumerate(cases):
+            here = f"{where}.test_cases[{j}]"
+            if not isinstance(tc, dict) or not isinstance(tc.get("id"), str):
+                return f"{here} is not an object with a string 'id'"
+            if "match_score" not in tc:
+                return f"{here}.match_score is missing"
+            if tc["match_score"] is not None and not is_number(tc["match_score"]):
+                return f"{here}.match_score is not a finite number"
+            if tc["match_score"] is not None and not isinstance(
+                tc.get("match_result"), bool
+            ):
+                return f"{here}.match_result is missing or not true/false"
+            if tc.get("status") is not None and not isinstance(tc["status"], str):
+                return f"{here}.status is not a string"
+            if not is_number(tc.get("total_cost")):
+                return f"{here}.total_cost is missing or not a finite number"
+            tags = tc.get("tags")
+            if tags is not None and not (
+                isinstance(tags, list) and all(isinstance(t, str) for t in tags)
+            ):
+                return f"{here}.tags is not a list of strings"
+    return None
+
+
+def load_record(path) -> dict:
+    """Load and shape-check a persisted run record.
+
+    Raises :class:`RecordError` (with a one-line reason) for a missing,
+    unreadable, non-JSON or wrongly-shaped file, so every caller can fail
+    cleanly. A missing ``schema_version`` defaults to 0: records written before
+    the field existed are legacy version 0; ``diff`` still compares them rather
+    than hard-blocking.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            record = json.load(f)
+    except FileNotFoundError:
+        raise RecordError(f"Run record not found: {path}") from None
+    except OSError as exc:  # a directory, no permission, ...
+        raise RecordError(
+            f"Cannot read run record {path}: {exc.strerror or exc}"
+        ) from None
+    except (ValueError, RecursionError) as exc:  # not JSON / not UTF-8 / too deep
+        raise RecordError(f"{path} is not a valid JSON run record: {exc}") from None
+    problem = _record_problem(record)
+    if problem:
+        raise RecordError(f"{path} is not an evalblink run record: {problem}")
     record.setdefault("schema_version", 0)
     return record
 

@@ -19,30 +19,56 @@ from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, SCHEMA_VERSION
 
 RESULTS_DIR = "results"
 
+# How a pipeline-error case (match_score is None) reads in the Markdown table.
+_ERROR_LABELS = {
+    "api_error": "API error",
+    "judge_api_error": "judge API error",
+    "judge_error": "judge error",
+    "internal_error": "internal error",
+}
+
+
+def make_console() -> Console:
+    """The console for all terminal output.
+
+    Markup and emoji codes are off: nearly everything printed (benchmark name,
+    model / prompt / test-case ids, tags, error messages, model output) is user-
+    or model-supplied, and Rich would otherwise crash on a stray ``[/x]`` or
+    silently swallow ``[bold]``. Style whole lines with ``style=`` instead.
+    """
+    return Console(markup=False, emoji=False)
+
 
 def _combo_label(combo) -> str:
     return f"{combo['model']} / {combo['prompt_id']}"
 
 
 def _slugify(name: str) -> str:
-    """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen."""
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen.
+
+    Capped at 60 chars so any name yields a writable path; a name with no ASCII
+    alphanumerics (e.g. all punctuation or non-Latin script) falls back to
+    ``benchmark``.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower())[:60].strip("-")
+    return slug or "benchmark"
 
 
 def _build_data(config, results, timestamp) -> dict:
     """The canonical run record — the exact shape persisted as JSON."""
     benchmark_name = config["name"]
     inference = config.get("inference") or {}
+    evaluation = config.get("evaluation") or {}
     run_id = f"{timestamp}_{_slugify(benchmark_name)}"
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "benchmark": config["name"],
-        "judge_model": config.get("evaluation", {}).get("judge_model"),
+        "judge_model": evaluation.get("judge_model"),
         "temperature": inference.get("temperature", DEFAULT_TEMPERATURE),
         "max_tokens": inference.get("max_tokens", DEFAULT_MAX_TOKENS),
-        "quality_threshold": config.get("evaluation", {}).get(
-            "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
+        "quality_threshold": evaluation.get(
+            "quality_threshold", evaluation.get("judge_threshold")
         ),
         "timestamp": timestamp,
         "results": results,
@@ -52,8 +78,12 @@ def _build_data(config, results, timestamp) -> dict:
 def _write_json(data) -> str:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     file_path = f"{RESULTS_DIR}/{data['run_id']}.json"
+    # default=str: YAML can hand us dates/timestamps (e.g. an unquoted
+    # 2024-01-01 in expected_output) that json can't encode natively.
+    # Serialize first so a failure never leaves a truncated file behind.
+    text = json.dumps(data, indent=4, default=str)
     with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
+        f.write(text)
     return file_path
 
 
@@ -65,10 +95,10 @@ def _write_markdown(data) -> str:
         "",
         f"- **Run ID:** {data['run_id']}",
         f"- **Timestamp:** {data['timestamp']}",
-        f"- **Judge model:** {data['judge_model']}",
-        f"- **Temperature:** {data['temperature']}",
-        f"- **Max tokens:** {data['max_tokens']}",
-        f"- **Quality threshold:** {data['quality_threshold']}",
+        f"- **Judge model:** {data.get('judge_model')}",
+        f"- **Temperature:** {data.get('temperature')}",
+        f"- **Max tokens:** {data.get('max_tokens')}",
+        f"- **Quality threshold:** {data.get('quality_threshold')}",
         "",
         "## Summary",
         "",
@@ -93,9 +123,12 @@ def _write_markdown(data) -> str:
             "| --- | --- | --- | --- | --- |",
         ]
         for tc in run["test_cases"]:
-            score = "" if tc["match_score"] is None else f"{tc['match_score']:.4f}"
+            if tc["match_score"] is None:
+                score = _ERROR_LABELS.get(tc.get("status"), "error")
+            else:
+                score = f"{tc['match_score']:.4f}"
             lines.append(
-                f"| {tc['id']} | {tc['evaluation']} | {tc['match_result']} | "
+                f"| {tc['id']} | {tc.get('evaluation')} | {tc.get('match_result')} | "
                 f"{score} | ${tc['total_cost']:.6f} |"
             )
 
@@ -134,7 +167,8 @@ def _write_markdown(data) -> str:
                 f"- ℹ️ **{summary['errors']} pipeline error(s)** excluded from scoring."
             )
 
-    with open(file_path, "w") as f:
+    # errors="replace": a lone surrogate in a name/id/output can't abort the write.
+    with open(file_path, "w", encoding="utf-8", errors="replace") as f:
         f.write("\n".join(lines) + "\n")
     return file_path
 
@@ -189,7 +223,7 @@ def _print_insights(summary, console: Console) -> None:
         )
     console.print(tags)
 
-    console.print("\n[bold]RECOMMENDATION[/bold]")
+    console.print("\nRECOMMENDATION", style="bold")
     console.print(f"Best quality : {_combo_label(top)} ({top['score']:.1f}%)")
     console.print(
         f"Best value   : {_combo_label(value)} "
@@ -197,10 +231,11 @@ def _print_insights(summary, console: Console) -> None:
     )
     if summary.get("errors"):
         console.print(
-            f"[dim]{summary['errors']} pipeline error(s) excluded from scoring.[/dim]"
+            f"{summary['errors']} pipeline error(s) excluded from scoring.",
+            style="dim",
         )
     for tag in summary["warnings"]:
-        console.print(f"[yellow]⚠️  Warning  : {tag} quality is below 70%.[/yellow]")
+        console.print(f"⚠️  Warning  : {tag} quality is below 70%.", style="yellow")
 
 
 def write(config, results, timestamp) -> dict:
@@ -213,9 +248,13 @@ def write(config, results, timestamp) -> dict:
     # `evaluation.quality_threshold`/`judge_threshold` (0-1) the scorers consume.
     summary = analysis.summarize(results, config.get("quality_threshold"))
     data["insights"] = summary
+    # Two runs of one benchmark in the same second must not overwrite each other.
+    base, n = data["run_id"], 2
+    while os.path.exists(f"{RESULTS_DIR}/{data['run_id']}.json"):
+        data["run_id"], n = f"{base}-{n}", n + 1
     json_path = _write_json(data)
     md_path = _write_markdown(data)
-    console = Console()
+    console = make_console()
     _print_table(data, console)
     if summary:
         _print_insights(summary, console)
@@ -228,17 +267,22 @@ def write(config, results, timestamp) -> dict:
 def write_from_record(record: dict) -> str:
     """Regenerate the Markdown report from a persisted JSON record.
 
-    The record must be the dict previously written by ``write()`` — it already
-    contains an ``insights`` key from ``analysis.summarize``. Old records that
-    predate the ``run_id`` field get a derived fallback so the filename is stable.
+    ``record`` comes from ``compare.load_record`` (shape already checked). The
+    insights are recomputed from ``results`` rather than trusted from the file,
+    so old records get current semantics (e.g. the run-total error count). The
+    filename is the record's ``run_id`` (basename only), or a derived fallback for
+    records that predate the field.
     """
-    if "run_id" not in record:
-        record = {
-            **record,
-            "run_id": f"{record.get('timestamp', 'unknown')}_{_slugify(record.get('benchmark', 'run'))}",
-        }
+    run_id = record.get("run_id")
+    if not isinstance(run_id, str) or not os.path.basename(run_id):
+        run_id = f"{record['timestamp']}_{_slugify(record['benchmark'])}"
+    record = {
+        **record,
+        "run_id": os.path.basename(run_id),
+        "insights": analysis.summarize(record["results"], None),
+    }
     md_path = _write_markdown(record)
-    console = Console()
+    console = make_console()
     _print_table(record, console)
     if record.get("insights"):
         _print_insights(record["insights"], console)
@@ -252,7 +296,7 @@ def render_estimate(est, console: Console | None = None) -> None:
     Formatting only — ``estimate.estimate`` produced the numbers. Costs are
     upper-bound estimates (completion tokens assume the configured max_tokens).
     """
-    console = console or Console()
+    console = console or make_console()
     table = Table(title="DRY RUN — estimated cost (no API calls)")
     table.add_column("Model")
     table.add_column("Prompt")
@@ -272,28 +316,31 @@ def render_estimate(est, console: Console | None = None) -> None:
 
     if est["judge_cost"]:
         console.print(f"Judge cost (llm_judge cases): ${est['judge_cost']:.6f}")
-    console.print(f"[bold]Estimated total cost: ${est['total_cost']:.6f}[/bold]")
+    console.print(f"Estimated total cost: ${est['total_cost']:.6f}", style="bold")
     console.print(
-        "[dim]Estimate only — completion tokens assume max_tokens; "
-        "prompt tokens ≈ chars/4.[/dim]"
+        "Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.",
+        style="dim",
     )
 
     for model in est["missing_pricing"]:
         console.print(
-            f"[yellow]⚠️  No pricing for '{model}' — excluded from the estimate.[/yellow]"
+            f"⚠️  No pricing for '{model}' — excluded from the estimate.",
+            style="yellow",
         )
 
     budget = est["max_cost_usd"]
     if budget is not None:
         if est["over_budget"]:
             console.print(
-                f"[red]✗ Over budget: estimate ${est['total_cost']:.6f} exceeds "
-                f"max_cost_usd ${budget:.6f}.[/red]"
+                f"✗ Over budget: estimate ${est['total_cost']:.6f} exceeds "
+                f"max_cost_usd ${budget:.6f}.",
+                style="red",
             )
         else:
             console.print(
-                f"[green]✓ Within budget: estimate ${est['total_cost']:.6f} ≤ "
-                f"max_cost_usd ${budget:.6f}.[/green]"
+                f"✓ Within budget: estimate ${est['total_cost']:.6f} ≤ "
+                f"max_cost_usd ${budget:.6f}.",
+                style="green",
             )
 
 
@@ -326,7 +373,7 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
     ``b_only`` combos are flagged in a Notes column; the verdict and any schema
     version note follow.
     """
-    console = console or Console()
+    console = console or make_console()
     table = Table(title=f"DELTA: {diff_result['run_a']} → {diff_result['run_b']}")
     table.add_column("Model")
     table.add_column("Prompt")
@@ -352,8 +399,8 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
         )
     console.print(table)
     if diff_result.get("version_note"):
-        console.print(f"[dim]{diff_result['version_note']}[/dim]")
-    console.print(f"\n[bold]Verdict:[/bold] {diff_result['verdict']}")
+        console.print(diff_result["version_note"], style="dim")
+    console.print(f"\nVerdict: {diff_result['verdict']}", style="bold")
 
 
 # How each case transition is labelled and coloured in the detailed view.
@@ -381,7 +428,7 @@ def _render_case_combo(combo, console: Console) -> None:
     changed = [r for r in combo["rows"] if r["transition"] in CHANGED_TRANSITIONS]
     label = f"{combo['model']} / {combo['prompt_id']}"
     if not changed:
-        console.print(f"[dim]{label}: no case changes[/dim]")
+        console.print(f"{label}: no case changes", style="dim")
         return
     table = Table(title=f"CASE CHANGES — {label}")
     table.add_column("Test case")
@@ -401,29 +448,29 @@ def _render_case_combo(combo, console: Console) -> None:
     console.print(table)
     rollup = combo["rollup"]
     unchanged = rollup["unchanged"] + rollup["still_error"]
-    console.print(f"[dim]{unchanged} unchanged[/dim]")
+    console.print(f"{unchanged} unchanged", style="dim")
 
 
 def render_detailed(detailed_result, console: Console | None = None) -> None:
     """Print the combo table, per-combo case changes, and the global summary."""
-    console = console or Console()
+    console = console or make_console()
     render_comparison(detailed_result, console)
 
-    console.print("\n[bold]── TEST-LEVEL CHANGES ──[/bold]")
+    console.print("\n── TEST-LEVEL CHANGES ──", style="bold")
     if not detailed_result["case_combos"]:
-        console.print("[dim]No combos shared between the two runs.[/dim]")
+        console.print("No combos shared between the two runs.", style="dim")
         return
     for combo in detailed_result["case_combos"]:
         console.print()
         _render_case_combo(combo, console)
 
     summary = detailed_result["summary"]
-    console.print("\n[bold]GLOBAL SUMMARY[/bold]")
+    console.print("\nGLOBAL SUMMARY", style="bold")
     console.print(
         f"{summary['improved']} improved · {summary['regressed']} regressed · "
         f"{summary['new_error']} new error(s) · {summary['recovered']} recovered"
     )
-    console.print(f"[bold]Verdict:[/bold] {summary['verdict']}")
+    console.print(f"Verdict: {summary['verdict']}", style="bold")
 
     if summary["worst_regressed"]:
         total_combos = len(detailed_result["case_combos"])

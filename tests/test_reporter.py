@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
+
+import pytest
 
 from evalblink import reporter
 from evalblink.reporter import _build_data, _slugify, write
@@ -103,3 +106,63 @@ def test_write_passes_gate_when_no_threshold(tmp_path, monkeypatch):
     config = {"name": "No Gate", "inference": {"temperature": 0, "max_tokens": 50}}
     out = write(config, _results(), "ts")
     assert out["passed"] is True
+
+
+@pytest.mark.parametrize(
+    "name, slug",
+    [("!!!", "benchmark"), ("日本語ベンチ", "benchmark"), ("", "benchmark")],
+)
+def test_slugify_falls_back_when_empty(name, slug):
+    assert _slugify(name) == slug
+
+
+def test_slugify_caps_length_without_trailing_hyphen():
+    slug = _slugify("a" * 59 + " " + "b" * 5000)
+    assert len(slug) <= 60 and not slug.endswith("-")
+
+
+def test_any_name_writes_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    for name in ("x" * 5000, "!!!"):
+        out = write({"name": name}, _results(), "ts")
+        assert Path(out["json"]).exists() and Path(out["markdown"]).exists()
+
+
+@pytest.mark.parametrize(
+    "status, label",
+    [
+        ("api_error", "API error"),
+        ("judge_api_error", "judge API error"),
+        ("judge_error", "judge error"),
+        ("internal_error", "internal error"),
+    ],
+)
+def test_markdown_shows_pipeline_error_status(tmp_path, monkeypatch, status, label):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    results = _results()
+    results[0]["test_cases"][1].update(status=status, match_score=None)
+    out = write({"name": "E"}, results, "ts")
+    assert (
+        f"| c2 | exact_match | False | {label} |" in Path(out["markdown"]).read_text()
+    )
+
+
+def test_yaml_dates_in_results_are_json_serialized(tmp_path, monkeypatch):
+    # An unquoted `expected_output: 2024-01-01` loads as a datetime.date.
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    results = _results()
+    results[0]["test_cases"][0]["expected"] = datetime.date(2024, 1, 1)
+    out = write({"name": "D"}, results, "ts")
+    data = json.loads(Path(out["json"]).read_text())
+    assert data["results"][0]["test_cases"][0]["expected"] == "2024-01-01"
+
+
+def test_unserializable_record_leaves_no_truncated_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    results = _results()
+    loop = []
+    loop.append(loop)
+    results[0]["test_cases"][0]["expected"] = loop
+    with pytest.raises(ValueError):
+        write({"name": "L"}, results, "ts")
+    assert list(tmp_path.iterdir()) == []

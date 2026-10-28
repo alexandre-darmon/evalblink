@@ -12,7 +12,7 @@ import re
 
 import httpx
 
-from .openrouter import openrouter_request
+from .openrouter import is_number, openrouter_request
 
 
 def _extract_json(raw):
@@ -20,7 +20,9 @@ def _extract_json(raw):
 
     Models often wrap JSON in ```` ```json … ``` ````. Strip a leading/trailing
     fence before parsing so both the judge and weighted_match accept fenced output.
-    Raises ``json.JSONDecodeError`` if the stripped text still isn't valid JSON.
+    Raises ``json.JSONDecodeError`` if the stripped text still isn't valid JSON
+    — including JSON Python refuses to build (nested thousands deep, or an
+    integer literal past the 4300-digit int-conversion limit).
     """
     text = raw.strip()
     if text.startswith("```"):
@@ -29,7 +31,12 @@ def _extract_json(raw):
         text = re.sub(r"^```[a-zA-Z0-9]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
         text = text.strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise
+    except (RecursionError, ValueError) as exc:  # "[[[[…" / a 5000-digit int
+        raise json.JSONDecodeError(f"unparseable JSON ({exc})", text, 0) from None
 
 
 def exact_match(response, expected):
@@ -62,13 +69,21 @@ def judge_vendor_warning(judge_model, models):
 
 
 def evaluate_llm_judge(
-    client, evaluation_params, candidate_response, task, criteria, reference=None
+    client,
+    evaluation_params,
+    candidate_response,
+    task,
+    criteria,
+    reference=None,
+    use_cache=True,
 ):
     judge_model = evaluation_params.get("judge_model")
     if not judge_model:
         raise ValueError("Judge model not specified in evaluation parameters.")
 
-    threshold = evaluation_params.get("judge_threshold", 0.70)
+    threshold = evaluation_params.get("judge_threshold")
+    if threshold is None:  # absent or a bare `judge_threshold:`
+        threshold = 0.70
 
     reference_line = f"Reference answer: {reference}\n" if reference else ""
     judge_prompt = f"""You are an expert evaluator. Your goal is to assess quality, not style.
@@ -96,6 +111,7 @@ def evaluate_llm_judge(
             model=judge_model,
             temperature=0,
             max_tokens=512,
+            use_cache=use_cache,
         )
     except (RuntimeError, httpx.HTTPError):
         # Judge API failed (error response, timeout, rate limit) — pipeline
@@ -121,8 +137,10 @@ def evaluate_llm_judge(
     try:
         parsed = _extract_json(raw)
         score = int(parsed["score"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         # Judge returned malformed JSON / no usable score — pipeline failure.
+        # ValueError covers JSONDecodeError and int("high"); OverflowError is
+        # int(Infinity) from a judge replying {"score": Infinity}.
         return {
             "status": "judge_error",
             "match_result": False,
@@ -167,10 +185,14 @@ def weighted_match(evaluation_params, response, expected, tolerance=0.20):
         # (score 0.0), not a pipeline error. Don't abort the whole run.
         return 0.0
 
-    # Valid JSON of the wrong shape (not a list of objects with the scored keys)
-    # is also a task failure — guard so the scoring below can't raise and abort.
+    # Valid JSON of the wrong shape (not a list of objects with the scored keys,
+    # a hashable use_case and a finite numeric percent) is also a task failure —
+    # guard so the scoring below can't raise and abort.
     if not isinstance(parsed, list) or not all(
-        isinstance(item, dict) and {"use_case", "percent", "order"} <= item.keys()
+        isinstance(item, dict)
+        and {"use_case", "percent", "order"} <= item.keys()
+        and not isinstance(item["use_case"], (list, dict))
+        and is_number(item["percent"])
         for item in parsed
     ):
         return 0.0
