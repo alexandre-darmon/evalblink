@@ -6,6 +6,9 @@ import pytest
 
 from evalblink.validator import validate
 
+INF = float("inf")
+NAN = float("nan")
+
 
 def _exact_match_config(**overrides) -> dict:
     base = {
@@ -452,6 +455,37 @@ def test_valid_weighted_config_returns_no_issues():
             _set("test_cases.0.expected_output", [{"use_case": "A"}], _weighted_config),
             "every weighted_match expected_output item",
         ),
+        # Round 2: bounds, non-finite numbers, integer max_tokens, duplicates.
+        (_set("quality_threshold", -1), "between 0 and 100"),
+        (_set("concurrency", True), "concurrency must be a positive integer"),
+        (_set("quality_threshold", INF), "between 0 and 100"),
+        (_set("quality_threshold", NAN), "between 0 and 100"),
+        (_set("max_cost_usd", INF), "max_cost_usd must be"),
+        (_set("inference.temperature", NAN), "inference.temperature must be"),
+        (_set("inference.max_tokens", INF), "max_tokens must be a positive integer"),
+        (_set("inference.max_tokens", 50.5), "max_tokens must be a positive integer"),
+        (_set("inference.max_tokens", True), "max_tokens must be a positive integer"),
+        (_set("models", ["a/b", "a/b"]), "Duplicate model: 'a/b'"),
+        (
+            _set("evaluation.judge_threshold", NAN, _llm_judge_config),
+            "judge_threshold must be",
+        ),
+        (
+            _set("evaluation.quality_threshold", INF, _weighted_config),
+            "evaluation.quality_threshold must be",
+        ),
+        (
+            _set("evaluation.variables.0.weight", INF, _weighted_config),
+            "'use_case': weight",
+        ),
+        (
+            _set(
+                "test_cases.0.expected_output",
+                [{"use_case": "A", "percent": NAN, "order": 1}],
+                _weighted_config,
+            ),
+            "every weighted_match expected_output item",
+        ),
     ],
 )
 def test_malformed_value_is_an_error(build, message):
@@ -465,3 +499,56 @@ def test_null_block_is_treated_as_absent(key):
     cfg[key] = None
     cfg["prompts"] = [{"id": "v1", "template": "Hi"}]  # no variables needed
     assert validate(cfg) == ([], [])
+
+
+# --- trial render: anything that would raise at run time fails validate ---
+
+
+@pytest.mark.parametrize(
+    "template, system, variables, exc_name",
+    [
+        ("{{ text.a.b }}", None, {"text": "x"}, "UndefinedError"),
+        ("{{ 1 / 0 }}", None, {"text": "x"}, "ZeroDivisionError"),
+        ("{{ ''.__class__.__mro__ }}", None, {"text": "x"}, ""),
+        ("{{ text + 1 }}", None, {"text": "x"}, "TypeError"),
+        ("{% include 'x.j2' %}", None, {"text": "x"}, "TypeError"),
+        ("Hi {{ text }}", "{{ text.nope.deeper }}", {"text": "x"}, "UndefinedError"),
+        # A non-string variable name can't become a render keyword.
+        ("Hi {{ text }}", None, {"text": "x", 1: "y"}, "TypeError"),
+    ],
+)
+def test_template_that_fails_to_render_is_a_validate_error(
+    template, system, variables, exc_name
+):
+    prompt = {"id": "v1", "template": template}
+    if system:
+        prompt["system"] = system
+    cfg = _exact_match_config(prompts=[prompt], variables=variables)
+    errors, _ = validate(cfg)
+    [error] = [e for e in errors if "failed to render" in e]
+    assert "prompts['v1']" in error and "test_cases['tc_001']" in error
+    assert exc_name in error
+
+
+def test_trial_render_uses_per_case_variables():
+    # Only the second case lacks the nested attribute — only it is reported.
+    cfg = _exact_match_config(
+        prompts=[{"id": "v1", "template": "{{ text.upper() }} {{ obj.k.z }}"}],
+        variables={"text": "hello"},
+        test_cases=[
+            {
+                "id": "ok",
+                "evaluation": "exact_match",
+                "expected_output": "y",
+                "variables": {"obj": {"k": {"z": 1}}},
+            },
+            {
+                "id": "bad",
+                "evaluation": "exact_match",
+                "expected_output": "y",
+                "variables": {"obj": "flat"},
+            },
+        ],
+    )
+    [error] = validate(cfg)[0]
+    assert "test_cases['bad']" in error and "UndefinedError" in error

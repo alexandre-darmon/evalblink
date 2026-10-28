@@ -292,7 +292,9 @@ def test_candidate_api_error_is_recorded_and_run_continues(
     data = json.loads(Path(out["json"]).read_text())
     assert data["results"][0]["test_cases"][1]["status"] == "api_error"
     assert data["insights"]["errors"] == 1
-    assert "| c1 | exact_match | False |  |" in Path(out["markdown"]).read_text()
+    assert (
+        "| c1 | exact_match | False | API error |" in Path(out["markdown"]).read_text()
+    )
 
 
 # A bare `evaluation:` line in YAML parses as None — must read as absent.

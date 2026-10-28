@@ -19,14 +19,27 @@ from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, SCHEMA_VERSION
 
 RESULTS_DIR = "results"
 
+# How a pipeline-error case (match_score is None) reads in the Markdown table.
+_ERROR_LABELS = {
+    "api_error": "API error",
+    "judge_api_error": "judge API error",
+    "judge_error": "judge error",
+}
+
 
 def _combo_label(combo) -> str:
     return f"{combo['model']} / {combo['prompt_id']}"
 
 
 def _slugify(name: str) -> str:
-    """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen."""
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen.
+
+    Capped at 60 chars so any name yields a writable path; a name with no ASCII
+    alphanumerics (e.g. all punctuation or non-Latin script) falls back to
+    ``benchmark``.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower())[:60].strip("-")
+    return slug or "benchmark"
 
 
 def _build_data(config, results, timestamp) -> dict:
@@ -54,7 +67,9 @@ def _write_json(data) -> str:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     file_path = f"{RESULTS_DIR}/{data['run_id']}.json"
     with open(file_path, "w") as f:
-        json.dump(data, f, indent=4)
+        # default=str: YAML can hand us dates/timestamps (e.g. an unquoted
+        # 2024-01-01 in expected_output) that json can't encode natively.
+        json.dump(data, f, indent=4, default=str)
     return file_path
 
 
@@ -94,7 +109,10 @@ def _write_markdown(data) -> str:
             "| --- | --- | --- | --- | --- |",
         ]
         for tc in run["test_cases"]:
-            score = "" if tc["match_score"] is None else f"{tc['match_score']:.4f}"
+            if tc["match_score"] is None:
+                score = _ERROR_LABELS.get(tc.get("status"), "error")
+            else:
+                score = f"{tc['match_score']:.4f}"
             lines.append(
                 f"| {tc['id']} | {tc['evaluation']} | {tc['match_result']} | "
                 f"{score} | ${tc['total_cost']:.6f} |"

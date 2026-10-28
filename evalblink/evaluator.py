@@ -29,7 +29,10 @@ def _extract_json(raw):
         text = re.sub(r"^```[a-zA-Z0-9]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
         text = text.strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except RecursionError:  # e.g. "[[[[…" thousands deep from a runaway model
+        raise json.JSONDecodeError("JSON nested too deeply", text, 0) from None
 
 
 def exact_match(response, expected):
@@ -121,8 +124,10 @@ def evaluate_llm_judge(
     try:
         parsed = _extract_json(raw)
         score = int(parsed["score"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         # Judge returned malformed JSON / no usable score — pipeline failure.
+        # ValueError covers JSONDecodeError and int("high"); OverflowError is
+        # int(Infinity) from a judge replying {"score": Infinity}.
         return {
             "status": "judge_error",
             "match_result": False,

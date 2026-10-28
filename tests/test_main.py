@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
+from pathlib import Path
 
+import dotenv
+import httpx
 import pytest
 import yaml
 
@@ -84,10 +88,10 @@ def test_run_subcommand_dispatches(monkeypatch):
     assert calls["config"]["config_path"] == "bench.yaml"
 
 
-@pytest.mark.parametrize("key", [None, ""])
+@pytest.mark.parametrize("key", [None, "", "   "])
 def test_run_without_api_key_exits_1_before_any_call(monkeypatch, capsys, key):
     # main() calls load_dotenv(), which would pick up a real .env — neutralise it.
-    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(main, "load_dotenv", lambda *a, **k: None)
     if key is None:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     else:
@@ -625,3 +629,157 @@ def test_empty_or_non_mapping_yaml_is_a_clean_error(
         main.main()
     assert exc.value.code == 1
     assert message in capsys.readouterr().out
+
+
+# ── CLI-level runs through the real pipeline, fake HTTP (round 2 contract) ────
+
+
+def _write_cli_config(tmp_path, **overrides) -> Path:
+    cfg = {
+        "name": "CLI",
+        "models": ["m/a"],
+        "concurrency": 1,  # deterministic order for the queued responses
+        "prompts": [{"id": "v1", "template": "Q: {{ q }}"}],
+        "test_cases": [
+            {
+                "id": f"c{i}",
+                "evaluation": "exact_match",
+                "expected_output": "yes",
+                "variables": {"q": str(i)},
+            }
+            for i in (1, 2)
+        ],
+    }
+    cfg.update(overrides)
+    path = tmp_path / "bench.yaml"
+    path.write_text(yaml.dump(cfg))
+    return path
+
+
+@pytest.fixture
+def fake_http(monkeypatch, tmp_path):
+    """Run from ``tmp_path`` with a key set and ``httpx.Client.post`` faked.
+
+    ``install(*responses)`` queues ``httpx.Response``s / exceptions; the last
+    one repeats.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    def install(*responses):
+        calls = []
+
+        def post(self, **kwargs):
+            calls.append(kwargs)
+            item = responses[min(len(calls), len(responses)) - 1]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        monkeypatch.setattr(httpx.Client, "post", post)
+        return calls
+
+    return install
+
+
+def _ok(content):
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0},
+        },
+    )
+
+
+def _run_cli(argv):
+    with pytest.raises(SystemExit) as exc:
+        main.main(argv)
+    return exc.value.code
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.Response(502, text="<html>502 Bad Gateway</html>"),
+        httpx.Response(401, json={"error": {"code": 401, "message": "bad key"}}),
+        httpx.Response(200, json={"choices": []}),
+        httpx.ConnectError("refused"),
+    ],
+)
+def test_run_where_nothing_could_be_scored_exits_1(
+    fake_http, tmp_path, capsys, failure
+):
+    fake_http(failure)
+    assert _run_cli(["run", str(_write_cli_config(tmp_path))]) == 1
+    out = capsys.readouterr().out
+    assert "2 of 2 case(s) hit a pipeline error" in out
+    assert "no case could be scored" in out
+    # The run still completed and wrote its records.
+    [md] = (tmp_path / "results").glob("*.md")
+    assert "| c1 | exact_match | False | API error |" in md.read_text()
+
+
+def test_run_with_some_pipeline_errors_warns_and_uses_the_gate(
+    fake_http, tmp_path, capsys
+):
+    fake_http(_ok("yes"), httpx.Response(400, text="<html>bad</html>"))
+    path = _write_cli_config(tmp_path)
+    assert _run_cli(["run", str(path), "--no-cache"]) == 0  # no gate set
+    out = capsys.readouterr().out
+    assert "1 of 2 case(s) hit a pipeline error" in out
+    assert "no case could be scored" not in out
+
+    # The scored case passes (100%), so a gate of 90 passes too.
+    fake_http(_ok("yes"), httpx.Response(400, text="<html>bad</html>"))
+    path = _write_cli_config(tmp_path, quality_threshold=90)
+    assert _run_cli(["run", str(path), "--no-cache"]) == 0
+
+
+def test_run_without_pipeline_errors_prints_no_error_warning(
+    fake_http, tmp_path, capsys
+):
+    fake_http(_ok("yes"))
+    assert _run_cli(["run", str(_write_cli_config(tmp_path))]) == 0
+    assert "pipeline error" not in capsys.readouterr().out
+
+
+def test_validate_cli_rejects_template_that_fails_to_render(tmp_path, capsys):
+    path = _write_cli_config(
+        tmp_path, prompts=[{"id": "v1", "template": "Q: {{ q.a.b }}"}]
+    )
+    assert _run_cli(["validate", str(path)]) == 1
+    out = capsys.readouterr().out
+    assert "prompts['v1'] × test_cases['c1']" in out and "UndefinedError" in out
+
+
+def test_dotenv_is_loaded_from_the_working_directory(monkeypatch, tmp_path):
+    # Restore the real loader (conftest neutralises it) and start key-less.
+    monkeypatch.setattr(main, "load_dotenv", dotenv.load_dotenv)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "placeholder")  # restored on teardown
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=from-cwd-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main.cache, "stats", lambda: {"entries": 0, "size_bytes": 0})
+    assert _run_cli(["cache", "stats"]) == 0
+    # Compare without echoing the value: a wrong .env could hold a real key.
+    loaded_from_cwd = os.environ.get("OPENROUTER_API_KEY") == "from-cwd-dotenv"
+    assert loaded_from_cwd, ".env in the working directory was not loaded"
+
+
+@pytest.mark.parametrize("command", ["validate", "run"])
+def test_unreadable_config_is_a_clean_error(tmp_path, command):
+    bad = tmp_path / "latin1.yaml"
+    bad.write_bytes(b"name: caf\xe9\n")
+    for path, message in ((bad, "Invalid YAML"), (tmp_path, "Cannot read config")):
+        code = _run_cli([command, str(path)])
+        assert isinstance(code, str) and message in code
+
+
+def test_dry_run_catalog_failure_is_a_clean_error(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no cached models.json here
+    monkeypatch.setattr(
+        httpx.Client, "get", lambda self, **k: httpx.Response(502, text="<html>")
+    )
+    code = _run_cli(["run", str(_write_cli_config(tmp_path)), "--dry-run"])
+    assert isinstance(code, str) and "Could not fetch the OpenRouter model" in code

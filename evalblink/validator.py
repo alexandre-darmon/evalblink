@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import jinja2
 import jinja2.meta
 
-from .runner import JINJA_ENV
+from .runner import JINJA_ENV, render_template
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
 KNOWN_EVAL_TYPES = {"exact_match", "weighted_match", "llm_judge"}
@@ -26,8 +27,13 @@ def _template_vars(text: str) -> set[str]:
 
 
 def _is_number(value) -> bool:
-    """An int or float — but not a YAML ``true``/``false`` (bool subclasses int)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A finite int or float — not a YAML ``true``/``false`` (bool subclasses
+    int), nor ``.inf`` / ``.nan``."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def _mapping(value, label: str, errors: list[str]) -> dict:
@@ -69,9 +75,14 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
 
     models = config.get("models")
     if isinstance(models, list):
+        seen_models: set[str] = set()
         for i, model in enumerate(models):
             if not isinstance(model, str) or not model:
                 errors.append(f"models[{i}] must be a model ID string (got {model!r})")
+            elif model in seen_models:
+                errors.append(f"Duplicate model: '{model}'")
+            else:
+                seen_models.add(model)
 
     # Top-level scalars
     threshold = config.get("quality_threshold")
@@ -98,9 +109,10 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
     # Inference
     inference = _mapping(config.get("inference"), "inference", errors)
     max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    if not _is_number(max_tokens) or max_tokens <= 0:
+    # A whole number (100 or 100.0); 50.5, true, .inf are rejected.
+    if not (_is_number(max_tokens) and max_tokens > 0 and max_tokens % 1 == 0):
         errors.append(
-            f"inference.max_tokens must be a positive number (got {max_tokens!r})"
+            f"inference.max_tokens must be a positive integer (got {max_tokens!r})"
         )
         max_tokens = DEFAULT_MAX_TOKENS
     temperature = inference.get("temperature", DEFAULT_TEMPERATURE)
@@ -336,5 +348,21 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             " — the candidate's open-ended answer may be cut off before it is"
             " judged (recommend ≥ 200)"
         )
+
+    # Trial-render every prompt × test case exactly as the runner will (same
+    # function, same sandbox), so a template that would raise mid-run — nested
+    # attribute on an undefined variable, a sandbox violation, a bad filter
+    # argument — fails here, before any API call. Only on an otherwise-valid
+    # config: the render relies on the structure checked above.
+    if not errors:
+        for prompt in prompts:
+            for tc in test_cases:
+                try:
+                    render_template(prompt, config.get("variables"), tc)
+                except Exception as exc:  # noqa: BLE001 — any render failure
+                    errors.append(
+                        f"prompts['{prompt['id']}'] × test_cases['{tc['id']}']:"
+                        f" template failed to render — {type(exc).__name__}: {exc}"
+                    )
 
     return errors, warnings

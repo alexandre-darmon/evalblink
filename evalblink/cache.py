@@ -34,12 +34,20 @@ def _path(key: str) -> str:
 
 
 def get(key: str) -> dict | None:
-    """Return the cached value for ``key``, or ``None`` on a miss."""
+    """Return the cached value for ``key``, or ``None`` on a miss.
+
+    A corrupt or truncated entry also reads as a miss (it is overwritten on the
+    next successful call) rather than aborting the run.
+    """
     path = _path(key)
     if not os.path.exists(path):
         return None
-    with open(path) as f:
-        return json.load(f)
+    try:
+        with open(path) as f:
+            value = json.load(f)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) and "response" in value else None
 
 
 def set(key: str, value: dict) -> None:

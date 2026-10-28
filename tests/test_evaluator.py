@@ -184,3 +184,35 @@ def test_judge_requires_judge_model(client_factory, completion):
     client = client_factory(completion("{}"))
     with pytest.raises(ValueError, match="Judge model"):
         evaluate_llm_judge(client, {}, "answer", "task", "criteria")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"score": Infinity}',
+        '{"score": NaN}',
+        '{"score": "four"}',
+        '{"score": null}',
+        '{"score": [4]}',
+        "[4]",
+        "[" * 100_000 + "]" * 100_000,
+    ],
+)
+def test_judge_unusable_score_is_pipeline_error(
+    disable_cache, client_factory, completion, reply
+):
+    client = client_factory(completion(reply))
+    result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert result["status"] == "judge_error"
+    assert result["score_normalized"] is None
+
+
+def test_judge_out_of_range_score_is_clamped(disable_cache, client_factory, completion):
+    client = client_factory(completion('{"score": 99}'))
+    result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert result["score_raw"] == 5 and result["score_normalized"] == 1.0
+
+
+def test_weighted_match_deeply_nested_json_scores_zero():
+    deep = "[" * 100_000 + "]" * 100_000
+    assert weighted_match(WEIGHTED_PARAMS, deep, EXPECTED) == 0.0

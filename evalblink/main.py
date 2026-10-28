@@ -10,7 +10,7 @@ import sys
 
 import httpx
 import yaml
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -33,7 +33,8 @@ RESULTS_DIR = "results"
 def load_config(filepath):
     """Load a benchmark YAML, exiting with a clear message on failure."""
     try:
-        with open(filepath) as stream:
+        # Binary: YAML detects UTF-8/16 itself and reports bad bytes as a YAMLError.
+        with open(filepath, "rb") as stream:
             return yaml.safe_load(stream)
     except FileNotFoundError:
         sys.exit(
@@ -42,6 +43,17 @@ def load_config(filepath):
         )
     except yaml.YAMLError as exc:
         sys.exit(f"Invalid YAML in {filepath}: {exc}")
+    except OSError as exc:  # a directory, no permission, ...
+        sys.exit(f"Cannot read config {filepath}: {exc.strerror or exc}")
+
+
+def _fetch_models(**kwargs):
+    """The OpenRouter pricing catalog, exiting cleanly if it can't be fetched."""
+    try:
+        with httpx.Client() as client:
+            return openrouter.fetch_models(client, **kwargs)
+    except (RuntimeError, httpx.HTTPError) as exc:
+        sys.exit(f"Could not fetch the OpenRouter model catalog: {exc}")
 
 
 def cmd_run(args):
@@ -62,14 +74,13 @@ def cmd_run(args):
 
     if args.dry_run:
         # Estimate cost from the pricing catalog only — no completion calls.
-        with httpx.Client() as client:
-            models_meta = openrouter.fetch_models(client)
+        models_meta = _fetch_models()
         est = estimate.estimate(config, models_meta)
         reporter.render_estimate(est)
         sys.exit(1 if est["over_budget"] else 0)
 
     # Fail fast: without a key every candidate call would come back as an error.
-    if not os.getenv("OPENROUTER_API_KEY"):
+    if not (os.getenv("OPENROUTER_API_KEY") or "").strip():
         console.print(
             "[red]✗[/red]  OPENROUTER_API_KEY is not set — export it or add it to"
             " .env (see .env.example). `--dry-run` works without it."
@@ -79,6 +90,19 @@ def cmd_run(args):
     use_cache = not args.no_cache
     results, timestamp = runner.run(config, verbose=args.verbose, use_cache=use_cache)
     result = reporter.write(config, results, timestamp)
+
+    # Pipeline errors (api_error / judge errors) are excluded from scores; say so
+    # loudly, and fail outright when nothing at all could be scored.
+    errors = sum(r["errors"] for r in results)
+    total = sum(r["total"] for r in results)
+    if errors:
+        console.print(
+            f"\n[bold red]⚠  {errors} of {total} case(s) hit a pipeline error"
+            " (API / judge failure) and are excluded from scores.[/bold red]"
+        )
+    if errors and errors == total:
+        print("\nFAIL: no case could be scored — every call hit a pipeline error.")
+        sys.exit(1)
 
     # Top-level CI gate (0-100 %); separate from the per-case scorer thresholds
     # under `evaluation:`.
@@ -194,8 +218,7 @@ def _parse_context(value: str) -> int:
 
 def cmd_models(args):
     """List available OpenRouter models and their pricing."""
-    with httpx.Client() as client:
-        models_meta = openrouter.fetch_models(client, use_cache=not args.no_cache)
+    models_meta = _fetch_models(use_cache=not args.no_cache)
 
     rows = sorted(models_meta.items())
 
@@ -274,8 +297,7 @@ def cmd_init(args):
     )
 
     # 3. Models — fetch catalog for free-model suggestions
-    with httpx.Client() as client:
-        models_meta = openrouter.fetch_models(client, use_cache=True)
+    models_meta = _fetch_models(use_cache=True)
 
     free_suggestions = [
         (k, v)
@@ -688,10 +710,11 @@ def build_parser():
     return parser
 
 
-def main():
-    load_dotenv()
+def main(argv=None):
+    # The .env next to the user's benchmarks — not the installed package's dir.
+    load_dotenv(find_dotenv(usecwd=True))
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.func(args)
 
 
