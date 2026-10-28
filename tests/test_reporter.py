@@ -97,6 +97,8 @@ def test_write_embeds_insights_in_json_and_markdown(tmp_path, monkeypatch):
 
     md = Path(out["markdown"]).read_text()
     assert "Quality by tag" in md
+    assert "- **CI gate (quality_threshold):** 80" in md
+    assert "- **Per-case threshold:** None" in md
     assert "Recommendation" in md
     assert "edge_case" in md
 

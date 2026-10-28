@@ -403,11 +403,15 @@ def cmd_init(args):
         )
         models_meta = {}
 
-    free_suggestions = [
-        (k, v)
-        for k, v in sorted(models_meta.items())
-        if v.get("prompt") == 0 and v.get("completion") == 0
-    ][:5]
+    # `:free` ids first: other zero-priced entries can be non-text models.
+    free_suggestions = sorted(
+        (
+            (k, v)
+            for k, v in models_meta.items()
+            if v.get("prompt") == 0 and v.get("completion") == 0
+        ),
+        key=lambda kv: (not kv[0].endswith(":free"), kv[0]),
+    )[:5]
 
     console.print("\nModels", style="bold")
     if free_suggestions:

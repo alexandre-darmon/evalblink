@@ -303,7 +303,7 @@ Then return ONLY valid JSON, no markdown:
 {"reasoning": "<your analysis>", "score": <integer 1-5>}
 ```
 
-**Score normalization:** `(score - 1) / 4` → 0.0–1.0. A case passes if `normalized_score >= judge_threshold` (default 0.70, meaning a raw score of 4 or 5 — the judge's score is truncated to an integer). The judge call uses `temperature: 0` and its own budget, `evaluation.judge_max_tokens` (default 4096): reasoning judges spend thousands of tokens before the JSON and return null content on a small budget. A judge API failure keeps its reason in the case's `error` field and prints a one-line `Judge API error on …` warning.
+**Score normalization:** `(score - 1) / 4` → 0.0–1.0. A case passes if `normalized_score >= judge_threshold` (default 0.70, meaning a raw score of 4 or 5 — the judge's score is truncated to an integer). The judge call uses `temperature: 0` and its own budget, `evaluation.judge_max_tokens` (default 4096): reasoning judges spend thousands of tokens before the JSON and return null content on a small budget. A judge API failure keeps its reason in the case's `error` field and prints a one-line `Judge API error on …` warning (a null reply's hint names `evaluation.judge_max_tokens`); a reply with no usable score does the same with `Judge error on …`, giving the completion-token count.
 
 **Judge failures** (API error, malformed JSON) return `score=None` and a `status` flag — a pipeline failure is never conflated with a real score of 0.
 
@@ -458,16 +458,19 @@ evalblink run my_benchmark.yaml --dry-run    # the mixed-mode example from §5
 ```
 
 ```
-DRY RUN — estimated cost (no API calls)
- Model                         Prompt  Est prompt tok  Est completion tok  Est cost
- openai/gpt-4o-mini            v1      141             600                 $0.001743
- openai/gpt-4o-mini            v2      182             600                 $0.001753
- anthropic/claude-sonnet-4.6   v1      141             600                 $0.010785
- anthropic/claude-sonnet-4.6   v2      182             600                 $0.010912
-Judge cost (llm_judge cases): $0.005455
-Estimated total cost: $0.025192
+                         DRY RUN — estimated cost (no API calls)
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Model                       ┃ Prompt ┃ Est prompt tok ┃ Est completion tok ┃  Est cost ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ openai/gpt-4o-mini          │ v1     │            141 │                600 │ $0.010703 │
+│ openai/gpt-4o-mini          │ v2     │            182 │                600 │ $0.010713 │
+│ anthropic/claude-sonnet-4.6 │ v1     │            141 │                600 │ $0.019745 │
+│ anthropic/claude-sonnet-4.6 │ v2     │            182 │                600 │ $0.019872 │
+└─────────────────────────────┴────────┴────────────────┴────────────────────┴───────────┘
+Judge cost (llm_judge cases): $0.041295
+Estimated total cost: $0.061032
 Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
-✓ Within budget: estimate $0.025192 ≤ max_cost_usd $10.000000.
+✓ Within budget: estimate $0.061032 ≤ max_cost_usd $10.000000.
 ```
 
 - Prompt tokens estimated as `len(rendered_text) / 4`
@@ -664,7 +667,8 @@ Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchma
 - Judge model: ...
 - Temperature: ...
 - Max tokens: ...
-- Quality threshold: ...   (the per-case `evaluation.quality_threshold`, else `judge_threshold` — not the top-level CI gate)
+- Per-case threshold: ...   (`evaluation.quality_threshold`, else `judge_threshold`)
+- CI gate (quality_threshold): ...   (the top-level gate, from `insights`)
 
 ## Summary
 | Model | Prompt | Score | Pass/Scored | Errors | Prompt tok | Completion tok | Cost |

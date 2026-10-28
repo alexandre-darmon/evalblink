@@ -365,7 +365,7 @@ test_cases:
     tags: ["frustration", "edge_case"]
 ```
 
-The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge gets its own output budget, `evaluation.judge_max_tokens` (default 4096), independent of the candidate's `inference.max_tokens`: judges that reason at length before answering can use thousands of tokens (the free `nvidia/nemotron-3.5-lightning:free` takes 2,000–6,000 per verdict, which is why the examples use the more concise `nemotron-3-ultra`) and return nothing when the budget runs out — raise it if you see `judge_api_error … finish_reason: length`. A failed judge call prints a one-line `Judge API error on …` warning and keeps the reason in the case's `error` field. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
+The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge gets its own output budget, `evaluation.judge_max_tokens` (default 4096), independent of the candidate's `inference.max_tokens`: judges that reason at length before answering can use thousands of tokens (the free `nvidia/nemotron-3.5-lightning:free` takes 2,000–6,000 per verdict, which is why the examples use the more concise `nemotron-3-ultra`) and return nothing when the budget runs out — raise it if you see `judge_api_error … finish_reason: length`. A failed judge call prints a one-line `Judge API error on …` warning, and a reply with no usable score (often JSON cut off by the budget) prints `Judge error on …`; either way the reason is kept in the case's `error` field. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
 
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)
@@ -448,18 +448,21 @@ evalblink run my_benchmark.yaml --dry-run    # the Quickstart config above
 ```
 
 ```
-DRY RUN — estimated cost (no API calls)
- Model                          Prompt  Est prompt tok  Est completion tok  Est cost
- openai/gpt-4o-mini             v1      191             800                 $0.001870
- openai/gpt-4o-mini             v2      246             800                 $0.001883
- anthropic/claude-sonnet-4.6    v1      191             800                 $0.013935
- anthropic/claude-sonnet-4.6    v2      246             800                 $0.014104
- mistralai/mistral-small-2603   v1      191             800                 $0.001870
- mistralai/mistral-small-2603   v2      246             800                 $0.001883
-Judge cost (llm_judge cases): $0.008182
-Estimated total cost: $0.035544
+                          DRY RUN — estimated cost (no API calls)
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Model                        ┃ Prompt ┃ Est prompt tok ┃ Est completion tok ┃  Est cost ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ openai/gpt-4o-mini           │ v1     │            191 │                800 │ $0.010830 │
+│ openai/gpt-4o-mini           │ v2     │            246 │                800 │ $0.010843 │
+│ anthropic/claude-sonnet-4.6  │ v1     │            191 │                800 │ $0.022895 │
+│ anthropic/claude-sonnet-4.6  │ v2     │            246 │                800 │ $0.023064 │
+│ mistralai/mistral-small-2603 │ v1     │            191 │                800 │ $0.010830 │
+│ mistralai/mistral-small-2603 │ v2     │            246 │                800 │ $0.010843 │
+└──────────────────────────────┴────────┴────────────────┴────────────────────┴───────────┘
+Judge cost (llm_judge cases): $0.061942
+Estimated total cost: $0.089304
 Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
-✓ Within budget: estimate $0.035544 ≤ max_cost_usd $10.000000.
+✓ Within budget: estimate $0.089304 ≤ max_cost_usd $10.000000.
 ```
 
 Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog, or priced there with a negative or non-numeric value (such as the `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`).
