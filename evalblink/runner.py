@@ -21,7 +21,7 @@ from .evaluator import (
     judge_vendor_warning,
     weighted_match,
 )
-from .openrouter import openrouter_request
+from .openrouter import CANCELLED, openrouter_request
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
 # Templates come from user-supplied YAML: parse (validator) and render them in a
@@ -115,7 +115,10 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         # Candidate API failed after retries — a pipeline failure, not a real
         # score of 0. Record it and keep the run going (mirrors the judge).
         error = str(exc) or type(exc).__name__
-        print(f"⚠️  API error on {model} / {prompt['id']} / {test_case['id']}: {error}")
+        if not CANCELLED.is_set():
+            print(
+                f"⚠️  API error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+            )
         response = {
             "response": "",
             "prompt_tokens": 0,
@@ -246,10 +249,10 @@ def run(config, verbose=False, use_cache=True):
         for test_case in config["test_cases"]
     ]
 
-    with (
-        httpx.Client() as client,
-        ThreadPoolExecutor(max_workers=concurrency) as executor,
-    ):
+    CANCELLED.clear()
+    # Not a `with`: its exit would wait for in-flight calls, even after Ctrl-C.
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    with httpx.Client() as client:
         futures = [
             executor.submit(
                 _run_case,
@@ -267,10 +270,13 @@ def run(config, verbose=False, use_cache=True):
             # .result() blocks until each future completes; submission order is preserved.
             case_results = [f.result() for f in futures]
         except KeyboardInterrupt:
-            # Ctrl-C: drop every queued call (only in-flight ones finish) so
-            # the run stops spending, then let main() exit.
+            # Ctrl-C: stop retries, drop every queued call and don't wait for
+            # in-flight ones (a socket read can block until the timeout);
+            # main() exits without joining the workers.
+            CANCELLED.set()
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+        executor.shutdown()
 
     # Re-group by (model, prompt_id), maintaining config order within each group.
     groups: dict = defaultdict(list)

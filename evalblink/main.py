@@ -858,7 +858,11 @@ def main(argv=None):
         args.func(args)
     except KeyboardInterrupt:
         print("\nInterrupted — no results written.", file=sys.stderr)
-        sys.exit(130)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Skip joining worker threads still blocked in an HTTP read (up to the
+        # 120 s timeout); there is nothing left to write.
+        os._exit(130)
     except EOFError:  # `init` with stdin closed
         sys.exit("\nNo input — aborted.")
 

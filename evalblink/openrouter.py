@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 
 import httpx
@@ -71,6 +72,9 @@ def _result_problem(result) -> str | None:
 
 
 _cache_write_warned = False
+
+# Set by the runner on Ctrl-C so worker threads stop retrying and calling.
+CANCELLED = threading.Event()
 
 
 def _cache_set(key: str, value: dict) -> None:
@@ -144,6 +148,8 @@ def openrouter_request(
     # single flaky call doesn't abort the whole benchmark run. Backoff: 1s, 2s, 4s.
     # A transient code may arrive on the HTTP status line or in the JSON error body.
     for attempt in range(MAX_RETRIES):
+        if CANCELLED.is_set():  # Ctrl-C: no new attempt, no more retries
+            raise RuntimeError("cancelled")
         last = attempt == MAX_RETRIES - 1
         try:
             response = client.post(

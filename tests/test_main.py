@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -1146,10 +1147,15 @@ def test_ctrl_c_cancels_queued_calls_and_exits_130(fake_http, tmp_path, monkeypa
         calls.append(kwargs)
         if len(calls) == 1:
             raise KeyboardInterrupt  # what the main thread sees on Ctrl-C
-        threading.Event().wait(0.3)  # in flight while the run stops (sleep is stubbed)
+        threading.Event().wait(2)  # in flight while the run stops (sleep is stubbed)
         return _ok("y")
 
     monkeypatch.setattr(httpx.Client, "post", post)
+
+    def hard_exit(code):  # main() uses os._exit so it never joins the workers
+        raise SystemExit(code)
+
+    monkeypatch.setattr(main.os, "_exit", hard_exit)
     cases = [
         {
             "id": f"c{i}",
@@ -1160,7 +1166,9 @@ def test_ctrl_c_cancels_queued_calls_and_exits_130(fake_http, tmp_path, monkeypa
         for i in range(20)
     ]
     path = _write_cli_config(tmp_path, test_cases=cases)
+    started = time.monotonic()
     assert _run_cli(["run", str(path)]) == 130
+    assert time.monotonic() - started < 1.5  # did not wait for the in-flight call
     assert len(calls) == 2  # the 18 queued calls were dropped, not sent
     assert list((tmp_path / "results").glob("*.json")) == []
 

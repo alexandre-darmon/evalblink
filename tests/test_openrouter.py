@@ -460,3 +460,12 @@ def test_models_cache_write_failure_still_returns_catalog(
     monkeypatch.setattr(openrouter, "MODELS_CACHE_PATH", str(blocker / "models.json"))
     assert "a/b" in fetch_models(client_factory(_catalog()))
     assert "Could not cache the model catalog" in capsys.readouterr().out
+
+
+def test_cancelled_run_stops_retrying(client_factory, error_body, monkeypatch):
+    # Ctrl-C sets CANCELLED; a worker mid-retry must give up, not keep calling.
+    client = client_factory(error_body(429))
+    monkeypatch.setattr(openrouter.time, "sleep", lambda s: openrouter.CANCELLED.set())
+    with pytest.raises(RuntimeError, match="cancelled"):
+        openrouter_request(client, "p", "m", use_cache=False)
+    assert len(client.calls) == 1

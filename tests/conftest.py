@@ -32,6 +32,7 @@ def _offline(monkeypatch):
         raise AssertionError(f"test attempted a real HTTP request: {request.url}")
 
     monkeypatch.setattr(httpx.Client, "send", _no_network)
+    openrouter.CANCELLED.clear()  # a Ctrl-C test must not leak into the next one
     monkeypatch.setattr(main, "load_dotenv", lambda *a, **k: False)
 
 
