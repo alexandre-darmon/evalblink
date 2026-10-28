@@ -182,9 +182,10 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         judge_cost = judge_result["judge_cost"]
         if judge_result.get("error"):
             error = judge_result["error"]
+            kind = "Judge API error" if status == "judge_api_error" else "Judge error"
             if not CANCELLED.is_set():
                 print(
-                    f"⚠️  Judge API error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+                    f"⚠️  {kind} on {model} / {prompt['id']} / {test_case['id']}: {error}"
                 )
         if verbose:
             print(

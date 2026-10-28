@@ -286,3 +286,26 @@ def test_judge_api_error_keeps_the_reason(disable_cache, client_factory, error_b
     result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
     assert result["status"] == "judge_api_error"
     assert "model not found" in result["error"]
+
+
+def test_judge_errors_name_the_judge_budget(disable_cache, client_factory):
+    null_reply = {
+        "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 9, "cost": 0.0},
+    }
+    result = evaluate_llm_judge(
+        client_factory(null_reply), JUDGE_PARAMS, "answer", "task", "criteria"
+    )
+    assert result["status"] == "judge_api_error"
+    assert "evaluation.judge_max_tokens" in result["error"]
+
+    cut_off = {
+        "choices": [{"message": {"content": '{"reasoning": "long and'}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 16, "cost": 0.0},
+    }
+    result = evaluate_llm_judge(
+        client_factory(cut_off), JUDGE_PARAMS, "answer", "task", "criteria"
+    )
+    assert result["status"] == "judge_error"
+    assert "16 completion tokens" in result["error"]
+    assert "evaluation.judge_max_tokens" in result["error"]

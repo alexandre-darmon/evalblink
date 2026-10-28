@@ -1373,3 +1373,20 @@ def test_init_defaults_are_a_free_judge_and_reasoning_headroom(monkeypatch, tmp_
     assert config["evaluation"]["judge_model"] == main.INIT_JUDGE_MODEL
     assert main.INIT_JUDGE_MODEL.endswith(":free")
     assert config["inference"]["max_tokens"] == 1024
+
+
+def test_init_suggests_free_ids_before_other_zero_priced_models(
+    monkeypatch, tmp_path, capsys
+):
+    catalog = {
+        "a/audio-model": {"prompt": 0.0, "completion": 0.0, "context_length": 1},
+        "z/text:free": {"prompt": 0.0, "completion": 0.0, "context_length": 1},
+    }
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(deque(["x", "exact_match"])))
+    with pytest.raises(IndexError):  # stop after the suggestions are printed
+        main.main(["init"])
+    out = capsys.readouterr().out
+    assert out.index("z/text:free") < out.index("a/audio-model")

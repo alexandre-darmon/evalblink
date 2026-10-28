@@ -90,6 +90,7 @@ def _write_json(data) -> str:
 def _write_markdown(data) -> str:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     file_path = f"{RESULTS_DIR}/{data['run_id']}.md"
+    gate = (data.get("insights") or {}).get("quality_threshold")
     lines = [
         f"# {data['benchmark']}",
         "",
@@ -98,7 +99,10 @@ def _write_markdown(data) -> str:
         f"- **Judge model:** {data.get('judge_model')}",
         f"- **Temperature:** {data.get('temperature')}",
         f"- **Max tokens:** {data.get('max_tokens')}",
-        f"- **Quality threshold:** {data.get('quality_threshold')}",
+        # quality_threshold here is the per-case scorer threshold (0-1); the
+        # top-level CI gate (0-100) is in insights.
+        f"- **Per-case threshold:** {data.get('quality_threshold')}",
+        f"- **CI gate (quality_threshold):** {gate}",
         "",
         "## Summary",
         "",

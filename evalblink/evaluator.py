@@ -131,7 +131,10 @@ def evaluate_llm_judge(
             "judge_completion_tokens": 0,
             "judge_cost": 0.0,
             "from_cache": False,
-            "error": str(exc) or type(exc).__name__,
+            # The judge's budget is its own setting, not inference.max_tokens.
+            "error": (str(exc) or type(exc).__name__).replace(
+                "Increase max_tokens.", "Increase evaluation.judge_max_tokens."
+            ),
         }
 
     from_cache = judge_response.get("from_cache", False)
@@ -158,6 +161,11 @@ def evaluate_llm_judge(
             "judge_cost": judge_cost,
             "raw_response": raw,
             "from_cache": from_cache,
+            "error": (
+                f"judge reply has no usable score ({judge_completion_tokens}"
+                " completion tokens; if it was cut off, raise"
+                " evaluation.judge_max_tokens)"
+            ),
         }
 
     score = max(1, min(5, score))
