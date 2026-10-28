@@ -99,6 +99,18 @@ def test_weighted_match_wrong_shape_returns_zero():
     )  # missing percent/order
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        '[{"use_case": "A", "percent": "50%", "order": 1}]',  # non-numeric percent
+        '[{"use_case": ["A"], "percent": 0.5, "order": 1}]',  # unhashable label
+    ],
+)
+def test_weighted_match_wrong_value_types_return_zero(response):
+    # Would raise TypeError mid-run without the guard — a task failure instead.
+    assert weighted_match(WEIGHTED_PARAMS, response, EXPECTED) == 0.0
+
+
 def test_weighted_match_partial_percent_out_of_tolerance():
     # B's percent is off by 0.6 (> 0.2 tolerance): labels F1=1, percent=1/2, order=1.
     response = json.dumps(

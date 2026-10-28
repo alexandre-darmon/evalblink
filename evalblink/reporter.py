@@ -33,16 +33,17 @@ def _build_data(config, results, timestamp) -> dict:
     """The canonical run record — the exact shape persisted as JSON."""
     benchmark_name = config["name"]
     inference = config.get("inference") or {}
+    evaluation = config.get("evaluation") or {}
     run_id = f"{timestamp}_{_slugify(benchmark_name)}"
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "benchmark": config["name"],
-        "judge_model": config.get("evaluation", {}).get("judge_model"),
+        "judge_model": evaluation.get("judge_model"),
         "temperature": inference.get("temperature", DEFAULT_TEMPERATURE),
         "max_tokens": inference.get("max_tokens", DEFAULT_MAX_TOKENS),
-        "quality_threshold": config.get("evaluation", {}).get(
-            "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
+        "quality_threshold": evaluation.get(
+            "quality_threshold", evaluation.get("judge_threshold")
         ),
         "timestamp": timestamp,
         "results": results,

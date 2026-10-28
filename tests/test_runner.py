@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from jinja2.exceptions import SecurityError
+
 from evalblink.runner import render_template
 
 
@@ -34,3 +37,11 @@ def test_single_brace_is_left_literal():
     prompt = {"template": "Choose from: {labels}"}
     rendered, _ = render_template(prompt, {"labels": "a,b"}, {"variables": {}})
     assert rendered == "Choose from: {labels}"
+
+
+@pytest.mark.parametrize("field", ["template", "system"])
+def test_sandbox_blocks_unsafe_attribute_access(field):
+    # Templates are user YAML: they must not reach Python internals (SSTI).
+    prompt = {"template": "ok", field: "{{ cycler.__init__.__globals__ }}"}
+    with pytest.raises(SecurityError):
+        render_template(prompt, {}, {"variables": {}})

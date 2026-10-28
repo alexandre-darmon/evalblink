@@ -167,10 +167,14 @@ def weighted_match(evaluation_params, response, expected, tolerance=0.20):
         # (score 0.0), not a pipeline error. Don't abort the whole run.
         return 0.0
 
-    # Valid JSON of the wrong shape (not a list of objects with the scored keys)
-    # is also a task failure — guard so the scoring below can't raise and abort.
+    # Valid JSON of the wrong shape (not a list of objects with the scored keys,
+    # a hashable use_case and a numeric percent) is also a task failure — guard
+    # so the scoring below can't raise and abort.
     if not isinstance(parsed, list) or not all(
-        isinstance(item, dict) and {"use_case", "percent", "order"} <= item.keys()
+        isinstance(item, dict)
+        and {"use_case", "percent", "order"} <= item.keys()
+        and not isinstance(item["use_case"], (list, dict))
+        and isinstance(item["percent"], (int, float))
         for item in parsed
     ):
         return 0.0

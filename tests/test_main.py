@@ -62,6 +62,7 @@ def test_compare_detailed_flag_routes_to_detailed(monkeypatch):
 
 def test_run_subcommand_dispatches(monkeypatch):
     calls = {}
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     monkeypatch.setattr(main, "load_config", lambda p: {"name": "X", "config_path": p})
     monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
@@ -81,6 +82,31 @@ def test_run_subcommand_dispatches(monkeypatch):
     # No quality_threshold → gate not enforced, exits 0.
     assert exc.value.code == 0
     assert calls["config"]["config_path"] == "bench.yaml"
+
+
+@pytest.mark.parametrize("key", [None, ""])
+def test_run_without_api_key_exits_1_before_any_call(monkeypatch, capsys, key):
+    # main() calls load_dotenv(), which would pick up a real .env — neutralise it.
+    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    if key is None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
+    monkeypatch.setattr(
+        main.runner, "run", lambda *a, **k: pytest.fail("runner.run called")
+    )
+    monkeypatch.setattr(
+        main.openrouter,
+        "openrouter_request",
+        lambda *a, **k: pytest.fail("API called"),
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", "run", "bench.yaml"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1
+    assert "OPENROUTER_API_KEY is not set" in capsys.readouterr().out
 
 
 def test_no_subcommand_errors(monkeypatch):
@@ -580,3 +606,22 @@ def test_validate_subcommand_errors_exit_1(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 1
+
+
+@pytest.mark.parametrize(
+    "text, message", [("", "Config file is empty"), ("- a\n- b\n", "YAML mapping")]
+)
+@pytest.mark.parametrize("command", ["validate", "run"])
+def test_empty_or_non_mapping_yaml_is_a_clean_error(
+    monkeypatch, tmp_path, capsys, text, message, command
+):
+    f = tmp_path / "cfg.yaml"
+    f.write_text(text)
+    monkeypatch.setattr(
+        main.runner, "run", lambda *a, **k: pytest.fail("runner.run called")
+    )
+    monkeypatch.setattr(main.sys, "argv", ["evalblink", command, str(f)])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 1
+    assert message in capsys.readouterr().out

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from evalblink.validator import validate
 
 
@@ -330,3 +332,136 @@ def test_filtered_variable_provided_globally_is_ok():
     }
     errors, _ = validate(cfg)
     assert not any("text" in e for e in errors)
+
+
+# --- malformed values: clear errors instead of crashes later in the run ---
+
+
+def _weighted_config(**overrides) -> dict:
+    base = {
+        "name": "Test",
+        "models": ["openai/gpt-4o"],
+        "evaluation": {
+            "quality_threshold": 0.5,
+            "variables": [
+                {"name": "use_case", "weight": 0.5},
+                {"name": "percent", "weight": 0.25, "tolerance": 0.2},
+                {"name": "order", "weight": 0.25},
+            ],
+        },
+        "prompts": [{"id": "v1", "template": "Hi"}],
+        "test_cases": [
+            {
+                "id": "tc_001",
+                "evaluation": "weighted_match",
+                "expected_output": [{"use_case": "A", "percent": 1.0, "order": 1}],
+            }
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def _set(path, value, base=_exact_match_config):
+    """A builder: ``base()`` with the dotted ``path`` (list indexes as ints) set."""
+
+    def build():
+        cfg = base()
+        *parents, last = path.split(".")
+        node = cfg
+        for key in parents:
+            node = node[int(key)] if isinstance(node, list) else node[key]
+        node[int(last) if isinstance(node, list) else last] = value
+        return cfg
+
+    return build
+
+
+def test_valid_weighted_config_returns_no_issues():
+    assert validate(_weighted_config()) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "build, message",
+    [
+        (lambda: None, "Config file is empty"),
+        (lambda: ["a", "b"], "must be a YAML mapping"),
+        (_set("name", 123), "'name' must be a string"),
+        (_set("quality_threshold", "high"), "between 0 and 100"),
+        (_set("quality_threshold", 150), "between 0 and 100"),
+        (_set("quality_threshold", True), "between 0 and 100"),
+        (_set("concurrency", 0), "concurrency must be a positive integer"),
+        (_set("concurrency", "4"), "concurrency must be a positive integer"),
+        (_set("concurrency", 2.5), "concurrency must be a positive integer"),
+        (_set("inference", "fast"), "'inference' must be a mapping"),
+        (_set("evaluation", ["x"]), "'evaluation' must be a mapping"),
+        (_set("inference.temperature", "hot"), "inference.temperature must be"),
+        (_set("prompts.0.id", 1), "'id' must be a string"),
+        (_set("test_cases.0.id", 1), "'id' must be a string"),
+        (_set("prompts.0.template", "{{ text "), "template: Jinja2 syntax error"),
+        (_set("prompts.0.system", "{% if %}"), "system: Jinja2 syntax error"),
+        (_set("test_cases.0.expected_output", True), "quote it"),
+        (_set("test_cases.0.expected_output", 3), "quote it"),
+        (
+            _set(
+                "evaluation.variables",
+                [{"name": "use_case", "weight": 1}],
+                _weighted_config,
+            ),
+            "missing weighted_match dimension(s): percent, order",
+        ),
+        (
+            _set("test_cases.0.expected_output", [], _weighted_config),
+            "non-empty list",
+        ),
+        (
+            _set("test_cases.0.expected_output", "A", _weighted_config),
+            "non-empty list",
+        ),
+        # Beyond the core list: other values that would crash mid-run.
+        (_set("models.0", 7), "models[0] must be a model ID string"),
+        (_set("max_cost_usd", "1$"), "max_cost_usd must be"),
+        (_set("variables", ["text"]), "'variables' must be a mapping"),
+        (_set("test_cases.0.variables", "x"), "variables' must be a mapping"),
+        (_set("test_cases.0.tags", "easy"), "'tags' must be a list of strings"),
+        (_set("prompts.0", "v1"), "prompts[0] must be a mapping"),
+        (_set("test_cases.0", "tc"), "test_cases[0] must be a mapping"),
+        (_set("test_cases.0.evaluation", ["exact_match"]), "unknown evaluation"),
+        (
+            _set("evaluation.judge_threshold", "high", _llm_judge_config),
+            "judge_threshold must be",
+        ),
+        (_set("test_cases.0.criteria", 5, _llm_judge_config), "'criteria' must be"),
+        (
+            _set("evaluation.judge_model", ["a/b"], _llm_judge_config),
+            "judge_model must be a model ID string",
+        ),
+        (
+            _set("evaluation.quality_threshold", 80, _weighted_config),
+            "evaluation.quality_threshold must be",
+        ),
+        (
+            _set("evaluation.variables.1.weight", "x", _weighted_config),
+            "'percent': weight",
+        ),
+        (
+            _set("evaluation.variables.0", "use_case", _weighted_config),
+            "evaluation.variables must be a list of",
+        ),
+        (
+            _set("test_cases.0.expected_output", [{"use_case": "A"}], _weighted_config),
+            "every weighted_match expected_output item",
+        ),
+    ],
+)
+def test_malformed_value_is_an_error(build, message):
+    errors, _ = validate(build())
+    assert any(message in e for e in errors), errors
+
+
+@pytest.mark.parametrize("key", ["inference", "evaluation", "variables"])
+def test_null_block_is_treated_as_absent(key):
+    cfg = _exact_match_config()
+    cfg[key] = None
+    cfg["prompts"] = [{"id": "v1", "template": "Hi"}]  # no variables needed
+    assert validate(cfg) == ([], [])

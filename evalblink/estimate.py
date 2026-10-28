@@ -47,7 +47,7 @@ def estimate(config, models_meta) -> dict:
     """
     inference = config.get("inference") or {}
     max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    judge_model = config.get("evaluation", {}).get("judge_model")
+    judge_model = (config.get("evaluation") or {}).get("judge_model")
     missing: list = []
 
     rows = []

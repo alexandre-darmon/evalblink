@@ -68,6 +68,14 @@ def cmd_run(args):
         reporter.render_estimate(est)
         sys.exit(1 if est["over_budget"] else 0)
 
+    # Fail fast: without a key every candidate call would come back as an error.
+    if not os.getenv("OPENROUTER_API_KEY"):
+        console.print(
+            "[red]✗[/red]  OPENROUTER_API_KEY is not set — export it or add it to"
+            " .env (see .env.example). `--dry-run` works without it."
+        )
+        sys.exit(1)
+
     use_cache = not args.no_cache
     results, timestamp = runner.run(config, verbose=args.verbose, use_cache=use_cache)
     result = reporter.write(config, results, timestamp)
@@ -504,16 +512,15 @@ _COMPARE_DESCRIPTION = "Diff two run records — quality and cost deltas, no API
 
 _COMPARE_EPILOG = """\
 OUTPUT COLUMNS
-  Quality A / B   pass-rate % per run
-  Quality Δ       ↑ / ↓ / stable (threshold: 5 pp)
-  Cost A / B      total cost per combo (models + judge)
-  Cost Δ          cost change
-  Notes           a_only / b_only when a combo is missing from one run
+  Model / Prompt  the combo being compared
+  Quality Δ       pass-rate change B − A: ↑ / ↓, or stable within ±0.05 pp
+  Cost Δ          total cost change per combo (models + judge)
+  Notes           "only in A" / "only in B" when a combo is missing from one run
 
 --detailed also shows per-combo case transitions and a global summary:
   regressed   pass → fail
   improved    fail → pass
-  new_error   scored → None  (pipeline error, not counted as a regression)
+  new error   scored → None  (pipeline error, not counted as a regression)
   recovered   None → scored
 
 EXAMPLES
@@ -674,7 +681,7 @@ def build_parser():
         "-y",
         "--yes",
         action="store_true",
-        help="confirm deletion without prompting",
+        help="actually delete (without it, only the entry count is printed)",
     )
     clear_p.set_defaults(func=cmd_cache_clear)
 

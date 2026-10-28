@@ -7,20 +7,40 @@ import re
 import jinja2
 import jinja2.meta
 
-from .schemas import DEFAULT_MAX_TOKENS
+from .runner import JINJA_ENV
+from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
 KNOWN_EVAL_TYPES = {"exact_match", "weighted_match", "llm_judge"}
+# Hardcoded in ``evaluator.weighted_match`` — every one must be weighted.
+WEIGHTED_DIMENSIONS = ("use_case", "percent", "order")
 
 _SINGLE_BRACE_RE = re.compile(r"(?<!\{)\{(\w+)\}(?!\})")
-_JINJA_ENV = jinja2.Environment()
 
 
 def _template_vars(text: str) -> set[str]:
-    """Return variable names used in a Jinja2 template, including filtered ones."""
-    try:
-        return jinja2.meta.find_undeclared_variables(_JINJA_ENV.parse(text))
-    except jinja2.TemplateSyntaxError:
-        return set()
+    """Return variable names used in a Jinja2 template, including filtered ones.
+
+    Raises ``jinja2.TemplateSyntaxError`` on a malformed template.
+    """
+    return jinja2.meta.find_undeclared_variables(JINJA_ENV.parse(text))
+
+
+def _is_number(value) -> bool:
+    """An int or float — but not a YAML ``true``/``false`` (bool subclasses int)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _mapping(value, label: str, errors: list[str]) -> dict:
+    """``value`` as a dict: ``None`` reads as absent, any other non-mapping errors."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        errors.append(
+            f"'{label}' must be a mapping of key: value pairs"
+            f" (got {type(value).__name__})"
+        )
+        return {}
+    return value
 
 
 def validate(config: dict) -> tuple[list[str], list[str]]:
@@ -28,26 +48,64 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
+    # An empty YAML file loads as None; a bare list or scalar is not a config.
+    if config is None:
+        return ["Config file is empty"], []
+    if not isinstance(config, dict):
+        kind = type(config).__name__
+        return [
+            f"Config must be a YAML mapping of name/models/prompts/… (got {kind})"
+        ], []
+
     # Required top-level fields — check presence and type
     for field in ("name", "models", "prompts", "test_cases"):
         val = config.get(field)
         if not val:
             errors.append(f"Missing required field: '{field}'")
+        elif field == "name" and not isinstance(val, str):
+            errors.append(f"'name' must be a string (got {val!r}) — quote it")
         elif field in ("models", "prompts", "test_cases") and not isinstance(val, list):
             errors.append(f"'{field}' must be a list (got {type(val).__name__})")
 
-    # Inference
-    inference = config.get("inference") or {}
-    max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    if (
-        not isinstance(max_tokens, (int, float))
-        or isinstance(max_tokens, bool)
-        or max_tokens <= 0
+    models = config.get("models")
+    if isinstance(models, list):
+        for i, model in enumerate(models):
+            if not isinstance(model, str) or not model:
+                errors.append(f"models[{i}] must be a model ID string (got {model!r})")
+
+    # Top-level scalars
+    threshold = config.get("quality_threshold")
+    if threshold is not None and not (_is_number(threshold) and 0 <= threshold <= 100):
+        errors.append(
+            "quality_threshold (the CI gate) must be a number between 0 and 100"
+            f" (got {threshold!r})"
+        )
+    concurrency = config.get("concurrency")
+    if concurrency is not None and not (
+        isinstance(concurrency, int)
+        and not isinstance(concurrency, bool)
+        and concurrency >= 1
     ):
+        errors.append(f"concurrency must be a positive integer (got {concurrency!r})")
+    max_cost_usd = config.get("max_cost_usd")
+    if max_cost_usd is not None and not (
+        _is_number(max_cost_usd) and max_cost_usd >= 0
+    ):
+        errors.append(
+            f"max_cost_usd must be a non-negative number (got {max_cost_usd!r})"
+        )
+
+    # Inference
+    inference = _mapping(config.get("inference"), "inference", errors)
+    max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
+    if not _is_number(max_tokens) or max_tokens <= 0:
         errors.append(
             f"inference.max_tokens must be a positive number (got {max_tokens!r})"
         )
         max_tokens = DEFAULT_MAX_TOKENS
+    temperature = inference.get("temperature", DEFAULT_TEMPERATURE)
+    if not _is_number(temperature):
+        errors.append(f"inference.temperature must be a number (got {temperature!r})")
 
     # Prompts
     prompts = config.get("prompts") or []
@@ -55,21 +113,34 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
     required_template_vars: set[str] = set()
 
     for i, prompt in enumerate(prompts if isinstance(prompts, list) else []):
+        if not isinstance(prompt, dict):
+            errors.append(f"prompts[{i}] must be a mapping with 'id' and 'template'")
+            continue
         pid = prompt.get("id")
         template = prompt.get("template") or ""
         system = prompt.get("system") or ""
 
-        if not pid:
+        if pid is None or pid == "":
             errors.append(f"prompts[{i}]: missing required field 'id'")
+        elif not isinstance(pid, str):
+            errors.append(
+                f"prompts[{i}]: 'id' must be a string (got {pid!r}) — quote it"
+            )
         elif pid in prompt_ids:
             errors.append(f"Duplicate prompt id: '{pid}'")
         else:
             prompt_ids.add(pid)
 
-        label = f"'{pid}'" if pid else str(i)
+        label = f"'{pid}'" if isinstance(pid, str) and pid else str(i)
 
         if not template:
             errors.append(f"prompts[{label}]: missing required field 'template'")
+        elif not isinstance(template, str):
+            errors.append(f"prompts[{label}]: 'template' must be a string")
+            template = ""
+        if not isinstance(system, str):
+            errors.append(f"prompts[{label}]: 'system' must be a string")
+            system = ""
 
         for m in _SINGLE_BRACE_RE.finditer(template + " " + system):
             warnings.append(
@@ -77,26 +148,42 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                 f" — did you mean '{{{{ {m.group(1)} }}}}'?"
             )
 
-        required_template_vars.update(_template_vars(template))
-        if system:
-            required_template_vars.update(_template_vars(system))
+        for key, text in (("template", template), ("system", system)):
+            if not text:
+                continue
+            try:
+                required_template_vars.update(_template_vars(text))
+            except jinja2.TemplateSyntaxError as exc:
+                errors.append(
+                    f"prompts[{label}].{key}: Jinja2 syntax error on line"
+                    f" {exc.lineno}: {exc.message}"
+                )
 
     # Evaluation config
-    evaluation = config.get("evaluation") or {}
+    evaluation = _mapping(config.get("evaluation"), "evaluation", errors)
 
     # Test cases
     test_cases = config.get("test_cases") or []
-    global_vars = set((config.get("variables") or {}).keys())
+    global_vars = set(_mapping(config.get("variables"), "variables", errors))
     tc_ids: set[str] = set()
     has_llm_judge = False
     has_weighted = False
 
     for i, tc in enumerate(test_cases if isinstance(test_cases, list) else []):
+        if not isinstance(tc, dict):
+            errors.append(
+                f"test_cases[{i}] must be a mapping with 'id' and 'evaluation'"
+            )
+            continue
         tc_id = tc.get("id")
-        label = f"'{tc_id}'" if tc_id else str(i)
+        label = f"'{tc_id}'" if isinstance(tc_id, str) and tc_id else str(i)
 
-        if not tc_id:
+        if tc_id is None or tc_id == "":
             errors.append(f"test_cases[{i}]: missing required field 'id'")
+        elif not isinstance(tc_id, str):
+            errors.append(
+                f"test_cases[{i}]: 'id' must be a string (got {tc_id!r}) — quote it"
+            )
         elif tc_id in tc_ids:
             errors.append(f"Duplicate test_case id: '{tc_id}'")
         else:
@@ -105,24 +192,34 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         eval_type = tc.get("evaluation")
         if eval_type is None:
             errors.append(f"test_cases[{label}]: missing required field 'evaluation'")
-        elif eval_type not in KNOWN_EVAL_TYPES:
+        elif not isinstance(eval_type, str) or eval_type not in KNOWN_EVAL_TYPES:
             errors.append(
                 f"test_cases[{label}]: unknown evaluation type '{eval_type}'"
                 f" (must be one of: {', '.join(sorted(KNOWN_EVAL_TYPES))})"
             )
 
+        tags = tc.get("tags")
+        if tags is not None and not (
+            isinstance(tags, list) and all(isinstance(t, str) for t in tags)
+        ):
+            errors.append(f"test_cases[{label}]: 'tags' must be a list of strings")
+
         if eval_type == "exact_match":
-            if tc.get("expected_output") is None:
+            expected = tc.get("expected_output")
+            if expected is None:
                 errors.append(
                     f"test_cases[{label}]: exact_match requires 'expected_output'"
                 )
-            elif (
-                isinstance(tc["expected_output"], str)
-                and len(tc["expected_output"]) > max_tokens * 4
-            ):
+            elif not isinstance(expected, str):
+                errors.append(
+                    f"test_cases[{label}]: exact_match expected_output must be a"
+                    f" string (got {expected!r}) — quote it in the YAML; unquoted"
+                    " yes/no/true/false and numbers are not parsed as text"
+                )
+            elif len(expected) > max_tokens * 4:
                 warnings.append(
                     f"test_cases[{label}]: expected_output is long"
-                    f" ({len(tc['expected_output'])} chars) relative to"
+                    f" ({len(expected)} chars) relative to"
                     f" inference.max_tokens ({max_tokens})"
                 )
 
@@ -130,16 +227,37 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             has_llm_judge = True
             if not tc.get("criteria"):
                 errors.append(f"test_cases[{label}]: llm_judge requires 'criteria'")
+            elif not isinstance(tc["criteria"], str):
+                errors.append(f"test_cases[{label}]: 'criteria' must be a string")
 
         if eval_type == "weighted_match":
             has_weighted = True
-            if tc.get("expected_output") is None:
+            expected = tc.get("expected_output")
+            if expected is None:
                 errors.append(
                     f"test_cases[{label}]: weighted_match requires 'expected_output'"
                 )
+            elif not isinstance(expected, list) or not expected:
+                errors.append(
+                    f"test_cases[{label}]: weighted_match expected_output must be a"
+                    " non-empty list of {use_case, percent, order} items"
+                )
+            elif not all(
+                isinstance(item, dict)
+                and set(WEIGHTED_DIMENSIONS) <= item.keys()
+                and not isinstance(item["use_case"], (list, dict))
+                and _is_number(item["percent"])
+                for item in expected
+            ):
+                errors.append(
+                    f"test_cases[{label}]: every weighted_match expected_output item"
+                    " needs use_case, percent (a number) and order"
+                )
 
         # Template variable coverage
-        tc_vars = set((tc.get("variables") or {}).keys())
+        tc_vars = set(
+            _mapping(tc.get("variables"), f"test_cases[{label}].variables", errors)
+        )
         available = global_vars | tc_vars
         missing = required_template_vars - available
         if missing:
@@ -149,28 +267,74 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             )
 
     # Cross-cutting evaluation config checks
-    if has_llm_judge and not evaluation.get("judge_model"):
-        errors.append(
-            "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
-        )
+    if has_llm_judge:
+        judge_model = evaluation.get("judge_model")
+        if not judge_model:
+            errors.append(
+                "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
+            )
+        elif not isinstance(judge_model, str):
+            errors.append(
+                f"evaluation.judge_model must be a model ID string (got {judge_model!r})"
+            )
+        judge_threshold = evaluation.get("judge_threshold")
+        if judge_threshold is not None and not (
+            _is_number(judge_threshold) and 0 <= judge_threshold <= 1
+        ):
+            errors.append(
+                "evaluation.judge_threshold must be a number between 0 and 1"
+                f" (got {judge_threshold!r})"
+            )
 
     if has_weighted:
-        if evaluation.get("quality_threshold") is None:
+        case_threshold = evaluation.get("quality_threshold")
+        if case_threshold is None:
             errors.append(
                 "One or more test_cases use 'weighted_match' but"
                 " 'evaluation.quality_threshold' is not set"
             )
-        if evaluation.get("variables") is None:
+        elif not (_is_number(case_threshold) and 0 <= case_threshold <= 1):
+            errors.append(
+                "evaluation.quality_threshold must be a number between 0 and 1"
+                f" (got {case_threshold!r})"
+            )
+        variables = evaluation.get("variables")
+        if variables is None:
             errors.append(
                 "One or more test_cases use 'weighted_match' but"
                 " 'evaluation.variables' is not set"
             )
+        elif not isinstance(variables, list) or not all(
+            isinstance(v, dict) and isinstance(v.get("name"), str) for v in variables
+        ):
+            errors.append(
+                "evaluation.variables must be a list of {name, weight, tolerance?} items"
+            )
+        else:
+            by_name = {v["name"]: v for v in variables}
+            absent = [d for d in WEIGHTED_DIMENSIONS if d not in by_name]
+            if absent:
+                errors.append(
+                    "evaluation.variables is missing weighted_match dimension(s):"
+                    f" {', '.join(absent)} — use_case, percent and order all need"
+                    " an entry with a weight"
+                )
+            for dim in WEIGHTED_DIMENSIONS:
+                v = by_name.get(dim)
+                if v is not None and not (
+                    _is_number(v.get("weight")) and _is_number(v.get("tolerance", 0))
+                ):
+                    errors.append(
+                        f"evaluation.variables '{dim}': weight (and tolerance, if"
+                        " set) must be numbers"
+                    )
 
     # Heuristic warnings
-    if has_llm_judge and isinstance(max_tokens, (int, float)) and max_tokens < 200:
+    if has_llm_judge and max_tokens < 200:
         warnings.append(
             f"inference.max_tokens: {max_tokens} may be too low for llm_judge"
-            " — the judge response needs JSON output (recommend ≥ 200)"
+            " — the candidate's open-ended answer may be cut off before it is"
+            " judged (recommend ≥ 200)"
         )
 
     return errors, warnings
