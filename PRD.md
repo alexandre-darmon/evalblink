@@ -197,7 +197,7 @@ test_cases:
 | `models` | ✅ | List of OpenRouter model IDs |
 | `quality_threshold` | — | Top-level CI/CD gate: exits 1 if best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
-| `concurrency` | — | Max parallel API requests — a positive integer (default: `5`) |
+| `concurrency` | — | Max parallel API requests — a whole number from 1 to 100 (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge — must be a string whenever present |
@@ -223,10 +223,10 @@ test_cases:
 
 > **Static validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
 >
-> - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type.
-> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a positive integer; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of 4300 or more digits makes the whole file `Invalid YAML`.
-> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without `use_case`, a numeric `percent` and `order`.
-> - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call.
+> - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type; a self-referencing YAML alias (`&a [*a]`), which could not be written to the results JSON.
+> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
+> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent` and `order`.
+> - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
 
@@ -521,11 +521,13 @@ Retries on: a code in `RETRYABLE_CODES` — whether it comes from the HTTP statu
 
 **A failed call never aborts the run.** Both callers catch `RuntimeError` / `httpx.HTTPError`. For a candidate call, the runner records that test case with `status: "api_error"`, `match_score: None`, `match_result: False`, `response: ""`, the error message in `error`, and 0 tokens / $0 cost, prints a one-line warning, and moves on; a judge call failure becomes a judge error (`judge_api_error` / `judge_error`). Either is a pipeline error, not a score of 0: it counts in the **Errors** column and is excluded from the score (Pass/Scored). The results JSON and Markdown report are still written; there is no separate "API Errors" section — errored cases appear in the per-combo tables with their status in place of a score. When any pipeline errors occurred, the run ends with a prominent warning giving their count and stating that they are excluded from scores; if nothing at all could be scored, `evalblink run` exits 1 (§18).
 
+No single test case can crash a run: `runner._run_case` wraps each case, so any unexpected exception while rendering or scoring one (e.g. a template using `random` that failed on this render) records it as `status: "internal_error"` with `match_score: None` and the exception in `error`. Ctrl-C drops every queued call (`shutdown(cancel_futures=True)`; in-flight calls finish), prints `Interrupted — no results written.` and exits 130. `cmd_run` checks that `results/` can be created and written before the first call and exits 1 if not.
+
 ---
 
 ## 13. `[V1 — shipped]` Caching
 
-Every successful API response — candidate and judge — is cached locally by SHA256 key. Failed calls are never cached.
+Every successful API response — candidate and judge — is cached locally by SHA256 key. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached, since parsing happens after the request — rerun with `--no-cache` to retry it.
 
 **Cache key:** SHA256 of the request payload (`model`, rendered system prompt + rendered prompt as `messages`, `temperature`, `max_tokens`)
 
@@ -540,7 +542,7 @@ Both `system` and `template` are rendered (variables injected) before hashing �
 
 **Cache is always on** — bypass it per-run with `--no-cache`, which skips the cache for every call of the run, candidate and judge. There is no `cache:` config key.
 
-A cached entry is checked exactly like a fresh response: one that can't be read or doesn't have the expected shape is a miss, so the call is made again and the entry is overwritten. If the cache can't be written (e.g. a read-only directory), the run prints `Could not write the response cache (…); continuing.` once and goes on; a model catalog that can't be cached also gives a warning and the command goes on.
+A cached entry is checked exactly like a fresh response: one that can't be read or doesn't have the expected shape is a miss, so the call is made again and the entry is overwritten. If the cache can't be written (e.g. a read-only cache directory), the run prints `Could not write the response cache (…); continuing.` once and goes on; a model catalog that can't be cached also gives a warning and the command goes on.
 
 > Cache + `temperature: 0` = fully reproducible benchmarks.
 
@@ -591,7 +593,7 @@ evalblink cache stats
 evalblink cache clear --yes                 # without --yes it only prints the entry count
 ```
 
-`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. The key can also come from a `.env` file, loaded from the current working directory or its nearest parent that has one (`load_dotenv(find_dotenv(usecwd=True))`) — never from the installed package's directory.
+`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. The key can also come from a `.env` file, loaded from the current working directory or its nearest parent that has one (`load_dotenv(find_dotenv(usecwd=True))`) — never from the installed package's directory. `.env` is read as UTF-8 (a BOM is stripped); a file in another encoding is ignored with a warning instead of crashing. A key containing a non-ASCII character raises `RuntimeError` in `openrouter._auth_headers` (httpx can only send ASCII headers), so each call becomes an `api_error` and `models` / `--dry-run` / `init` exit with one line.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric is unknown: `models` shows it as `?` and `--free` leaves it out.
 - `report` and `compare` exit with a one-line message when a results file is missing, unreadable, not JSON, or not shaped like a run record (string `benchmark` and `timestamp`, a well-formed `results` list). `history` prints `⚠  Skipping <reason>` for each such file and lists the rest.
@@ -650,7 +652,7 @@ Sample from a 50-case run with `quality_threshold: 85` in which three calls time
 
 ### Markdown report structure
 
-Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchmark `name`, lowercased, non-alphanumeric runs replaced by `-`, capped at 60 characters, `benchmark` if empty):
+Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchmark `name`, lowercased, non-alphanumeric runs replaced by `-`, capped at 60 characters, `benchmark` if empty; a same-second rerun gets a `-2`, `-3`, … suffix rather than overwriting):
 
 ```markdown
 # {benchmark name}
@@ -659,7 +661,7 @@ Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchma
 - Judge model: ...
 - Temperature: ...
 - Max tokens: ...
-- Quality threshold: ...
+- Quality threshold: ...   (the per-case `evaluation.quality_threshold`, else `judge_threshold` — not the top-level CI gate)
 
 ## Summary
 | Model | Prompt | Score | Pass/Scored | Errors | Prompt tok | Completion tok | Cost |
@@ -753,7 +755,7 @@ Data used per model:
 ```
 
 1. Invalid config (validation errors) or a missing, empty or whitespace-only `OPENROUTER_API_KEY` → exit 1 before any API call. `--dry-run` needs no API key.
-2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`) → exit 1 (results are still written).
+2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`) → exit 1 (results are still written).
 3. Otherwise the `quality_threshold` gate decides: best quality score across all combinations ≥ `quality_threshold` → exit 0, below it → exit 1. No `quality_threshold` → gate not enforced, exit 0.
 
 `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
