@@ -52,12 +52,13 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
     )
     if verbose:
         print(f"Rendered prompt: {rendered}")
+    inference = config.get("inference") or {}
     response = openrouter_request(
         client,
         rendered,
         model,
-        config["inference"]["temperature"],
-        config["inference"]["max_tokens"],
+        inference.get("temperature", 0),
+        inference.get("max_tokens", 100),
         rendered_system,
         use_cache=use_cache,
     )

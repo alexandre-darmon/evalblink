@@ -44,7 +44,7 @@ def estimate(config, models_meta) -> dict:
     Returns a dict of per-(model, prompt_id) rows plus grand totals, the set of
     models with no pricing, and the ``max_cost_usd`` budget verdict.
     """
-    inference = config.get("inference", {})
+    inference = config.get("inference") or {}
     max_tokens = inference.get("max_tokens", 100)
     judge_model = config.get("evaluation", {}).get("judge_model")
     missing: list = []
