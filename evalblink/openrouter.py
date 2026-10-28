@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Optional
 
 import httpx
 
@@ -47,7 +46,7 @@ def openrouter_request(
     model: str,
     temperature: float = 0,
     max_tokens: int = 4096,
-    system: Optional[str] = None,
+    system: str | None = None,
     timeout: int = 120,
     use_cache: bool = True,
 ) -> dict:
