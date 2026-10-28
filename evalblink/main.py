@@ -857,8 +857,8 @@ def main(argv=None):
     try:
         args.func(args)
     except KeyboardInterrupt:
+        sys.stdout.flush()  # so the message below comes last
         print("\nInterrupted — no results written.", file=sys.stderr)
-        sys.stdout.flush()
         sys.stderr.flush()
         # Skip joining worker threads still blocked in an HTTP read (up to the
         # 120 s timeout); there is nothing left to write.
