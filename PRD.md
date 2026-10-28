@@ -199,7 +199,7 @@ test_cases:
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
+| `inference.max_tokens` | — | Max output tokens per call — a positive integer (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge`, normalized 0–1 (default: `0.70`) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match`, 0–1 |
@@ -221,7 +221,14 @@ test_cases:
 
 > **Self-preference warning:** if `evaluation.judge_model` shares a vendor prefix with any model in `models` (e.g. `anthropic/claude-*` judging `anthropic/claude-*`), evalblink emits a warning at run start. Self-preference bias runs 10–25% in magnitude — use a judge from a different model family when possible.
 
-> **Static validation:** `evalblink validate` — and `evalblink run`, which validates before any API call — reports these as errors (exit 1) with an actionable message, rather than letting them fail mid-run: config file empty or not a mapping; `name` not a string; top-level `quality_threshold` not a number in 0–100; `concurrency` not a positive integer; `inference` / `evaluation` present but not a mapping (a null value — a bare `inference:` — is treated as absent everywhere); `inference.temperature` not a number; `inference.max_tokens` not a positive number; `prompts[].id` / `test_cases[].id` not strings; Jinja2 syntax errors in `template` / `system`; an `exact_match` `expected_output` that is not a string (YAML parses unquoted `yes`, `true` or `3` as a boolean or number — quote it); for `weighted_match`, `evaluation.variables` missing any of `use_case` / `percent` / `order`, or an `expected_output` that is empty or not a list. Missing required fields, duplicate ids, unknown evaluation types and template variables not provided by `variables` are errors too; single-brace `{variable}` syntax, a low `max_tokens` with `llm_judge`, and a long `expected_output` are warnings.
+> **Static validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
+>
+> - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type.
+> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a positive integer; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive integer (`50.5` and `true` are rejected); and a non-finite value (`.inf`, `.nan`) anywhere a number is checked.
+> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without `use_case`, a numeric `percent` and `order`.
+> - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call.
+>
+> Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
 
 ---
 
@@ -238,7 +245,7 @@ rendered = env.from_string(template).render(
 )
 ```
 
-Both `prompts[].template` and `prompts[].system` render in a `SandboxedEnvironment`: filters work as usual, but unsafe attribute access (e.g. reaching into `__class__` / `__globals__`) raises `jinja2.exceptions.SecurityError`.
+Both `prompts[].template` and `prompts[].system` render in a `SandboxedEnvironment`: filters work as usual, but unsafe attribute access is blocked. A single unsafe attribute such as `{{ x.__class__ }}` renders as empty; calling or chaining through one (`{{ x.__class__() }}`, `{{ x.__class__.__mro__ }}`) raises `jinja2.exceptions.SecurityError`. Because `evalblink validate` trial-renders every prompt against every test case with this same function and sandbox, a template that raises is reported before any API call.
 
 **Templates use double-brace syntax: `{{ variable }}`**. Single braces `{variable}` are treated as literal text and silently produce wrong prompts — `evalblink validate` warns on this pattern.
 
@@ -464,7 +471,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 
 - Prompt tokens estimated as `len(rendered_text) / 4`
 - Completion tokens use the configured `max_tokens` as a ceiling — per combo, `max_tokens` × the number of test cases
-- Judge tokens estimated separately per `llm_judge` case (prompt + criteria + `max_tokens` worth of response in, the fixed 512-token judge budget out); each row's `Est cost` includes its judge share, and the `Judge cost (llm_judge cases)` line is printed only when there are `llm_judge` cases
+- Judge tokens estimated separately per `llm_judge` case (prompt + criteria + `max_tokens` worth of response in, the fixed 512-token judge budget out); each row's `Est cost` includes its judge share, and the `Judge cost (llm_judge cases)` line is printed only when the estimated judge cost is non-zero (not with a free judge model)
 - Models missing from the pricing catalog are excluded from the estimate with a warning
 - Exits 1 if the estimate exceeds `max_cost_usd`; exits 0 otherwise
 
@@ -508,9 +515,11 @@ RETRYABLE_CODES = {408, 429, 502, 503, 504}
 MAX_RETRIES = 4
 ```
 
-Retries on: HTTP status codes in `RETRYABLE_CODES` and `httpx.TimeoutException`. Each retry waits with exponential backoff (1 s, 2 s, 4 s). Non-transient API errors (bad key, unknown model, null content) raise `RuntimeError` immediately.
+Retries on: a code in `RETRYABLE_CODES` — whether it comes from the HTTP status line or from the JSON error body — plus `httpx.TimeoutException` and `httpx.TransportError` (connection errors). Each retry waits with exponential backoff (1 s, 2 s, 4 s).
 
-**A failed candidate call never aborts the run.** When `openrouter_request` raises `RuntimeError` or `httpx.HTTPError` after its retries, the runner records that test case with `status: "api_error"`, `match_score: None`, `match_result: False`, `response: ""`, the error message in `error`, and 0 tokens / $0 cost, prints a one-line warning, and moves on. Like a judge failure (`judge_api_error` / `judge_error`), it is a pipeline error, not a score of 0: it counts in the **Errors** column and is excluded from the score (Pass/Scored). The results JSON and Markdown report are still written; there is no separate "API Errors" section — errored cases appear in the per-combo tables with an empty score. If every case errors, the combo's score is 0% and a configured `quality_threshold` gate fails.
+`openrouter_request` is the single choke point, so **any** failure of a call surfaces as `RuntimeError` with a clear message (including the HTTP status when known): an HTTP error status, a non-JSON body (e.g. an HTML 502 page), JSON without `choices`, with empty `choices` or without a `message`, null or empty content, or missing usage. Non-transient errors (bad key, unknown model, null content) raise immediately; transient ones raise once the retries are exhausted.
+
+**A failed call never aborts the run.** Both callers catch `RuntimeError` / `httpx.HTTPError`. For a candidate call, the runner records that test case with `status: "api_error"`, `match_score: None`, `match_result: False`, `response: ""`, the error message in `error`, and 0 tokens / $0 cost, prints a one-line warning, and moves on; a judge call failure becomes a judge error (`judge_api_error` / `judge_error`). Either is a pipeline error, not a score of 0: it counts in the **Errors** column and is excluded from the score (Pass/Scored). The results JSON and Markdown report are still written; there is no separate "API Errors" section — errored cases appear in the per-combo tables with their status in place of a score. When any pipeline errors occurred, the run ends with a prominent warning giving their count and stating that they are excluded from scores; if nothing at all could be scored, `evalblink run` exits 1 (§18).
 
 ---
 
@@ -580,7 +589,7 @@ evalblink cache stats
 evalblink cache clear --yes                 # without --yes it only prints the entry count
 ```
 
-`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset or empty.
+`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. The key can also come from a `.env` file, loaded from the current working directory or its nearest parent that has one (`load_dotenv(find_dotenv(usecwd=True))`) — never from the installed package's directory.
 
 ---
 
@@ -615,7 +624,7 @@ Best value   : openai/gpt-4o-mini / v1 (87.8% · $0.0008/run)
 
 ### Markdown report structure
 
-Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchmark `name`, lowercased, non-alphanumeric runs replaced by `-`):
+Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchmark `name`, lowercased, non-alphanumeric runs replaced by `-`, capped at 60 characters, `benchmark` if empty):
 
 ```markdown
 # {benchmark name}
@@ -645,7 +654,7 @@ Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchma
 - ℹ️ N pipeline error(s) excluded from scoring.   ← only when the best combo has errors
 ```
 
-Errored cases appear in the per-combo tables with an empty Score. Judge reasoning, raw responses and error messages are in the JSON record only.
+Errored cases appear in the per-combo tables with their status in the Score column — `API error`, `judge API error` or `judge error` — instead of a number. Judge reasoning, raw responses and error messages are in the JSON record only.
 
 ---
 
@@ -661,7 +670,7 @@ results/
   2026-06-10_143205_customer-support-classification.md     # human-readable report
 ```
 
-The filename (and `run_id`) is `YYYY-MM-DD_HHMMSS_<slug>` — the runner's `%Y-%m-%d_%H%M%S` timestamp plus the slugified benchmark name.
+The filename (and `run_id`) is `YYYY-MM-DD_HHMMSS_<slug>` — the runner's `%Y-%m-%d_%H%M%S` timestamp plus the slugified benchmark name. The slug is capped at 60 characters and falls back to `benchmark` when empty (e.g. a name with no ASCII letters or digits), so any valid name produces a writable path.
 
 JSON includes a top-level `schema_version` field. `evalblink compare` handles mismatched versions gracefully rather than hard-blocking — old records remain usable.
 
@@ -706,7 +715,7 @@ Data used per model:
 
 ## 18. `[V1 — shipped]` CI/CD Integration
 
-evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
+`evalblink run` exits `0` (pass) or `1` (fail):
 
 ```yaml
 # .github/workflows/llm-eval.yml
@@ -715,11 +724,13 @@ evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-Best quality score across all combinations ≥ `quality_threshold` → exit 0 (no `quality_threshold` → gate not enforced, exit 0).  
-Below threshold, or `--dry-run` over `max_cost_usd` → exit 1, pipeline blocked.  
-Invalid config (validation errors) or a missing/empty `OPENROUTER_API_KEY` → exit 1 before any API call.
+1. Invalid config (validation errors) or a missing, empty or whitespace-only `OPENROUTER_API_KEY` → exit 1 before any API call.
+2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`) → exit 1 (results are still written).
+3. Otherwise the `quality_threshold` gate decides: best quality score across all combinations ≥ `quality_threshold` → exit 0, below it → exit 1. No `quality_threshold` → gate not enforced, exit 0.
 
-Per-case API failures do not abort the run or the gate check: errored cases are counted under Errors and excluded from the score, so the gate is evaluated on the cases that were actually scored (a run where every case errors scores 0% and fails a configured gate).
+`--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
+
+Per-case pipeline errors never abort the run: they are counted under Errors and excluded from the score, so the gate is evaluated on the cases that were actually scored; when any occurred, the run ends with a prominent warning giving their count.
 
 ---
 
@@ -730,7 +741,7 @@ Per-case API failures do not abort the run or the gate check: errored cases are 
 | CLI | `argparse` (stdlib) | Subcommand dispatcher in `main.py` |
 | Terminal output | `rich` | Tables, colors, interactive prompts (`init`) |
 | Config | `PyYAML` (`safe_load`) | Standard, readable |
-| Template injection | `Jinja2` (`SandboxedEnvironment`) | Double-brace syntax; supports filters and raw blocks; unsafe attribute access raises `SecurityError` |
+| Template injection | `Jinja2` (`SandboxedEnvironment`) | Double-brace syntax; supports filters and raw blocks; unsafe attribute access is blocked (a lone unsafe attribute renders empty, calls/chained access raise `SecurityError`) |
 | HTTP client | `httpx` (sync) | `httpx.Client` as context manager reuses the TCP connection across all calls to the same host |
 | Concurrency | `ThreadPoolExecutor` (stdlib) | Sufficient for batch API calls; no async complexity |
 | Retry logic | Manual loop in `openrouter.py` | `RETRYABLE_CODES`, `MAX_RETRIES`, exponential backoff; no external retry library |

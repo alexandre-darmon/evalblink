@@ -1,6 +1,5 @@
 # benchmarks/exact_match_classification.yaml
-name: "Customer Support Classification"
-quality_threshold: 80  # CI/CD gate: exits 1 if the best combo scores below 80%
+name: "Customer Support Classification (exact match)"
 
 inference:
   temperature: 0

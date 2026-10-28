@@ -82,7 +82,7 @@ Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/eval
 export OPENROUTER_API_KEY=your_key_here    # or put it in a .env file
 ```
 
-`evalblink run` exits 1 with a clear message, before any API call, if `OPENROUTER_API_KEY` is unset or empty. `evalblink validate` and `evalblink run --dry-run` make no completion calls.
+The `.env` file is read from the directory you run `evalblink` in (or the nearest parent that has one), never from the installed package's directory. `evalblink run` exits 1 with a clear message, before any API call, if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `evalblink validate` and `evalblink run --dry-run` make no completion calls.
 
 **3. Write a benchmark**
 
@@ -179,7 +179,7 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
+| `inference.max_tokens` | — | Max output tokens per call — a positive integer (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
@@ -198,9 +198,16 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 
 > **Threshold naming:** `quality_threshold` at the top level is the CI/CD gate (0–100 %). `evaluation.quality_threshold` is the per-case pass threshold for `weighted_match` (0–1). `evaluation.judge_threshold` is the per-case pass threshold for `llm_judge` (0–1, default 0.70). These are three distinct concepts.
 
-> **Validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run: an empty or non-mapping file, a non-string `name`, a top-level `quality_threshold` that isn't a number in 0–100, a `concurrency` that isn't a positive integer, an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent), a non-numeric `inference.temperature`, non-string `prompts[].id` / `test_cases[].id`, Jinja2 syntax errors in `template` / `system`, an `exact_match` `expected_output` that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it), and for `weighted_match` an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or an `expected_output` that is empty or not a list.
+> **Validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
 >
-> **Sandboxed templates:** `template` and `system` render in a Jinja2 `SandboxedEnvironment` — filters such as `{{ items | join(", ") }}` work, but unsafe attribute access raises `jinja2.exceptions.SecurityError`.
+> - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type.
+> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a positive integer; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive integer (`50.5` and `true` are rejected); and a non-finite value (`.inf`, `.nan`) anywhere a number is checked.
+> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without `use_case`, a numeric `percent` and `order`.
+> - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call.
+>
+> Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
+>
+> **Sandboxed templates:** `template` and `system` render in a Jinja2 `SandboxedEnvironment` — filters such as `{{ items | join(", ") }}` work, but unsafe attribute access is blocked: a single unsafe attribute such as `{{ x.__class__ }}` renders as empty, while calling or chaining through one (`{{ x.__class__() }}`, `{{ x.__class__.__mro__ }}`) raises `jinja2.exceptions.SecurityError` — which `evalblink validate` reports as an error.
 
 ---
 
@@ -252,8 +259,7 @@ For classification tasks where the model must return a specific label. Prompt th
 
 ```yaml
 # Excerpt of benchmarks/exact_match_classification.yaml (first test case shown)
-name: "Customer Support Classification"
-quality_threshold: 80  # CI/CD gate: exits 1 if the best combo scores below 80%
+name: "Customer Support Classification (exact match)"
 
 inference:
   temperature: 0
@@ -433,7 +439,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 ✓ Within budget: estimate $0.035544 ≤ max_cost_usd $10.000000.
 ```
 
-Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the config has `llm_judge` cases. Models missing from the catalog are excluded from the estimate with a warning.
+Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog are excluded from the estimate with a warning.
 
 Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
@@ -472,7 +478,9 @@ concurrency: 5    # max parallel requests (default: 5)
 | Sequential | ~8–12 minutes |
 | Concurrent (default: 5) | ~45–90 seconds |
 
-Transient API failures (HTTP 408 / 429 / 502 / 503 / 504 and local timeouts) are retried with exponential backoff, up to 4 attempts. A candidate call that still fails — or hits a non-transient error such as an unknown model, a bad key, or empty content — does **not** abort the run: evalblink prints a one-line warning, records that test case with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost, then carries on. The case counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, with errored cases shown in the per-combo tables with an empty score.
+Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the status line or in the JSON error body, plus local timeouts and connection errors — are retried with exponential backoff (1 s, 2 s, 4 s), up to 4 attempts. Any other failure of a call surfaces as a clear error (with the HTTP status when known): an error status, a non-JSON body such as an HTML 502 page, a reply with no usable `choices` / `message`, null or empty content, or missing usage data.
+
+**A failed call never aborts the run.** A candidate call that still fails after its retries — or hits a non-transient error such as an unknown model or a bad key — is recorded with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost; evalblink prints a one-line warning and carries on. A failed judge call is recorded the same way as a judge error (see [LLM-as-judge](#llm-as-judge)). Either kind counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, and the end of the run prints a prominent warning with the number of pipeline errors excluded from scores. If *nothing* could be scored, the run exits 1 (see [CI/CD Integration](#cicd-integration)).
 
 ---
 
@@ -502,7 +510,7 @@ results/
   2026-06-10_143205_customer-support-classification.md     # human-readable report
 ```
 
-Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
+Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`, capped at 60 characters, and `benchmark` when nothing is left (e.g. a name with no ASCII letters or digits) — so any valid name gives a writable path. In the Markdown report's per-case tables, a pipeline-error case shows its status in the Score column (`API error`, `judge API error` or `judge error`) instead of a number. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
 
 ```bash
 evalblink report results/2026-06-10_143205_customer-support-classification.json
@@ -529,7 +537,7 @@ Changed combos are listed first. `--detailed` adds per-combo test-case transitio
 
 ## CI/CD Integration
 
-evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
+`evalblink run` exits `0` (pass) or `1` (fail):
 
 ```yaml
 # .github/workflows/llm-eval.yml
@@ -538,9 +546,10 @@ evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-- Best combo score ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, the gate is not enforced (exit 0).
-- The score covers scored cases only: API and judge errors are counted under **Errors**, not as failures — but if every case errors, the score is 0% and the gate fails.
-- `evalblink run` also exits 1 before any API call when the config fails validation or `OPENROUTER_API_KEY` is unset or empty; `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`.
+- **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only.
+- **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error` / judge error). The results are still written.
+- **Otherwise the `quality_threshold` gate decides:** best combo score ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The score covers scored cases only — pipeline errors are counted under **Errors** and excluded, never scored as failures — and when any occurred, the run ends with a warning giving their count.
+- `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
 
 ---
 
