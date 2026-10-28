@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from evalblink import evaluator
 from evalblink.evaluator import (
     _extract_json,
     evaluate_llm_judge,
@@ -216,3 +217,40 @@ def test_judge_out_of_range_score_is_clamped(disable_cache, client_factory, comp
 def test_weighted_match_deeply_nested_json_scores_zero():
     deep = "[" * 100_000 + "]" * 100_000
     assert weighted_match(WEIGHTED_PARAMS, deep, EXPECTED) == 0.0
+
+
+def test_extract_json_huge_int_is_a_decode_error():
+    # Past Python's 4300-digit int-conversion limit json.loads raises a plain
+    # ValueError; it must surface as JSONDecodeError like any other bad JSON.
+    with pytest.raises(json.JSONDecodeError):
+        _extract_json("[" + "1" * 5000 + "]")
+
+
+@pytest.mark.parametrize(
+    "percent",
+    ["1" * 5000, "1" + "0" * 400, "1e400", "NaN", "-Infinity"],
+)
+def test_weighted_match_non_finite_percent_scores_zero(percent):
+    response = f'[{{"use_case": "x", "percent": {percent}, "order": 1}}]'
+    expected = [{"use_case": "x", "percent": 0.5, "order": 1}]
+    assert weighted_match(WEIGHTED_PARAMS, response, expected) == 0.0
+
+
+def test_judge_huge_int_score_is_pipeline_error(
+    disable_cache, client_factory, completion
+):
+    client = client_factory(completion('{"score": ' + "9" * 5000 + "}"))
+    result = evaluate_llm_judge(client, {"judge_model": "j/m"}, "r", "t", "c")
+    assert result["status"] == "judge_error" and result["score_normalized"] is None
+
+
+def test_judge_use_cache_is_passed_through(monkeypatch):
+    seen = {}
+
+    def fake(client, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(evaluator, "openrouter_request", fake)
+    evaluate_llm_judge(None, {"judge_model": "j/m"}, "r", "t", "c", use_cache=False)
+    assert seen["use_cache"] is False

@@ -144,3 +144,20 @@ def test_no_budget_means_not_over_budget():
     est = estimate.estimate(config, models_meta)
     assert est["max_cost_usd"] is None
     assert est["over_budget"] is False
+
+
+def test_negative_or_unknown_catalog_price_is_missing_pricing():
+    # openrouter/* routers are priced -1 in the catalog; fetch_models maps that
+    # to None, and the estimate must exclude + warn, never go negative.
+    config = _config(
+        [{"id": "t", "evaluation": "exact_match", "variables": {"q": "x"}}],
+        max_cost_usd=0.0,
+    )
+    for meta in (
+        {"prompt": None, "completion": None},
+        {"prompt": 0.1, "completion": None},
+    ):
+        est = estimate.estimate(config, {"m/x": {**meta, "context_length": 1}})
+        assert est["missing_pricing"] == ["m/x"]
+        assert est["total_cost"] == 0.0
+        assert est["over_budget"] is False

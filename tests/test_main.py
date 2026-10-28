@@ -11,6 +11,7 @@ import dotenv
 import httpx
 import pytest
 import yaml
+from rich.text import Text
 
 from evalblink import main
 
@@ -235,16 +236,23 @@ def test_history_no_results_dir(monkeypatch, capsys):
     assert "No results directory" in capsys.readouterr().out
 
 
-def test_history_shows_runs(monkeypatch, tmp_path):
+def test_history_shows_runs(monkeypatch, tmp_path, capsys):
+    combo = {
+        "model": "m",
+        "prompt_id": "p",
+        "score": 90.0,
+        "success": 9,
+        "total": 10,
+        "total_prompt_tokens": 1,
+        "total_completion_tokens": 1,
+        "total_cost": 0.01,
+        "test_cases": [],
+    }
     record = {
         "run_id": "2026-01-01_test",
         "benchmark": "Test Bench",
         "timestamp": "2026-01-01_120000",
-        "results": [{"total_cost": 0.01}],
-        "insights": {
-            "best_quality": {"score": 90.0, "model": "m", "prompt_id": "p"},
-            "errors": 0,
-        },
+        "results": [combo],
     }
     (tmp_path / "run.json").write_text(json.dumps(record))
     monkeypatch.setattr(main, "RESULTS_DIR", str(tmp_path))
@@ -252,6 +260,8 @@ def test_history_shows_runs(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Test Bench" in out and "90.0%" in out and "$0.010000" in out
 
 
 def test_history_skips_invalid_json(monkeypatch, tmp_path):
@@ -366,17 +376,19 @@ def test_models_no_cache_flag(monkeypatch):
     assert seen["use_cache"] is False
 
 
-def test_models_invalid_min_context_exits_cleanly(monkeypatch):
+@pytest.mark.parametrize("value", ["notanumber", "xk", "1e400k", "nanm"])
+def test_models_invalid_min_context_exits_cleanly(monkeypatch, capsys, value):
     monkeypatch.setattr(
         main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
     )
     monkeypatch.setattr(
-        main.sys, "argv", ["evalblink", "models", "--min-context", "notanumber"]
+        main.sys, "argv", ["evalblink", "models", "--min-context", value]
     )
     with pytest.raises(SystemExit) as exc:
         main.main()
-    # sys.exit(msg) stores the message as the exit code when it's a string.
-    assert "Invalid" in str(exc.value.code)
+    # An argparse usage error: exit 2 with a message, no traceback.
+    assert exc.value.code == 2
+    assert f"invalid value {value!r}" in capsys.readouterr().err
 
 
 def test_parse_context_helper():
@@ -783,3 +795,305 @@ def test_dry_run_catalog_failure_is_a_clean_error(monkeypatch, tmp_path):
     )
     code = _run_cli(["run", str(_write_cli_config(tmp_path)), "--dry-run"])
     assert isinstance(code, str) and "Could not fetch the OpenRouter model" in code
+
+
+# ── round 3 ──────────────────────────────────────────────────────────────────
+
+
+def test_markup_in_user_strings_is_printed_literally(fake_http, tmp_path, capsys):
+    fake_http(_ok("yes"))
+    path = _write_cli_config(
+        tmp_path,
+        name="[bold]v2 :smile:",
+        models=["m/[/x]"],
+        prompts=[{"id": "[/p]", "template": "Q: {{ q }}"}],
+    )
+    assert _run_cli(["run", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "[bold]v2 :smile:" in out and "[/p]" in out and "m/[/x]" in out
+
+
+def test_validate_prints_markup_in_errors_literally(tmp_path, capsys):
+    path = _write_cli_config(
+        tmp_path,
+        test_cases=[
+            {"id": "[/x]", "evaluation": "exact_match", "expected_output": "y"},
+            {"id": "[/x]", "evaluation": "exact_match", "expected_output": "y"},
+        ],
+    )
+    assert _run_cli(["validate", str(path)]) == 1
+    assert "Duplicate test_case id: '[/x]'" in capsys.readouterr().out
+
+
+def test_surrogates_in_config_and_output_do_not_crash_run(fake_http, tmp_path, capsys):
+    body = (
+        b'{"choices":[{"message":{"content":"y\\ud800"}}],'
+        b'"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0}}'
+    )
+    fake_http(httpx.Response(200, content=body))
+    path = tmp_path / "s.yaml"
+    path.write_text(
+        _write_cli_config(tmp_path)
+        .read_text()
+        .replace("name: CLI", 'name: "CLI \\ud800"')
+        .replace("id: c1", 'id: "c1\\udfff"')
+    )
+    assert "\\ud800" in path.read_text()
+    assert _run_cli(["run", str(path)]) in (0, 1)
+    [record] = (tmp_path / "results").glob("*.json")
+    assert _run_cli(["report", str(record)]) == 0
+
+
+def _run_two_prompts_one_failing(fake_http, tmp_path):
+    # concurrency 1: v1/c1, v1/c2 succeed; v2/c1, v2/c2 hit an API error.
+    fake_http(_ok("yes"), _ok("yes"), httpx.Response(400, text="<html>bad</html>"))
+    path = _write_cli_config(
+        tmp_path,
+        prompts=[
+            {"id": "v1", "template": "Q: {{ q }}"},
+            {"id": "v2", "template": "Q2: {{ q }}"},
+        ],
+    )
+    return _run_cli(["run", str(path)])
+
+
+def test_insights_errors_report_the_run_total(fake_http, tmp_path, capsys):
+    assert _run_two_prompts_one_failing(fake_http, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "2 of 4 case(s) hit a pipeline error" in out
+    assert "2 pipeline error(s) excluded from scoring." in out  # not 0 (best combo)
+    [md] = (tmp_path / "results").glob("*.md")
+    assert "**2 pipeline error(s)** excluded" in md.read_text()
+
+
+def test_history_errors_column_is_the_run_total(fake_http, tmp_path, capsys):
+    _run_two_prompts_one_failing(fake_http, tmp_path)
+    capsys.readouterr()
+    [record] = (tmp_path / "results").glob("*.json")
+    data = json.loads(record.read_text())
+    data["insights"]["errors"] = 0  # an old record's best-combo count
+    record.write_text(json.dumps(data))
+    assert _run_cli(["history"]) == 0
+    row = [line for line in capsys.readouterr().out.splitlines() if "$" in line]
+    assert row and row[0].rstrip(" │").endswith("2")
+
+
+@pytest.mark.parametrize(
+    "content, reason",
+    [
+        ("not json", "not a valid JSON run record"),
+        ("# Report\n", "not a valid JSON run record"),
+        ("[1]", "expected a JSON object"),
+        ("{}", "'benchmark' is missing"),
+        (b"\xff\xfe", "not a valid JSON run record"),
+        (
+            json.dumps(
+                {
+                    "benchmark": "b",
+                    "timestamp": "t",
+                    "results": [
+                        {
+                            "model": "m",
+                            "prompt_id": "p",
+                            "score": 1,
+                            "success": 1,
+                            "total": 1,
+                            "total_prompt_tokens": 1,
+                            "total_completion_tokens": 1,
+                            "total_cost": None,
+                            "test_cases": [],
+                        }
+                    ],
+                }
+            ),
+            "total_cost is missing or not a finite number",
+        ),
+        (None, "Cannot read run record"),  # a directory
+    ],
+)
+def test_bad_results_file_is_a_clean_error(
+    monkeypatch, tmp_path, capsys, content, reason
+):
+    path = tmp_path / "r.json"
+    if content is None:
+        path.mkdir()
+    elif isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content)
+    for argv in (["report", str(path)], ["compare", str(path), str(path)]):
+        code = _run_cli(argv)
+        assert isinstance(code, str) and reason in code, (argv, code)
+    # history skips it with a one-line warning instead of failing.
+    (tmp_path / "results").mkdir()
+    os.replace(path, tmp_path / "results" / "r.json")
+    monkeypatch.chdir(tmp_path)
+    assert _run_cli(["history"]) == 0
+    out = capsys.readouterr().out
+    assert "Skipping" in out and reason in out
+
+
+def test_missing_results_file_is_a_clean_error(tmp_path):
+    code = _run_cli(["report", str(tmp_path / "nope.json")])
+    assert isinstance(code, str) and "Run record not found" in code
+
+
+def _scripted(answers):
+    """A ``Prompt``/``Confirm`` stand-in that, like Rich, returns the default
+    for an empty answer."""
+
+    class Scripted:
+        @classmethod
+        def ask(cls, question, **kwargs):
+            Text.from_markup(question)  # Rich renders the question as markup
+            answer = answers.popleft()
+            if answer == "" and "default" in kwargs:
+                return kwargs["default"]
+            return answer
+
+    return Scripted
+
+
+def test_init_rejects_bad_answers_and_writes_a_valid_config(monkeypatch, tmp_path):
+    from evalblink.validator import validate
+
+    monkeypatch.chdir(tmp_path)
+
+    def no_catalog(client, use_cache=True):
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(main.openrouter, "fetch_models", no_catalog)
+    prompts = deque(
+        [
+            "",  # name: empty → re-asked
+            "!!!",  # name (punctuation only → slug fallback)
+            "exact_match",
+            "a/b",
+            "a/b",  # duplicate model → re-asked
+            "",  # finish models
+            "{% bad",  # template syntax error → re-asked
+            "Hi {{ text|upper }} from {{ user.name }}",
+            "",  # system
+            "p",  # text: per-case
+            "g",  # user: global
+            "bob",
+            "nan",  # temperature: rejected
+            "1e400",  # temperature: inf, rejected
+            "0.2",
+            "100.5",  # max_tokens: rejected
+            "0",  # max_tokens: rejected
+            "1" + "0" * 400,  # max_tokens: overflows a float, rejected
+            "50",
+            "",  # tc id → default tc_001
+            "hello",  # {{ text }}
+            "yes",
+            "",  # tags
+            "tc_001",  # duplicate id → re-asked
+            "tc_002",
+            "world",
+            "no",
+            "",  # tags
+            "150",  # quality threshold: out of range → re-asked
+            "80",
+            "",  # output path → default
+        ]
+    )
+    confirms = deque([True, False])
+    monkeypatch.setattr(main, "Prompt", _scripted(prompts))
+    monkeypatch.setattr(main, "Confirm", _scripted(confirms))
+    assert _run_cli(["init"]) == 0
+    assert not prompts and not confirms
+
+    out = tmp_path / "benchmarks" / "benchmark.yaml"
+    config = yaml.safe_load(out.read_text())
+    assert validate(config) == ([], [])
+    assert config["name"] == "!!!"
+    assert config["models"] == ["a/b"]
+    assert config["variables"] == {"user": "bob"}
+    assert [tc["id"] for tc in config["test_cases"]] == ["tc_001", "tc_002"]
+    assert config["test_cases"][0]["variables"] == {"text": "hello"}
+    assert config["inference"] == {"temperature": 0.2, "max_tokens": 50}
+    assert config["quality_threshold"] == 80
+
+
+def test_init_never_writes_a_config_validate_rejects(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    out = tmp_path / "x.yaml"
+    prompts = deque(
+        ["X", "exact_match", "a/b", "", "{{ text.a.b }}", "", "p"]
+        + ["0", "100", "", "plain", "yes", "", "", str(out)]
+    )
+    monkeypatch.setattr(main, "Prompt", _scripted(prompts))
+    monkeypatch.setattr(main, "Confirm", _scripted(deque([False])))
+    assert _run_cli(["init"]) == 1  # renders with UndefinedError
+    assert not out.exists()
+
+
+def test_jinja_vars_uses_validator_detection():
+    assert main._jinja_vars("{{ text|upper }} {{ user.name }} {{ text }}") == [
+        "text",
+        "user",
+    ]
+
+
+def test_init_unwritable_output_path_is_a_clean_error(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    for out, reason in (
+        (str(tmp_path), "Cannot write"),
+        ("\ud800.yaml", "Cannot write"),
+    ):
+        prompts = deque(
+            ["X", "exact_match", "a/b", "", "Hi", "", "0", "100", "", "y", "", "", out]
+        )
+        monkeypatch.setattr(main, "Prompt", _scripted(prompts))
+        monkeypatch.setattr(main, "Confirm", _scripted(deque([False, True])))
+        code = _run_cli(["init"])
+        assert isinstance(code, str) and reason in code
+
+
+def test_init_overwrite_prompt_escapes_markup_in_the_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    (tmp_path / "[").mkdir()
+    out = tmp_path / "[" / "x].yaml"  # the path contains "[/x]"
+    out.write_text("old")
+    prompts = deque(
+        ["X", "exact_match", "a/b", "", "Hi", "", "0", "100", "", "y", "", "", str(out)]
+    )
+    monkeypatch.setattr(main, "Prompt", _scripted(prompts))
+    monkeypatch.setattr(main, "Confirm", _scripted(deque([False, True])))
+    assert _run_cli(["init"]) == 0
+    assert yaml.safe_load(out.read_text())["name"] == "X"
+
+
+def test_models_shows_unknown_pricing_as_unknown(monkeypatch, capsys):
+    catalog = {
+        "openrouter/auto": {"prompt": None, "completion": None, "context_length": None}
+    }
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    assert _run_cli(["models"]) == 0
+    row = [line for line in capsys.readouterr().out.splitlines() if "auto" in line]
+    assert "?" in row[0] and "free" not in row[0]
+    assert _run_cli(["models", "--free"]) == 0  # unknown is not free
+    assert "No models match" in capsys.readouterr().out
+
+
+def test_report_recomputes_insights_from_results(fake_http, tmp_path, capsys):
+    _run_two_prompts_one_failing(fake_http, tmp_path)
+    [record] = (tmp_path / "results").glob("*.json")
+    data = json.loads(record.read_text())
+    data["insights"] = {"errors": 0}  # an old/partial record's stored insights
+    record.write_text(json.dumps(data))
+    for md in (tmp_path / "results").glob("*.md"):
+        md.unlink()
+    assert _run_cli(["report", str(record)]) == 0
+    [md] = (tmp_path / "results").glob("*.md")
+    assert "**2 pipeline error(s)** excluded" in md.read_text()

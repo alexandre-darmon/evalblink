@@ -50,7 +50,9 @@ def test_diff_flags_combos_present_in_only_one_run():
 def test_load_record_defaults_missing_schema_version_to_zero(tmp_path):
     path = tmp_path / "legacy.json"
     # A legacy record written before schema_version existed.
-    path.write_text(json.dumps({"run_id": "old", "results": []}))
+    path.write_text(
+        json.dumps({"run_id": "old", "benchmark": "b", "timestamp": "t", "results": []})
+    )
     record = compare.load_record(str(path))
     assert record["schema_version"] == 0
 

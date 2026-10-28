@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
 import re
 
 import jinja2
 import jinja2.meta
 
+from .openrouter import is_number as _is_number
 from .runner import JINJA_ENV, render_template
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
@@ -24,16 +24,6 @@ def _template_vars(text: str) -> set[str]:
     Raises ``jinja2.TemplateSyntaxError`` on a malformed template.
     """
     return jinja2.meta.find_undeclared_variables(JINJA_ENV.parse(text))
-
-
-def _is_number(value) -> bool:
-    """A finite int or float — not a YAML ``true``/``false`` (bool subclasses
-    int), nor ``.inf`` / ``.nan``."""
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
 
 
 def _mapping(value, label: str, errors: list[str]) -> dict:
@@ -93,7 +83,8 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         )
     concurrency = config.get("concurrency")
     if concurrency is not None and not (
-        isinstance(concurrency, int)
+        _is_number(concurrency)
+        and isinstance(concurrency, int)
         and not isinstance(concurrency, bool)
         and concurrency >= 1
     ):
@@ -109,10 +100,11 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
     # Inference
     inference = _mapping(config.get("inference"), "inference", errors)
     max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    # A whole number (100 or 100.0); 50.5, true, .inf are rejected.
-    if not (_is_number(max_tokens) and max_tokens > 0 and max_tokens % 1 == 0):
+    # An int: 100.0, 50.5, true, .inf and float-overflowing ints are rejected.
+    if not (_is_number(max_tokens) and isinstance(max_tokens, int) and max_tokens > 0):
         errors.append(
-            f"inference.max_tokens must be a positive integer (got {max_tokens!r})"
+            "inference.max_tokens must be a positive whole number like 100"
+            f" (got {max_tokens!r})"
         )
         max_tokens = DEFAULT_MAX_TOKENS
     temperature = inference.get("temperature", DEFAULT_TEMPERATURE)
@@ -278,17 +270,18 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                 f" {', '.join(sorted(missing))}"
             )
 
-    # Cross-cutting evaluation config checks
+    # Cross-cutting evaluation config checks. judge_model is type-checked even
+    # without llm_judge cases: the runner reads it for the vendor warning.
+    judge_model = evaluation.get("judge_model")
+    if judge_model is not None and not isinstance(judge_model, str):
+        errors.append(
+            f"evaluation.judge_model must be a model ID string (got {judge_model!r})"
+        )
+    elif has_llm_judge and not judge_model:
+        errors.append(
+            "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
+        )
     if has_llm_judge:
-        judge_model = evaluation.get("judge_model")
-        if not judge_model:
-            errors.append(
-                "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
-            )
-        elif not isinstance(judge_model, str):
-            errors.append(
-                f"evaluation.judge_model must be a model ID string (got {judge_model!r})"
-            )
         judge_threshold = evaluation.get("judge_threshold")
         if judge_threshold is not None and not (
             _is_number(judge_threshold) and 0 <= judge_threshold <= 1

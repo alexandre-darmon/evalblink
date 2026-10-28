@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import json
+import math
 import os
 import re
 import sys
 
 import httpx
+import jinja2
 import yaml
 from dotenv import find_dotenv, load_dotenv
-from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -24,6 +25,8 @@ from evalblink import (
     reporter,
     runner,
 )
+from evalblink.analysis import summarize
+from evalblink.validator import _template_vars
 from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
@@ -41,7 +44,7 @@ def load_config(filepath):
             f"Config not found: {filepath}\n"
             "Create one with `evalblink init` or pass a path: evalblink run <config.yaml>"
         )
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError) as exc:  # ValueError: a 5000-digit int
         sys.exit(f"Invalid YAML in {filepath}: {exc}")
     except OSError as exc:  # a directory, no permission, ...
         sys.exit(f"Cannot read config {filepath}: {exc.strerror or exc}")
@@ -61,15 +64,9 @@ def cmd_run(args):
     config = load_config(args.config)
 
     errors, warnings = _validate_config(config)
-    console = Console()
-    for w in warnings:
-        console.print(f"[yellow]⚠[/yellow]  {w}")
+    console = reporter.make_console()
+    _print_findings(console, errors, warnings)
     if errors:
-        for e in errors:
-            console.print(f"[red]✗[/red]  {e}")
-        console.print(
-            f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]"
-        )
         sys.exit(1)
 
     if args.dry_run:
@@ -82,8 +79,9 @@ def cmd_run(args):
     # Fail fast: without a key every candidate call would come back as an error.
     if not (os.getenv("OPENROUTER_API_KEY") or "").strip():
         console.print(
-            "[red]✗[/red]  OPENROUTER_API_KEY is not set — export it or add it to"
-            " .env (see .env.example). `--dry-run` works without it."
+            "✗  OPENROUTER_API_KEY is not set — export it or add it to"
+            " .env (see .env.example). `--dry-run` works without it.",
+            style="red",
         )
         sys.exit(1)
 
@@ -97,8 +95,9 @@ def cmd_run(args):
     total = sum(r["total"] for r in results)
     if errors:
         console.print(
-            f"\n[bold red]⚠  {errors} of {total} case(s) hit a pipeline error"
-            " (API / judge failure) and are excluded from scores.[/bold red]"
+            f"\n⚠  {errors} of {total} case(s) hit a pipeline error"
+            " (API / judge failure) and are excluded from scores.",
+            style="bold red",
         )
     if errors and errors == total:
         print("\nFAIL: no case could be scored — every call hit a pipeline error.")
@@ -122,8 +121,8 @@ def cmd_compare(args):
     try:
         record_a = compare.load_record(args.file_a)
         record_b = compare.load_record(args.file_b)
-    except FileNotFoundError as exc:
-        sys.exit(f"Run record not found: {exc.filename}")
+    except compare.RecordError as exc:
+        sys.exit(str(exc))
     if args.detailed:
         reporter.render_detailed(compare.detailed_diff(record_a, record_b))
     else:
@@ -135,8 +134,8 @@ def cmd_report(args):
     """Regenerate the Markdown report from an existing JSON result file."""
     try:
         record = compare.load_record(args.file)
-    except FileNotFoundError as exc:
-        sys.exit(f"Run record not found: {exc.filename}")
+    except compare.RecordError as exc:
+        sys.exit(str(exc))
     reporter.write_from_record(record)
     sys.exit(0)
 
@@ -148,30 +147,27 @@ def cmd_history(args):
         sys.exit(0)
 
     records = []
-    for fname in os.listdir(RESULTS_DIR):
+    for fname in sorted(os.listdir(RESULTS_DIR)):
         if not fname.endswith(".json"):
             continue
-        path = os.path.join(RESULTS_DIR, fname)
         try:
-            with open(path) as f:
-                data = json.load(f)
-            total_cost = sum(r.get("total_cost", 0) for r in data.get("results", []))
-            insights = data.get("insights") or {}
-            best = insights.get("best_quality", {})
-            best_score = best.get("score")
-            errors = insights.get("errors", 0)
-            records.append(
-                {
-                    "run_id": data.get("run_id", os.path.basename(fname)),
-                    "benchmark": data.get("benchmark", "—"),
-                    "timestamp": data.get("timestamp", "—"),
-                    "best_score": best_score,
-                    "total_cost": total_cost,
-                    "errors": errors,
-                }
-            )
-        except (json.JSONDecodeError, OSError):
+            data = compare.load_record(os.path.join(RESULTS_DIR, fname))
+        except compare.RecordError as exc:
+            print(f"⚠  Skipping {exc}")
             continue
+        # Recomputed from results, so every record reads the same way: best
+        # combo score, and the run-total pipeline error count.
+        insights = summarize(data["results"], None) or {}
+        records.append(
+            {
+                "run_id": data.get("run_id") or fname,
+                "benchmark": data["benchmark"],
+                "timestamp": data["timestamp"],
+                "best_score": (insights.get("best_quality") or {}).get("score"),
+                "total_cost": sum(r["total_cost"] for r in data["results"]),
+                "errors": insights.get("errors", 0),
+            }
+        )
 
     if not records:
         print("No run records found in results/.")
@@ -179,7 +175,7 @@ def cmd_history(args):
 
     records.sort(key=lambda r: r["timestamp"], reverse=True)
 
-    console = Console()
+    console = reporter.make_console()
     table = Table(title="Run History")
     table.add_column("Run ID")
     table.add_column("Benchmark")
@@ -202,18 +198,29 @@ def cmd_history(args):
 
 
 def _parse_context(value: str) -> int:
-    """Parse a context-length string like '100k', '8K', or '131072' to an int."""
+    """Parse a context-length string like '100k', '8K', or '131072' to an int.
+
+    An ``argparse`` type: a bad value is a clean usage error (exit 2).
+    """
     v = str(value).strip().lower()
-    if v.endswith("k"):
-        return int(float(v[:-1]) * 1_000)
-    if v.endswith("m"):
-        return int(float(v[:-1]) * 1_000_000)
+    scale = {"k": 1_000, "m": 1_000_000}.get(v[-1:], 1)
     try:
-        return int(v)
-    except ValueError:
-        sys.exit(
-            f"Invalid --min-context value: {value!r}. Use e.g. '100k' or '131072'."
-        )
+        return int(float(v[:-1] if scale > 1 else v) * scale)
+    except (ValueError, OverflowError):
+        raise argparse.ArgumentTypeError(
+            f"invalid value {value!r} — use e.g. '100k' or '131072'"
+        ) from None
+
+
+def _fmt_ctx(ctx) -> str:
+    return f"{ctx // 1000}k" if ctx else "—"
+
+
+def _fmt_price(price) -> str:
+    """Per-1M-token price; ``None`` is unknown pricing in the catalog."""
+    if price is None:
+        return "?"
+    return f"{price * 1_000_000:.3f}" if price else "free"
 
 
 def cmd_models(args):
@@ -230,27 +237,28 @@ def cmd_models(args):
         rows = [(k, v) for k, v in rows if v["prompt"] == 0 and v["completion"] == 0]
 
     if args.min_context:
-        min_tok = _parse_context(args.min_context)
-        rows = [(k, v) for k, v in rows if (v.get("context_length") or 0) >= min_tok]
+        rows = [
+            (k, v)
+            for k, v in rows
+            if (v.get("context_length") or 0) >= args.min_context
+        ]
 
     if not rows:
         print("No models match the given filters.")
         sys.exit(0)
 
-    console = Console()
+    console = reporter.make_console()
     table = Table(title=f"OpenRouter models ({len(rows)} shown)")
     table.add_column("Model ID")
     table.add_column("Context", justify="right")
     table.add_column("Prompt $/1M", justify="right")
     table.add_column("Completion $/1M", justify="right")
     for model_id, meta in rows:
-        ctx = meta.get("context_length")
-        ctx_str = f"{ctx // 1000}k" if ctx else "—"
         table.add_row(
             model_id,
-            ctx_str,
-            f"{meta['prompt'] * 1_000_000:.3f}" if meta["prompt"] else "free",
-            f"{meta['completion'] * 1_000_000:.3f}" if meta["completion"] else "free",
+            _fmt_ctx(meta.get("context_length")),
+            _fmt_price(meta["prompt"]),
+            _fmt_price(meta["completion"]),
         )
     console.print(table)
     sys.exit(0)
@@ -277,17 +285,66 @@ def cmd_cache_clear(args):
 
 
 def _jinja_vars(text: str) -> list[str]:
-    """Return unique variable names found in a Jinja2 template string."""
-    return list(dict.fromkeys(re.findall(r"\{\{\s*(\w+)\s*\}\}", text)))
+    """Variables a Jinja2 template needs, in order of first appearance.
+
+    Detection is the validator's (so ``{{ text|upper }}`` and ``{{ user.name }}``
+    count, as ``text`` and ``user``); raises ``jinja2.TemplateSyntaxError``.
+    """
+    needed = _template_vars(text)
+    return [w for w in dict.fromkeys(re.findall(r"\w+", text)) if w in needed]
+
+
+def _ask(console, question, parse, hint, **kwargs):
+    """``Prompt.ask`` until ``parse(answer)`` accepts it (raises ``ValueError``
+    to reject), so every value ``init`` writes is one ``validate`` accepts."""
+    while True:
+        try:
+            return parse(Prompt.ask(question, **kwargs))
+        except ValueError:
+            console.print(hint, style="yellow")
+
+
+def _checked(ok):
+    """A ``parse`` for :func:`_ask`: return the answer if ``ok(answer)``."""
+
+    def parse(raw):
+        if not ok(raw):
+            raise ValueError(raw)
+        return raw
+
+    return parse
+
+
+def _number(convert, low=-math.inf, high=math.inf):
+    """A ``parse`` for :func:`_ask`: a finite ``convert``-ed number in [low, high]."""
+
+    def parse(raw):
+        value = convert(raw)
+        if not (openrouter.is_number(value) and low <= value <= high):
+            raise ValueError(raw)
+        return value
+
+    return parse
+
+
+def _template(raw):
+    """A non-empty template that parses as Jinja2."""
+    if not raw.strip():
+        raise ValueError(raw)
+    try:
+        _jinja_vars(raw)
+    except jinja2.TemplateError as exc:
+        raise ValueError(raw) from exc
+    return raw
 
 
 def cmd_init(args):
     """Interactively scaffold a new benchmark YAML file."""
-    console = Console()
-    console.print("\n[bold]evalblink init[/bold] — scaffold a new benchmark\n")
+    console = reporter.make_console()
+    console.print("\nevalblink init — scaffold a new benchmark\n", style="bold")
 
     # 1. Name
-    name = Prompt.ask("Benchmark name")
+    name = _ask(console, "Benchmark name", _checked(str.strip), "A name is required.")
 
     # 2. Evaluation mode
     mode = Prompt.ask(
@@ -296,8 +353,17 @@ def cmd_init(args):
         default="exact_match",
     )
 
-    # 3. Models — fetch catalog for free-model suggestions
-    models_meta = _fetch_models(use_cache=True)
+    # 3. Models — free-model suggestions from the catalog, when it's reachable
+    try:
+        with httpx.Client() as client:
+            models_meta = openrouter.fetch_models(client, use_cache=True)
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(
+            f"Could not fetch the OpenRouter model catalog ({exc});"
+            " continuing without suggestions.",
+            style="yellow",
+        )
+        models_meta = {}
 
     free_suggestions = [
         (k, v)
@@ -305,113 +371,138 @@ def cmd_init(args):
         if v.get("prompt") == 0 and v.get("completion") == 0
     ][:5]
 
-    console.print("\n[bold]Models[/bold]")
+    console.print("\nModels", style="bold")
     if free_suggestions:
         console.print("Here are some free OpenRouter models:")
         free_table = Table(show_header=True, header_style="bold", box=None)
         free_table.add_column("Model ID", style="cyan")
         free_table.add_column("Context", justify="right")
         for mid, meta in free_suggestions:
-            ctx = meta.get("context_length")
-            free_table.add_row(mid, f"{ctx // 1000}k" if ctx else "—")
+            free_table.add_row(mid, _fmt_ctx(meta.get("context_length")))
         console.print(free_table)
         console.print(
             "Use an ID from above, or paste any OpenRouter model ID. "
-            "Tip: [bold]evalblink models --free[/bold] shows all free options.\n"
+            "Tip: `evalblink models --free` shows all free options.\n"
         )
 
     models: list = []
     while True:
         label = "Model ID" if not models else "Another model (blank to finish)"
-        m = Prompt.ask(f"  {label}", default="")
+        m = Prompt.ask(f"  {label}", default="").strip()
         if not m:
             if not models:
-                console.print("[yellow]At least one model is required.[/yellow]")
+                console.print("At least one model is required.", style="yellow")
                 continue
             break
+        if m in models:
+            console.print(f"{m} is already listed.", style="yellow")
+            continue
         models.append(m)
 
     # 4. Prompt template
     console.print(
-        "\n[bold]Prompt template[/bold] — use [cyan]{{ variable }}[/cyan] for dynamic values"
+        "\nPrompt template — use {{ variable }} for dynamic values", style="bold"
     )
     if mode == "exact_match":
         console.print(
-            "  Example: [dim]Classify this text: {{ text }}. Choose from: {{ labels }}[/dim]"
+            "  Example: Classify this text: {{ text }}. Choose from: {{ labels }}"
         )
     else:
-        console.print("  Example: [dim]Write a concise summary of: {{ text }}[/dim]")
-    template = Prompt.ask("  Template")
-    system = Prompt.ask("  System message (optional)", default="")
+        console.print("  Example: Write a concise summary of: {{ text }}")
+    template = _ask(
+        console, "  Template", _template, "Enter a non-empty, valid Jinja2 template."
+    )
+    system = _ask(
+        console,
+        "  System message (optional)",
+        lambda raw: raw if not raw.strip() else _template(raw),
+        "Enter a valid Jinja2 template, or leave it blank.",
+        default="",
+    )
 
     # 5. Variable scoping
-    all_vars = _jinja_vars(template + " " + system)
+    all_vars = list(dict.fromkeys(_jinja_vars(template) + _jinja_vars(system)))
     global_vars: dict = {}
     per_case_vars: list = []
     if all_vars:
+        console.print(f"\nTemplate variables: {', '.join(all_vars)}", style="bold")
         console.print(
-            f"\n[bold]Template variables:[/bold] {', '.join(all_vars)}\n"
-            "Mark each as [g]lobal (same for all test cases) or [p]er-case (varies)."
+            "Mark each as g (global: same for all test cases) or p (per-case: varies)."
         )
         for var in all_vars:
             choice = Prompt.ask(f"  '{var}'", choices=["g", "p"], default="p")
             if choice == "g":
-                val = Prompt.ask(f"    Value for [cyan]{var}[/cyan]")
-                global_vars[var] = val
+                global_vars[var] = Prompt.ask(f"    Value for [cyan]{var}[/cyan]")
             else:
                 per_case_vars.append(var)
 
     # 6. Judge config (llm_judge only)
     eval_config: dict = {}
     if mode == "llm_judge":
-        console.print("\n[bold]Judge configuration[/bold]")
-        judge_model = Prompt.ask("  Judge model", default="openai/gpt-4o")
-        while True:
-            raw = Prompt.ask("  Judge threshold (0.0–1.0)", default="0.70")
-            try:
-                judge_threshold = float(raw)
-                break
-            except ValueError:
-                console.print("[yellow]Enter a decimal, e.g. 0.70[/yellow]")
+        console.print("\nJudge configuration", style="bold")
+        judge_model = _ask(
+            console,
+            "  Judge model",
+            _checked(str.strip),
+            "A judge model ID is required.",
+            default="openai/gpt-4o",
+        )
+        judge_threshold = _ask(
+            console,
+            "  Judge threshold (0.0–1.0)",
+            _number(float, 0, 1),
+            "Enter a decimal between 0 and 1, e.g. 0.70",
+            default="0.70",
+        )
         eval_config = {"judge_model": judge_model, "judge_threshold": judge_threshold}
 
     # 7. Inference
-    console.print("\n[bold]Inference settings[/bold]")
-    while True:
-        raw = Prompt.ask("  Temperature", default="0")
-        try:
-            temperature = float(raw)
-            break
-        except ValueError:
-            console.print("[yellow]Enter a number, e.g. 0 or 0.7[/yellow]")
-    max_tokens_default = "1024" if mode == "llm_judge" else "100"
-    while True:
-        raw = Prompt.ask("  Max tokens", default=max_tokens_default)
-        try:
-            max_tokens = int(raw)
-            break
-        except ValueError:
-            console.print("[yellow]Enter a whole number, e.g. 100 or 1024[/yellow]")
+    console.print("\nInference settings", style="bold")
+    temperature = _ask(
+        console,
+        "  Temperature",
+        _number(float),
+        "Enter a number, e.g. 0 or 0.7",
+        default="0",
+    )
+    max_tokens = _ask(
+        console,
+        "  Max tokens",
+        _number(int, 1),
+        "Enter a positive whole number, e.g. 100 or 1024",
+        default="1024" if mode == "llm_judge" else "100",
+    )
 
     # 8. Test cases
     test_cases: list = []
     tc_num = 1
-    console.print("\n[bold]Test cases[/bold]")
+    console.print("\nTest cases", style="bold")
     while True:
-        console.print(f"\n  [bold]Test case {tc_num}[/bold]")
-        tc_id = Prompt.ask("    ID", default=f"tc_{tc_num:03d}")
+        console.print(f"\n  Test case {tc_num}", style="bold")
+        taken = {tc["id"] for tc in test_cases}
+        tc_id = _ask(
+            console,
+            "    ID",
+            _checked(lambda raw, taken=taken: raw.strip() and raw not in taken),
+            "Enter a non-empty ID not used by another test case.",
+            default=f"tc_{tc_num:03d}",
+        )
         tc: dict = {"id": tc_id, "evaluation": mode}
 
         if per_case_vars:
-            tc_vars: dict = {}
-            for var in per_case_vars:
-                tc_vars[var] = Prompt.ask(f"    {{{{ {var} }}}}")
-            tc["variables"] = tc_vars
+            tc["variables"] = {
+                var: Prompt.ask(f"    {{{{ {var} }}}}") for var in per_case_vars
+            }
 
         if mode == "exact_match":
             tc["expected_output"] = Prompt.ask("    Expected output")
         else:
-            tc["criteria"] = Prompt.ask("    Evaluation criteria")
+            tc["criteria"] = _ask(
+                console,
+                "    Evaluation criteria",
+                _checked(str.strip),
+                "Criteria are required for llm_judge.",
+            )
 
         tags_str = Prompt.ask("    Tags (comma-separated, optional)", default="")
         if tags_str.strip():
@@ -424,27 +515,21 @@ def cmd_init(args):
             break
 
     # 9. CI/CD gate
-    console.print("\n[bold]CI/CD quality gate[/bold]")
-    while True:
-        qt_str = Prompt.ask("  Quality threshold 0–100 (Enter to skip)", default="")
-        if not qt_str.strip():
-            quality_threshold = None
-            break
-        try:
-            quality_threshold = int(qt_str)
-            break
-        except ValueError:
-            console.print(
-                "[yellow]Enter a whole number 0–100, or press Enter to skip[/yellow]"
-            )
+    console.print("\nCI/CD quality gate", style="bold")
+    quality_threshold = _ask(
+        console,
+        "  Quality threshold 0–100 (Enter to skip)",
+        lambda raw: _number(int, 0, 100)(raw) if raw.strip() else None,
+        "Enter a whole number 0–100, or press Enter to skip",
+        default="",
+    )
 
     # 10. Output path
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    default_path = f"benchmarks/{slug}.yaml"
+    default_path = f"benchmarks/{reporter._slugify(name)}.yaml"
     out_path = Prompt.ask("\nOutput file", default=default_path)
 
     if os.path.exists(out_path) and not Confirm.ask(
-        f"  {out_path} already exists — overwrite?", default=False
+        f"  {escape(out_path)} already exists — overwrite?", default=False
     ):
         sys.exit(0)
 
@@ -464,38 +549,54 @@ def cmd_init(args):
     config["prompts"] = [prompt_entry]
     config["test_cases"] = test_cases
 
-    parent = os.path.dirname(out_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(out_path, "w") as f:
-        yaml.dump(
-            config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-        )
+    # Last line of defence: never write a file `validate` would reject (e.g. a
+    # template that only fails when rendered with the given values).
+    errors, warnings = _validate_config(config)
+    _print_findings(console, errors, warnings)
+    if errors:
+        sys.exit(1)
+
+    try:
+        parent = os.path.dirname(out_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
+    except (OSError, ValueError) as exc:  # ValueError: an unencodable path
+        sys.exit(f"Cannot write {out_path}: {getattr(exc, 'strerror', None) or exc}")
 
     # 13. Success
-    console.print(f"\n[green]✓ Created[/green] [bold]{out_path}[/bold]\n")
+    console.print(f"\n✓ Created {out_path}\n", style="green")
     console.print("Next steps:")
-    console.print(f"  [bold]evalblink run {out_path}[/bold]      run the benchmark")
-    console.print(f"  [bold]evalblink run {out_path} -v[/bold]   verbose output")
-    console.print("  [bold]evalblink -h[/bold]                   full CLI help")
+    console.print(f"  evalblink run {out_path}      run the benchmark")
+    console.print(f"  evalblink run {out_path} -v   verbose output")
+    console.print("  evalblink -h                   full CLI help")
     sys.exit(0)
+
+
+def _print_findings(console, errors, warnings) -> None:
+    """Print validation warnings and errors (plain text: they quote user input)."""
+    for w in warnings:
+        console.print(f"⚠  {w}", style="yellow")
+    for e in errors:
+        console.print(f"✗  {e}", style="red")
+    if errors:
+        console.print(
+            f"\nConfig has {len(errors)} error(s) — fix before running.", style="red"
+        )
 
 
 def cmd_validate(args):
     """Lint a benchmark YAML — errors and warnings, no API calls."""
     config = load_config(args.benchmark)
     errors, warnings = _validate_config(config)
-    console = Console()
-    for w in warnings:
-        console.print(f"[yellow]⚠[/yellow]  {w}")
-    for e in errors:
-        console.print(f"[red]✗[/red]  {e}")
+    console = reporter.make_console()
+    _print_findings(console, errors, warnings)
     if errors:
-        console.print(
-            f"\n[red]Config has {len(errors)} error(s) — fix before running.[/red]"
-        )
         sys.exit(1)
-    console.print("[green]✓[/green]  Config is valid")
+    console.print("✓  Config is valid", style="green")
     sys.exit(0)
 
 
@@ -665,6 +766,7 @@ def build_parser():
     models_p.add_argument(
         "--min-context",
         metavar="N",
+        type=_parse_context,
         help="minimum context window, e.g. '100k' or '131072'",
     )
     models_p.add_argument(
@@ -713,6 +815,13 @@ def build_parser():
 def main(argv=None):
     # The .env next to the user's benchmarks — not the installed package's dir.
     load_dotenv(find_dotenv(usecwd=True))
+    # Names, ids and model output may carry lone surrogates (a "\\ud800" YAML or
+    # JSON escape); never let printing one abort a command.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):  # not a TextIOWrapper (redirected)
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)

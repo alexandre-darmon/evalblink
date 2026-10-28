@@ -474,3 +474,20 @@ def test_concurrency_clamped_to_minimum_one(monkeypatch, concurrency):
     [combo] = _run(monkeypatch, config, [_resp("ok")])
     assert combo["success"] == 1
     assert combo["scored"] == 1
+
+
+def test_no_cache_also_bypasses_the_judge_cache(monkeypatch):
+    seen = []
+
+    def fake(client, *a, use_cache=True, **k):
+        seen.append(use_cache)
+        return _resp('{"score": 5}')
+
+    monkeypatch.setattr(runner, "openrouter_request", fake)
+    monkeypatch.setattr(evaluator, "openrouter_request", fake)
+    config = _config(
+        [{"id": "j", "evaluation": "llm_judge", "criteria": "c"}],
+        evaluation={"judge_model": "j/m"},
+    )
+    runner.run(config, use_cache=False)
+    assert seen == [False, False]  # candidate and judge

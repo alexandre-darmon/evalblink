@@ -118,6 +118,7 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
             rendered,  # full rendered prompt — no variable-name coupling
             test_case["criteria"],
             test_case.get("reference"),
+            use_cache=use_cache,
         )
         match_result = judge_result["match_result"]
         match_score = judge_result["score_normalized"]

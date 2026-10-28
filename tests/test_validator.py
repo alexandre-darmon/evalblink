@@ -8,6 +8,7 @@ from evalblink.validator import validate
 
 INF = float("inf")
 NAN = float("nan")
+HUGE = 10**400  # an int no float can hold
 
 
 def _exact_match_config(**overrides) -> dict:
@@ -298,11 +299,14 @@ def test_quality_threshold_zero_is_not_an_error():
     assert not any("quality_threshold" in e for e in errors)
 
 
-def test_float_max_tokens_is_not_an_error():
+def test_float_max_tokens_is_an_error():
+    # The API takes an int; 100.0 is rejected rather than silently truncated.
     cfg = _exact_match_config()
     cfg["inference"]["max_tokens"] = 100.0
     errors, _ = validate(cfg)
-    assert not any("max_tokens" in e for e in errors)
+    assert any(
+        "max_tokens must be a positive whole number like 100" in e for e in errors
+    )
 
 
 # --- jinja2 filter variable detection ---
@@ -462,9 +466,35 @@ def test_valid_weighted_config_returns_no_issues():
         (_set("quality_threshold", NAN), "between 0 and 100"),
         (_set("max_cost_usd", INF), "max_cost_usd must be"),
         (_set("inference.temperature", NAN), "inference.temperature must be"),
-        (_set("inference.max_tokens", INF), "max_tokens must be a positive integer"),
-        (_set("inference.max_tokens", 50.5), "max_tokens must be a positive integer"),
-        (_set("inference.max_tokens", True), "max_tokens must be a positive integer"),
+        (_set("inference.max_tokens", INF), "whole number like 100"),
+        (_set("inference.max_tokens", 50.5), "whole number like 100"),
+        (_set("inference.max_tokens", True), "whole number like 100"),
+        (_set("inference.max_tokens", 100.0), "whole number like 100"),
+        # Round 3: ints too large for a float are rejected, never an OverflowError.
+        (_set("quality_threshold", HUGE), "between 0 and 100"),
+        (_set("max_cost_usd", HUGE), "max_cost_usd must be"),
+        (_set("concurrency", HUGE), "concurrency must be a positive integer"),
+        (_set("inference.temperature", HUGE), "inference.temperature must be"),
+        (_set("inference.max_tokens", HUGE), "whole number like 100"),
+        (
+            _set("evaluation.judge_threshold", HUGE, _llm_judge_config),
+            "judge_threshold must be",
+        ),
+        (
+            _set("evaluation.quality_threshold", HUGE, _weighted_config),
+            "evaluation.quality_threshold must be",
+        ),
+        (
+            _set("evaluation.variables.0.weight", HUGE, _weighted_config),
+            "'use_case': weight",
+        ),
+        (
+            _set("test_cases.0.expected_output.0.percent", HUGE, _weighted_config),
+            "every weighted_match expected_output item",
+        ),
+        # judge_model is type-checked even when no case uses llm_judge.
+        (_set("evaluation", {"judge_model": 5}), "judge_model must be a model ID"),
+        (_set("evaluation", {"judge_model": ["a"]}), "judge_model must be a model ID"),
         (_set("models", ["a/b", "a/b"]), "Duplicate model: 'a/b'"),
         (
             _set("evaluation.judge_threshold", NAN, _llm_judge_config),

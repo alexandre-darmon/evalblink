@@ -36,16 +36,17 @@ def _path(key: str) -> str:
 def get(key: str) -> dict | None:
     """Return the cached value for ``key``, or ``None`` on a miss.
 
-    A corrupt or truncated entry also reads as a miss (it is overwritten on the
-    next successful call) rather than aborting the run.
+    A corrupt, truncated or unreadable entry also reads as a miss (it is
+    overwritten on the next successful call) rather than aborting the run. The
+    caller still validates the entry's contents.
     """
     path = _path(key)
     if not os.path.exists(path):
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             value = json.load(f)
-    except ValueError:
+    except (OSError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) and "response" in value else None
 

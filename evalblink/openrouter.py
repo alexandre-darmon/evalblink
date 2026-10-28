@@ -11,6 +11,7 @@ cycle.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 
@@ -31,8 +32,56 @@ RETRYABLE_CODES = {408, 429, 502, 503, 504}
 MAX_RETRIES = 4
 
 
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+def is_number(value) -> bool:
+    """A real number that converts to a finite float.
+
+    The one numeric gate for anything read from a config, an API response, a
+    cache entry or a results file: rejects bools (an int subclass), ``inf`` /
+    ``nan``, and ints too large for a float (``1`` followed by 400 zeros), which
+    would otherwise overflow later in arithmetic or formatting.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def clean_text(text: str) -> str:
+    """``text`` with lone UTF-16 surrogates (e.g. a ``"\\ud800"`` JSON escape)
+    replaced, so it can be UTF-8 encoded for the request body, files and the
+    terminal."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+# The fields of a completion result, as returned and as cached.
+_RESULT_KEYS = ("response", "prompt_tokens", "completion_tokens", "cost")
+
+
+def _result_problem(result) -> str | None:
+    """Why a completion result (fresh or cached) is unusable, or ``None``."""
+    content = result.get("response")
+    if not isinstance(content, str) or not content.strip():
+        what = "null" if content is None else f"empty/non-text ({content!r})"
+        return f"{what} content. Increase max_tokens."
+    if not all(is_number(result.get(k)) for k in _RESULT_KEYS[1:]):
+        return "malformed usage: " + str({k: result.get(k) for k in _RESULT_KEYS[1:]})
+    return None
+
+
+_cache_write_warned = False
+
+
+def _cache_set(key: str, value: dict) -> None:
+    """Persist to the cache; a write failure warns once and never aborts a run."""
+    global _cache_write_warned
+    try:
+        cache.set(key, value)
+    except OSError as exc:
+        if not _cache_write_warned:
+            _cache_write_warned = True
+            print(f"⚠️  Could not write the response cache ({exc}); continuing.")
 
 
 def _auth_headers() -> dict:
@@ -61,12 +110,12 @@ def openrouter_request(
     """
     messages = []
     if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "system", "content": clean_text(system)})
+    messages.append({"role": "user", "content": clean_text(prompt)})
 
     # The request body fully determines the response — it is the cache key.
     payload = {
-        "model": model,
+        "model": clean_text(model),
         "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": messages,
@@ -74,8 +123,15 @@ def openrouter_request(
     key = cache.sha256_key(payload)
     if use_cache:
         cached = cache.get(key)
-        if cached is not None:
-            return {**cached, "from_cache": True}
+        # A cache hit is checked exactly like a fresh response; a tampered or
+        # stale-format entry is a miss (refetched and overwritten), not a crash.
+        if cached is not None and _result_problem(cached) is None:
+            cached = {k: cached[k] for k in _RESULT_KEYS}
+            return {
+                **cached,
+                "response": clean_text(cached["response"]),
+                "from_cache": True,
+            }
 
     headers = _auth_headers()
 
@@ -91,16 +147,19 @@ def openrouter_request(
                 json=payload,
                 timeout=timeout,  # default httpx timeout is 5s — too short for free models
             )
-        except httpx.TransportError as exc:
+        except httpx.HTTPError as exc:
             # Local timeout / connection failure — treat like an upstream 504.
-            if last:
-                what = (
-                    "timed out"
-                    if isinstance(exc, httpx.TimeoutException)
-                    else f"failed to connect ({str(exc) or type(exc).__name__})"
-                )
+            # Any other client-side error (bad gzip, redirect loop) fails at once.
+            if last or not isinstance(exc, httpx.TransportError):
+                detail = str(exc) or type(exc).__name__
+                if isinstance(exc, httpx.TimeoutException):
+                    what = "timed out"
+                elif isinstance(exc, httpx.TransportError):
+                    what = f"failed to connect ({detail})"
+                else:
+                    what = f"failed ({detail})"
                 raise RuntimeError(
-                    f"OpenRouter request {what} after {MAX_RETRIES} attempts"
+                    f"OpenRouter request {what} after {attempt + 1} attempt(s)"
                 ) from exc
             time.sleep(2**attempt)
             continue
@@ -131,7 +190,7 @@ def openrouter_request(
         message = error.get("message") if isinstance(error, dict) else error
         raise RuntimeError(
             f"OpenRouter error {code if code is not None else status}"
-            f" (HTTP {status}): {message}"
+            f" (HTTP {status}): {clean_text(str(message))}"
         )
     if full is None:
         raise RuntimeError(
@@ -141,10 +200,9 @@ def openrouter_request(
     if status >= 400:
         raise RuntimeError(f"OpenRouter HTTP {status}: {str(full)[:200]}")
     try:
-        content = full["choices"][0]["message"]["content"]
         usage = full["usage"]
         request_result = {
-            "response": content,
+            "response": full["choices"][0]["message"]["content"],
             "prompt_tokens": usage["prompt_tokens"],
             "completion_tokens": usage["completion_tokens"],
             "cost": usage["cost"],
@@ -154,36 +212,55 @@ def openrouter_request(
             f"OpenRouter returned a malformed response (HTTP {status},"
             f" {type(exc).__name__}: {exc}): {str(full)[:200]}"
         ) from exc
-    if not isinstance(content, str) or not content.strip():
-        what = "null" if content is None else f"empty/non-text ({content!r})"
+    problem = _result_problem(request_result)
+    if problem:
         raise RuntimeError(
-            f"OpenRouter returned {what} content. Increase max_tokens."
-            f" Full response: {full}"
+            f"OpenRouter returned {problem} Full response: {str(full)[:500]}"
         )
-    if not all(
-        _is_number(request_result[k])
-        for k in ("prompt_tokens", "completion_tokens", "cost")
-    ):
-        raise RuntimeError(f"OpenRouter returned malformed usage: {usage}")
+    request_result["response"] = clean_text(request_result["response"])
     if use_cache:
-        cache.set(key, request_result)
+        _cache_set(key, request_result)
     return {**request_result, "from_cache": False}
 
 
+def _price(value) -> float | None:
+    """A per-token USD price, or ``None`` (unknown) when it is not a finite
+    non-negative number — e.g. the ``-1`` OpenRouter quotes for its routers."""
+    try:
+        price = float(value or 0)  # absent / "" reads as free, as OpenRouter means
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if math.isfinite(price) and price >= 0 else None
+
+
+def _normalize(meta: dict) -> dict:
+    """``{prompt, completion, context_length}`` with unknown values as ``None``."""
+    try:
+        context = int(meta.get("context_length"))
+    except (TypeError, ValueError, OverflowError):
+        context = None
+    return {
+        "prompt": _price(meta.get("prompt")),
+        "completion": _price(meta.get("completion")),
+        "context_length": context,
+    }
+
+
 def _parse_models(data: list) -> dict:
-    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length}}``."""
+    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length}}``.
+
+    Prices are per-token USD floats (``0`` for free models) or ``None`` when the
+    catalog's value is unusable; a malformed entry never sinks the whole catalog.
+    """
     models = {}
     for entry in data:
-        model_id = entry.get("id")
-        if not model_id:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
             continue
-        pricing = entry.get("pricing") or {}
-        models[model_id] = {
-            # Prices are per-token USD strings ("0" for free models).
-            "prompt": float(pricing.get("prompt", 0) or 0),
-            "completion": float(pricing.get("completion", 0) or 0),
-            "context_length": entry.get("context_length"),
-        }
+        pricing = entry.get("pricing")
+        pricing = pricing if isinstance(pricing, dict) else {}
+        models[entry["id"]] = _normalize(
+            {**pricing, "context_length": entry.get("context_length")}
+        )
     return models
 
 
@@ -191,15 +268,24 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
     """Return ``{model_id: {prompt, completion, context_length}}`` from OpenRouter.
 
     The catalog is cached on disk for ``MODELS_TTL_SECONDS`` (24h); a fresh cache
-    is served without a network call. Prices are per-token USD floats.
+    is served without a network call. Prices are per-token USD floats, or
+    ``None`` when unknown (negative, non-numeric); callers treat ``None`` as
+    "no pricing".
     """
     if use_cache and os.path.exists(MODELS_CACHE_PATH):
         try:
             with open(MODELS_CACHE_PATH) as f:
                 cached = json.load(f)
             if time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS:
-                return cached["models"]
-        except (ValueError, KeyError, TypeError, AttributeError):
+                return {k: _normalize(v) for k, v in cached["models"].items()}
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            OverflowError,
+        ):
             pass  # corrupt cache file — refetch and overwrite it
 
     response = client.get(
@@ -216,7 +302,10 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
             f" (HTTP {response.status_code}): {type(exc).__name__}: {exc}"
         ) from exc
 
-    os.makedirs(cache.CACHE_DIR, exist_ok=True)
-    with open(MODELS_CACHE_PATH, "w") as f:
-        json.dump({"fetched_at": time.time(), "models": models}, f, indent=4)
+    try:
+        os.makedirs(cache.CACHE_DIR, exist_ok=True)
+        with open(MODELS_CACHE_PATH, "w") as f:
+            json.dump({"fetched_at": time.time(), "models": models}, f, indent=4)
+    except OSError as exc:
+        print(f"⚠️  Could not cache the model catalog ({exc}); continuing.")
     return models
