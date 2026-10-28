@@ -229,6 +229,7 @@ Variables are injected into prompt templates using Jinja2.
 
 ```python
 from jinja2 import Template
+
 rendered = Template(template).render(**{**global_variables, **test_case_variables})
 ```
 
