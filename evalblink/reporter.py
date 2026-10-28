@@ -38,8 +38,8 @@ def _build_data(config, results, timestamp) -> dict:
         "run_id": run_id,
         "benchmark": config["name"],
         "judge_model": config.get("evaluation", {}).get("judge_model"),
-        "temperature": config["inference"].get("temperature", 0),
-        "max_tokens": config["inference"].get("max_tokens", 4096),
+        "temperature": (config.get("inference") or {}).get("temperature", 0),
+        "max_tokens": (config.get("inference") or {}).get("max_tokens", 100),
         "quality_threshold": config.get("evaluation", {}).get(
             "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
         ),

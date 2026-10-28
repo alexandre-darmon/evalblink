@@ -97,6 +97,33 @@ def test_exact_match_pipeline(monkeypatch):
     assert statuses == {"c1": "scored", "c2": "scored"}
 
 
+def test_missing_inference_block_uses_defaults(monkeypatch):
+    config = _config(
+        [
+            {
+                "id": "c1",
+                "variables": {"q": "a"},
+                "expected_output": "order",
+                "evaluation": "exact_match",
+            }
+        ]
+    )
+    del config["inference"]
+    seen = []
+
+    def fake_candidate(client, prompt, model, temperature, max_tokens, *a, **k):
+        seen.append((temperature, max_tokens))
+        return _resp("order")
+
+    monkeypatch.setattr(runner, "openrouter_request", fake_candidate)
+    results, _ = runner.run(config)
+    assert seen == [(0, 100)]
+    assert results[0]["score"] == 100.0
+
+    data = reporter._build_data(config, results, "2026-01-01_00-00")
+    assert (data["temperature"], data["max_tokens"]) == (0, 100)
+
+
 # --- weighted_match -------------------------------------------------------
 
 
