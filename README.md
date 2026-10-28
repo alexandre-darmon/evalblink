@@ -270,7 +270,7 @@ evalblink cache clear --yes                              # without --yes it only
 `evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
-- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog (and a free judge, `nvidia/nemotron-3.5-lightning:free`, by default), defaults `max_tokens` to 1024 so free reasoning models have room to answer, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
+- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog (and a free judge, `nvidia/nemotron-3-ultra-550b-a55b:free`, by default), defaults `max_tokens` to 1024 so free reasoning models have room to answer, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
 
 ---
 
@@ -324,7 +324,7 @@ inference:
   temperature: 0
   max_tokens: 1024
 evaluation:
-  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from the candidate
+  judge_model: "nvidia/nemotron-3-ultra-550b-a55b:free"  # different vendor from the candidate
   judge_threshold: 0.70
 
 prompts:
@@ -365,7 +365,7 @@ test_cases:
     tags: ["frustration", "edge_case"]
 ```
 
-The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge gets its own output budget, `evaluation.judge_max_tokens` (default 4096), independent of the candidate's `inference.max_tokens`: judges that reason before answering (like the free one in the examples) need thousands of tokens and otherwise return nothing. A failed judge call prints a one-line `Judge API error on …` warning and keeps the reason in the case's `error` field. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
+The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge gets its own output budget, `evaluation.judge_max_tokens` (default 4096), independent of the candidate's `inference.max_tokens`: judges that reason at length before answering can use thousands of tokens (the free `nvidia/nemotron-3.5-lightning:free` takes 2,000–6,000 per verdict, which is why the examples use the more concise `nemotron-3-ultra`) and return nothing when the budget runs out — raise it if you see `judge_api_error … finish_reason: length`. A failed judge call prints a one-line `Judge API error on …` warning and keeps the reason in the case's `error` field. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
 
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)

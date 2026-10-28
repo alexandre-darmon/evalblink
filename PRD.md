@@ -870,7 +870,7 @@ Four practitioner guides covering the full evaluation workflow. **Planned for V1
 
 Shipped behavior:
 - Asks again on an invalid answer: empty name, duplicate model or test-case id, empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100.
-- Defaults: `max_tokens` 1024 (free reasoning models need the headroom) and the free judge `nvidia/nemotron-3.5-lightning:free`.
+- Defaults: `max_tokens` 1024 (free reasoning models need the headroom) and the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`.
 - Finds template variables the way `validate` does (`{{ text|upper }}` and `{{ user.name }}` give `text` and `user`), in order of first appearance, and asks whether each is global or per-case.
 - Suggests up to five free models from the catalog; if the catalog can't be fetched it warns and continues without suggestions.
 - Default output path `benchmarks/<slug>.yaml`, using the results-file slug (`benchmarks/benchmark.yaml` for a name with no letters or digits).

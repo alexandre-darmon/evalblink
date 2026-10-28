@@ -31,7 +31,7 @@ from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
 # init's suggested judge: free, and the one the shipped benchmarks use.
-INIT_JUDGE_MODEL = "nvidia/nemotron-3.5-lightning:free"
+INIT_JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 RESULTS_DIR = "results"
 
 
