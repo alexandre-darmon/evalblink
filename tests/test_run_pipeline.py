@@ -13,6 +13,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from evalblink import analysis, evaluator, reporter, runner
 
 
@@ -97,7 +99,9 @@ def test_exact_match_pipeline(monkeypatch):
     assert statuses == {"c1": "scored", "c2": "scored"}
 
 
-def test_missing_inference_block_uses_defaults(monkeypatch):
+# Absent key, and a bare `inference:` line in YAML (parsed as None).
+@pytest.mark.parametrize("inference", ["absent", None])
+def test_missing_inference_block_uses_defaults(monkeypatch, inference):
     config = _config(
         [
             {
@@ -108,7 +112,10 @@ def test_missing_inference_block_uses_defaults(monkeypatch):
             }
         ]
     )
-    del config["inference"]
+    if inference == "absent":
+        del config["inference"]
+    else:
+        config["inference"] = inference
     seen = []
 
     def fake_candidate(client, prompt, model, temperature, max_tokens, *a, **k):

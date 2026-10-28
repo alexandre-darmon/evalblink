@@ -15,7 +15,7 @@ from rich.table import Table
 
 from . import analysis
 from .compare import CHANGED_TRANSITIONS
-from .schemas import SCHEMA_VERSION
+from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, SCHEMA_VERSION
 
 RESULTS_DIR = "results"
 
@@ -32,14 +32,15 @@ def _slugify(name: str) -> str:
 def _build_data(config, results, timestamp) -> dict:
     """The canonical run record — the exact shape persisted as JSON."""
     benchmark_name = config["name"]
+    inference = config.get("inference") or {}
     run_id = f"{timestamp}_{_slugify(benchmark_name)}"
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "benchmark": config["name"],
         "judge_model": config.get("evaluation", {}).get("judge_model"),
-        "temperature": (config.get("inference") or {}).get("temperature", 0),
-        "max_tokens": (config.get("inference") or {}).get("max_tokens", 100),
+        "temperature": inference.get("temperature", DEFAULT_TEMPERATURE),
+        "max_tokens": inference.get("max_tokens", DEFAULT_MAX_TOKENS),
         "quality_threshold": config.get("evaluation", {}).get(
             "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
         ),

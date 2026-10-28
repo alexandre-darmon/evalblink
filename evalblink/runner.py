@@ -22,6 +22,7 @@ from .evaluator import (
     weighted_match,
 )
 from .openrouter import openrouter_request
+from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
 
 def render_template(prompt, variables, test_case):
@@ -57,8 +58,8 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
         client,
         rendered,
         model,
-        inference.get("temperature", 0),
-        inference.get("max_tokens", 100),
+        inference.get("temperature", DEFAULT_TEMPERATURE),
+        inference.get("max_tokens", DEFAULT_MAX_TOKENS),
         rendered_system,
         use_cache=use_cache,
     )
