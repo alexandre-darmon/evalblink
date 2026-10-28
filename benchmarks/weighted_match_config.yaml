@@ -1,9 +1,9 @@
-# benchmarks/usage_classification.yaml
+# benchmarks/weighted_match_config.yaml
 name: "ChatGPT Usage Classification"
 
 inference:
   temperature: 0
-  max_tokens: 4086
+  max_tokens: 4096
 
 evaluation:
   quality_threshold: 0.80
@@ -28,7 +28,7 @@ prompts:
        Conversation: {{ conversation }}
 
 models:
-  - "poolside/laguna-xs.2:free"
+  - "poolside/laguna-xs-2.1:free"
 
 variables:
   use_cases: "Translate content, Analyze content, Summarize content, Generate new ideas, Write content, Generate simple code, Other"

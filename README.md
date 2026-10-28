@@ -30,33 +30,34 @@ Most LLM eval tools are built for JavaScript developers, locked to a single vend
 Define a benchmark in YAML. Run one command. Get a results matrix, a versioned Markdown report, and a local cache so prompt iteration costs almost nothing.
 
 ```
-                  Customer Support Classification — 2026-06-10_14-32_customer-support-classification
- Model                         Prompt  Score   Pass/Scored  Errors  Prompt tok  Completion tok  Cost
- anthropic/claude-sonnet-4-6   v2      96.0%   48/50        0       5120        344             $0.000471
- anthropic/claude-sonnet-4-6   v1      94.0%   47/50        0       4200        312             $0.000445
- openai/gpt-4o-mini            v2      91.0%   45/50        0       5010        321             $0.000071
- openai/gpt-4o-mini            v1      87.0%   43/50        1       4100        298             $0.000063
- mistralai/mistral-small-3     v2      88.0%   44/50        0       4900        308             $0.000042
- mistralai/mistral-small-3     v1      82.0%   41/50        2       4000        289             $0.000038
+              Customer Support Classification — 2026-06-10_143205_customer-support-classification
+ Model                          Prompt  Score   Pass/Scored  Errors  Prompt tok  Completion tok  Cost
+ openai/gpt-4o-mini             v1      87.8%   43/49        1       4100        298             $0.000794
+ openai/gpt-4o-mini             v2      90.0%   45/50        0       5010        321             $0.000944
+ anthropic/claude-sonnet-4.6    v1      94.0%   47/50        0       4200        312             $0.017280
+ anthropic/claude-sonnet-4.6    v2      96.0%   48/50        0       5120        344             $0.020520
+ mistralai/mistral-small-2603   v1      85.4%   41/48        2       4000        289             $0.000773
+ mistralai/mistral-small-2603   v2      88.0%   44/50        0       4900        308             $0.000920
 
-       QUALITY BY TAG — best combo (anthropic/claude-sonnet-4-6 / v2)
+       QUALITY BY TAG — best combo (anthropic/claude-sonnet-4.6 / v2)
  Tag          Cases  Quality  Errors
- easy         30     99%      0
- medium       15     91%      0
  edge_case    5      60%      0     ⚠️
- billing      12     63%      1     ⚠️
  non_english  4      50%      0     ⚠️
+ billing      12     100%     0
+ easy         30     100%     0
+ medium       15     100%     0
 
 RECOMMENDATION
-Best quality : anthropic/claude-sonnet-4-6 / v2 (96.0%)
-Best value   : mistralai/mistral-small-3 / v2 (88.0% · $0.0000/run)
+Best quality : anthropic/claude-sonnet-4.6 / v2 (96.0%)
+Best value   : openai/gpt-4o-mini / v1 (87.8% · $0.0008/run)
 ⚠️  Warning  : edge_case quality is below 70%.
-⚠️  Warning  : billing quality is below 70%.
 ⚠️  Warning  : non_english quality is below 70%.
 
-Results saved to results/2026-06-10_14-32_customer-support-classification.json
-Markdown report saved to results/2026-06-10_14-32_customer-support-classification.md
+Results saved to results/2026-06-10_143205_customer-support-classification.json
+Markdown report saved to results/2026-06-10_143205_customer-support-classification.md
 ```
+
+Rows follow the config's model × prompt order; the tag table lists warning rows first, then the rest alphabetically. **Pass/Scored** counts only genuinely scored cases — pipeline errors (a failed API call or an unusable judge reply) are shown in **Errors** and excluded from the score.
 
 ---
 
@@ -78,28 +79,30 @@ Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/eval
 **2. Set your API key**
 
 ```bash
-export OPENROUTER_API_KEY=your_key_here
+export OPENROUTER_API_KEY=your_key_here    # or put it in a .env file
 ```
+
+`evalblink run` exits 1 with a clear message, before any API call, if `OPENROUTER_API_KEY` is unset or empty. `evalblink validate` and `evalblink run --dry-run` make no completion calls.
 
 **3. Write a benchmark**
 
 ```yaml
-# benchmarks/classification.yaml
+# my_benchmark.yaml
 name: "Customer Support Classification"
 quality_threshold: 85        # CI/CD gate: exits 1 if best combo score < 85%
 max_cost_usd: 10.00          # --dry-run exits 1 if estimated cost exceeds this
 
 models:
   - "openai/gpt-4o-mini"
-  - "anthropic/claude-sonnet-4-6"
-  - "mistralai/mistral-small-3"
+  - "anthropic/claude-sonnet-4.6"
+  - "mistralai/mistral-small-2603"
 
 inference:
   temperature: 0
   max_tokens: 200
 
 evaluation:
-  judge_model: "openai/gpt-4o"
+  judge_model: "google/gemini-2.5-flash"  # vendor shared by no candidate (avoids self-preference)
   judge_threshold: 0.70      # per-case pass threshold for llm_judge (default: 0.70)
 
 prompts:
@@ -157,8 +160,12 @@ test_cases:
 **4. Run**
 
 ```bash
-evalblink run benchmarks/classification.yaml
+evalblink validate my_benchmark.yaml          # optional: static check, no API calls
+evalblink run my_benchmark.yaml --dry-run     # optional: cost estimate, no completion calls
+evalblink run my_benchmark.yaml
 ```
+
+Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) use only free (`:free`) OpenRouter models — free models are rate-limited, so expect the occasional retry.
 
 ---
 
@@ -178,8 +185,8 @@ evalblink run benchmarks/classification.yaml
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
 | `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions (`name`, `weight`, optional `tolerance`) |
 | `prompts[].id` | ✅ | Unique identifier used in reports |
-| `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces) |
-| `prompts[].system` | — | Optional system message (also a Jinja2 template) |
+| `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces); rendered in a sandbox |
+| `prompts[].system` | — | Optional system message (also a sandboxed Jinja2 template) |
 | `variables` | — | Global key/value pairs injected into all templates |
 | `test_cases[].id` | ✅ | Unique identifier |
 | `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
@@ -191,6 +198,10 @@ evalblink run benchmarks/classification.yaml
 
 > **Threshold naming:** `quality_threshold` at the top level is the CI/CD gate (0–100 %). `evaluation.quality_threshold` is the per-case pass threshold for `weighted_match` (0–1). `evaluation.judge_threshold` is the per-case pass threshold for `llm_judge` (0–1, default 0.70). These are three distinct concepts.
 
+> **Validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run: an empty or non-mapping file, a non-string `name`, a top-level `quality_threshold` that isn't a number in 0–100, a `concurrency` that isn't a positive integer, an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent), a non-numeric `inference.temperature`, non-string `prompts[].id` / `test_cases[].id`, Jinja2 syntax errors in `template` / `system`, an `exact_match` `expected_output` that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it), and for `weighted_match` an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or an `expected_output` that is empty or not a list.
+>
+> **Sandboxed templates:** `template` and `system` render in a Jinja2 `SandboxedEnvironment` — filters such as `{{ items | join(", ") }}` work, but unsafe attribute access raises `jinja2.exceptions.SecurityError`.
+
 ---
 
 ## CLI Reference
@@ -199,18 +210,18 @@ evalblink run benchmarks/classification.yaml
 # Run a benchmark
 evalblink run benchmarks/classification.yaml
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
-evalblink run benchmarks/classification.yaml --no-cache  # bypass local cache
-evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no API calls
+evalblink run benchmarks/classification.yaml --no-cache  # bypass the cache for candidate calls (judge calls stay cached)
+evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls
 
 # Validate a config file (errors and warnings, no API calls)
 evalblink validate benchmarks/classification.yaml
 
-# Compare two runs (quality + cost deltas)
-evalblink compare results/run_001.json results/run_002.json
-evalblink compare results/run_001.json results/run_002.json --detailed  # per-case transitions
+# Compare two runs (quality + cost deltas; offline)
+evalblink compare results/<run_a>.json results/<run_b>.json
+evalblink compare results/<run_a>.json results/<run_b>.json --detailed  # per-case transitions
 
 # Regenerate a Markdown report from an existing JSON result
-evalblink report results/run_001.json
+evalblink report results/<run>.json
 
 # List past runs
 evalblink history
@@ -226,8 +237,10 @@ evalblink init
 
 # Cache management
 evalblink cache stats
-evalblink cache clear --yes
+evalblink cache clear --yes                              # without --yes it only prints the entry count
 ```
+
+`evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
 
 ---
 
@@ -238,25 +251,27 @@ evalblink cache clear --yes
 For classification tasks where the model must return a specific label. Prompt the model explicitly to return no JSON and no extra text.
 
 ```yaml
-# Full example: benchmarks/exact_match_classification.yaml
+# Excerpt of benchmarks/exact_match_classification.yaml (first test case shown)
 name: "Customer Support Classification"
+quality_threshold: 80  # CI/CD gate: exits 1 if the best combo scores below 80%
+
 inference:
   temperature: 0
-  max_tokens: 50
-
-models:
-  - "google/gemma-4-31b-it:free"
-
-variables:
-  labels: "order_issue, billing, product_question, other"
+  max_tokens: 1024  # headroom in case the model spends tokens on reasoning before the label
 
 prompts:
   - id: "v1"
     template: >
       Classify this conversation.
-      Return only a valid label from the list. No JSON. No explanation.
+      Return only a valid label from the list. No JSON. No explanation. No punctuation.
       Choose from: {{ labels }}.
       Conversation: {{ conversation }}
+
+models:
+  - "nvidia/nemotron-3.5-lightning:free"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
 
 test_cases:
   - id: "conv_001"
@@ -274,39 +289,54 @@ Case-insensitive string comparison after whitespace trimming. The model must ret
 For open-ended tasks (summarization, generation, explanation) where no single correct output exists.
 
 ```yaml
-# Full example: benchmarks/llm_as_judge.yaml
+# Excerpt of benchmarks/llm_as_judge.yaml (prompt v1 and the first test case shown)
 name: "Customer Support Quality"
 inference:
   temperature: 0
   max_tokens: 1024
-
 evaluation:
-  judge_model: "openai/gpt-4o"
-  judge_threshold: 0.70        # optional, default 0.70
-
-models:
-  - "google/gemma-4-31b-it:free"
+  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from the candidate
+  judge_threshold: 0.70
 
 prompts:
   - id: "v1"
     system: >
-      You are Paul, a senior customer support agent.
-      Acknowledge the customer's emotion before proposing a solution.
-      Keep your response under 100 words.
+      You are Paul, a senior customer support agent at an e-commerce company.
+      Your goal is to resolve customer issues efficiently while making them
+      feel heard.
+
+      Rules:
+      - Always acknowledge the customer's emotion before proposing a solution.
+      - Ask one clarifying question if the issue is ambiguous — never assume.
+      - If multiple issues are raised, address each one explicitly.
+      - Never use generic phrases like "I understand your frustration" alone —
+        show you understood the specific situation.
+      - Propose a concrete next step in every response.
+      - Keep your response under 100 words.
+
     template: "Customer message: {{ customer_message }}"
 
+models:
+  - "poolside/laguna-xs-2.1:free"
+
 test_cases:
+  # Edge case — emotional frustration before resolution
   - id: "conv_001"
     variables:
-      customer_message: "This is the third time my order arrived damaged."
+      customer_message: >
+        This is the third time my order arrived damaged.
+        I am done with this company.
     evaluation: "llm_judge"
     criteria: >
-      The assistant must acknowledge frustration before proposing resolution.
+      The assistant must acknowledge the customer's frustration explicitly
+      before proposing any resolution. A response that jumps straight to
+      a solution without emotional acknowledgment scores below 3.
+      The tone must be empathetic throughout — not defensive, not robotic.
       A concrete next step must be proposed (refund, replacement, escalation).
     tags: ["frustration", "edge_case"]
 ```
 
-The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. Judge reasoning surfaces in the report so you know *why* a response scored poorly.
+The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
 
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)
@@ -318,8 +348,9 @@ The judge reasons step by step before committing to a score (chain-of-thought-fi
 For structured outputs where the model must return a JSON array of `{"use_case", "percent", "order"}` objects. Three dimensions are scored independently and combined by weight.
 
 ```yaml
-# Full example: benchmarks/weighted_match_config.yaml
+# Excerpt of benchmarks/weighted_match_config.yaml (first test case shown)
 name: "ChatGPT Usage Classification"
+
 inference:
   temperature: 0
   max_tokens: 4096
@@ -335,28 +366,30 @@ evaluation:
     - name: "order"
       weight: 0.25             # exact order match
 
-models:
-  - "poolside/laguna-xs.2:free"
-
-variables:
-  use_cases: "Translate content, Analyze content, Summarize content, Write content, Other"
-
 prompts:
   - id: "v1"
     system: >
-      Analyse this conversation and identify the use cases present.
-      Return only valid JSON, no explanation, no markdown.
+      Analyse cette conversation et identifie les cas d'usage présents.
+      Retourne uniquement un JSON valide, sans explication, sans markdown.
       Format: [{"use_case": "<label>", "percent": <float>, "order": <int>}]
-      Percentages must sum to 1.0.
-      Available use cases: {{ use_cases }}.
-    template: "Conversation: {{ conversation }}"
+      Les pourcentages doivent sommer à 1.0.
+      Use cases disponibles: {{ use_cases }}.
+    template: >
+       Conversation: {{ conversation }}
+
+models:
+  - "poolside/laguna-xs-2.1:free"
+
+variables:
+  use_cases: "Translate content, Analyze content, Summarize content, Generate new ideas, Write content, Generate simple code, Other"
 
 test_cases:
   - id: "conv_001"
     variables:
       conversation: |
-        User: Summarize this document.
-        User: Translate it to English.
+        User: Fais moi une synthèse de ce document.
+        User: Reformule le en 10 bullet points.
+        User: Traduis le en anglais.
     expected_output:
       - use_case: "Summarize content"
         percent: 0.70
@@ -371,7 +404,7 @@ test_cases:
 Returns a weighted score 0.0–1.0. Cases scoring below `evaluation.quality_threshold` are counted as failures.
 
 **Scoring per dimension:**
-- `use_case`: F1 score (precision × recall) on matched labels
+- `use_case`: F1 score — `2 × precision × recall / (precision + recall)` — on matched labels
 - `percent`: fraction of expected items within `tolerance` of the expected value
 - `order`: fraction of expected items with an exact order match
 
@@ -379,24 +412,28 @@ Returns a weighted score 0.0–1.0. Cases scoring below `evaluation.quality_thre
 
 ## Cost Estimation
 
-Before running a benchmark, estimate the cost without making any API calls:
+Before running a benchmark, estimate the cost without making any completion calls (only the public OpenRouter model catalog is fetched, cached for 24h):
 
 ```bash
-evalblink run benchmarks/classification.yaml --dry-run
+evalblink run my_benchmark.yaml --dry-run    # the Quickstart config above
 ```
 
 ```
 DRY RUN — estimated cost (no API calls)
- Model                         Prompt  Est prompt tok  Est completion tok  Est cost
- anthropic/claude-sonnet-4-6   v1      3842            200                 $0.001230
- anthropic/claude-sonnet-4-6   v2      4610            200                 $0.001476
- openai/gpt-4o-mini            v1      3842            200                 $0.000210
- openai/gpt-4o-mini            v2      4610            200                 $0.000252
-
-Estimated total cost: $0.003168
+ Model                          Prompt  Est prompt tok  Est completion tok  Est cost
+ openai/gpt-4o-mini             v1      191             800                 $0.001870
+ openai/gpt-4o-mini             v2      246             800                 $0.001883
+ anthropic/claude-sonnet-4.6    v1      191             800                 $0.013935
+ anthropic/claude-sonnet-4.6    v2      246             800                 $0.014104
+ mistralai/mistral-small-2603   v1      191             800                 $0.001870
+ mistralai/mistral-small-2603   v2      246             800                 $0.001883
+Judge cost (llm_judge cases): $0.008182
+Estimated total cost: $0.035544
 Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
-✓ Within budget: estimate $0.003168 ≤ max_cost_usd $10.000000.
+✓ Within budget: estimate $0.035544 ≤ max_cost_usd $10.000000.
 ```
+
+Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the config has `llm_judge` cases. Models missing from the catalog are excluded from the estimate with a warning.
 
 Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
@@ -435,18 +472,21 @@ concurrency: 5    # max parallel requests (default: 5)
 | Sequential | ~8–12 minutes |
 | Concurrent (default: 5) | ~45–90 seconds |
 
-Failed API calls are retried with exponential backoff (up to 4 attempts). After 4 failures, the test case is scored `null` and listed under "API Errors" in the report.
+Transient API failures (HTTP 408 / 429 / 502 / 503 / 504 and local timeouts) are retried with exponential backoff, up to 4 attempts. A candidate call that still fails — or hits a non-transient error such as an unknown model, a bad key, or empty content — does **not** abort the run: evalblink prints a one-line warning, records that test case with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost, then carries on. The case counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, with errored cases shown in the per-combo tables with an empty score.
 
 ---
 
 ## Caching
 
-Every API response is cached locally by SHA256 key including model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost.
+Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. `--no-cache` bypasses the cache for candidate calls only — judge calls stay cached.
 
 ```bash
-evalblink cache stats    # entry count and total size on disk
-evalblink cache clear    # wipe cache (--yes to skip confirmation)
+evalblink cache stats          # entry count and total size on disk
+evalblink cache clear          # prints the entry count only — deletes nothing
+evalblink cache clear --yes    # delete every entry
 ```
+
+Both commands also count `.evalblink_cache/models.json`, the OpenRouter model catalog cached for `--dry-run`, `models` and `init`.
 
 > Cache + `temperature: 0` = fully reproducible benchmarks.
 
@@ -458,29 +498,32 @@ Every run produces two files:
 
 ```
 results/
-  2026-06-10_14-32_customer-support-classification.json   # full data, git-friendly
-  2026-06-10_14-32_customer-support-classification.md     # human-readable report
+  2026-06-10_143205_customer-support-classification.json   # full data, git-friendly
+  2026-06-10_143205_customer-support-classification.md     # human-readable report
 ```
 
-The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
-
-```bash
-evalblink report results/run_001.json
-```
+Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
 
 ```bash
-evalblink compare results/run_001.json results/run_002.json
+evalblink report results/2026-06-10_143205_customer-support-classification.json
+```
+
+```bash
+evalblink compare results/2026-06-08_101500_customer-support-classification.json \
+                  results/2026-06-10_143205_customer-support-classification.json
 ```
 
 ```
- DELTA: 2026-06-08_run_001 → 2026-06-10_run_002
- Model                         Prompt  Quality Δ    Cost Δ       Notes
- anthropic/claude-sonnet-4-6   v1      +4.0% ↑      +0.0002 ↑
- anthropic/claude-sonnet-4-6   v2      stable        stable
- openai/gpt-4o-mini            v1      +6.0% ↑      stable
+ DELTA: 2026-06-08_101500_customer-support-classification → 2026-06-10_143205_customer-support-classification
+ Model                          Prompt  Quality Δ    Cost Δ       Notes
+ anthropic/claude-sonnet-4.6    v1      +4.0% ↑      +0.0002 ↑
+ openai/gpt-4o-mini             v1      +6.0% ↑      stable
+ anthropic/claude-sonnet-4.6    v2      stable       stable
 
-Verdict: B improved on A across 2/3 combos.
+Verdict: Run B improves quality on 2/3 shared combo(s).
 ```
+
+Changed combos are listed first. `--detailed` adds per-combo test-case transitions (regressed / improved / new error / recovered) and a global summary.
 
 ---
 
@@ -490,10 +533,14 @@ evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
 
 ```yaml
 # .github/workflows/llm-eval.yml
-- run: evalblink run benchmarks/classification.yaml
+- run: evalblink run my_benchmark.yaml
   env:
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
+
+- Best combo score ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, the gate is not enforced (exit 0).
+- The score covers scored cases only: API and judge errors are counted under **Errors**, not as failures — but if every case errors, the score is 0% and the gate fails.
+- `evalblink run` also exits 1 before any API call when the config fails validation or `OPENROUTER_API_KEY` is unset or empty; `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`.
 
 ---
 
