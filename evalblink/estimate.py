@@ -16,10 +16,9 @@ from __future__ import annotations
 import math
 
 from .runner import render_template
-from .schemas import DEFAULT_MAX_TOKENS
+from .schemas import DEFAULT_JUDGE_MAX_TOKENS, DEFAULT_MAX_TOKENS
 
 # Mirrors the fixed judge budget in ``evaluator.evaluate_llm_judge``.
-JUDGE_MAX_TOKENS = 512
 
 
 def _est_tokens(text) -> int:
@@ -49,7 +48,11 @@ def estimate(config, models_meta) -> dict:
     """
     inference = config.get("inference") or {}
     max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
-    judge_model = (config.get("evaluation") or {}).get("judge_model")
+    evaluation = config.get("evaluation") or {}
+    judge_model = evaluation.get("judge_model")
+    judge_max_tokens = evaluation.get("judge_max_tokens")
+    if judge_max_tokens is None:
+        judge_max_tokens = DEFAULT_JUDGE_MAX_TOKENS
     missing: list = []
 
     rows = []
@@ -86,7 +89,7 @@ def estimate(config, models_meta) -> dict:
                     )
                     est_judge_cost += (
                         judge_prompt_tok * judge_prompt_price
-                        + JUDGE_MAX_TOKENS * judge_completion_price
+                        + judge_max_tokens * judge_completion_price
                     )
             rows.append(
                 {

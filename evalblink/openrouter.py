@@ -95,11 +95,15 @@ def _auth_headers() -> dict:
         # httpx would raise UnicodeEncodeError building the header; every caller
         # handles RuntimeError. Typical cause: a pasted no-break space or quote.
         raise RuntimeError("OPENROUTER_API_KEY contains a non-ASCII character")
-    return {
-        "Authorization": f"Bearer {key}",
+    headers = {
         "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
         "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
     }
+    if (
+        key
+    ):  # no key: the public /models catalog works without one; "Bearer " is illegal
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def openrouter_request(
@@ -225,9 +229,13 @@ def openrouter_request(
         ) from exc
     problem = _result_problem(request_result)
     if problem:
-        raise RuntimeError(
-            f"OpenRouter returned {problem} Full response: {str(full)[:500]}"
-        )
+        finish = None
+        try:
+            finish = full["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            pass
+        reason = f" (finish_reason: {finish})" if finish else ""
+        raise RuntimeError(f"OpenRouter returned {problem}{reason}")
     request_result["response"] = clean_text(request_result["response"])
     if use_cache:
         _cache_set(key, request_result)
@@ -237,8 +245,10 @@ def openrouter_request(
 def _price(value) -> float | None:
     """A per-token USD price, or ``None`` (unknown) when it is not a finite
     non-negative number — e.g. the ``-1`` OpenRouter quotes for its routers."""
+    if value is None:  # unknown — e.g. a router's price as stored in the models cache
+        return None
     try:
-        price = float(value or 0)  # absent / "" reads as free, as OpenRouter means
+        price = float(value or 0)  # "" reads as free, as OpenRouter means
     except (TypeError, ValueError, OverflowError):
         return None
     return price if math.isfinite(price) and price >= 0 else None
@@ -251,8 +261,9 @@ def _normalize(meta: dict) -> dict:
     except (TypeError, ValueError, OverflowError):
         context = None
     return {
-        "prompt": _price(meta.get("prompt")),
-        "completion": _price(meta.get("completion")),
+        # An absent key reads as free (OpenRouter omits zero prices); None is unknown.
+        "prompt": _price(meta.get("prompt", "")),
+        "completion": _price(meta.get("completion", "")),
         "context_length": context,
     }
 

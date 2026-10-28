@@ -174,3 +174,23 @@ def test_summarize_errors_is_the_run_total_not_the_best_combo():
     best = {**_combo("m", "a", 100.0, 0.0, [_case(["t"], True)]), "errors": 0}
     worse = {**_combo("m", "b", 50.0, 0.0, [_case(["t"], False)]), "errors": 3}
     assert summarize([best, worse], None)["errors"] == 3
+
+
+def test_gate_counts_unscored_cases_as_failures():
+    from evalblink.analysis import summarize
+
+    # 1 of 10 scored (and passed): 100% of scored, but 10% for the gate.
+    combo = {
+        "model": "m",
+        "prompt_id": "v1",
+        "score": 100.0,
+        "success": 1,
+        "total": 10,
+        "total_cost": 0.0,
+        "errors": 9,
+        "test_cases": [],
+    }
+    summary = summarize([combo], 80)
+    assert summary["gate_score"] == 10.0 and summary["passed"] is False
+    assert summarize([combo], 10)["passed"] is True
+    assert summarize([combo], None)["passed"] is True  # no gate configured
