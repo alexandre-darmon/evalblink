@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import tempfile
-from typing import Optional
 
 CACHE_DIR = ".evalblink_cache"
 
@@ -34,7 +33,7 @@ def _path(key: str) -> str:
     return os.path.join(CACHE_DIR, f"{key}.json")
 
 
-def get(key: str) -> Optional[dict]:
+def get(key: str) -> dict | None:
     """Return the cached value for ``key``, or ``None`` on a miss."""
     path = _path(key)
     if not os.path.exists(path):

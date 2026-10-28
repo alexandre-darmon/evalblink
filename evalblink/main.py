@@ -402,9 +402,10 @@ def cmd_init(args):
     default_path = f"benchmarks/{slug}.yaml"
     out_path = Prompt.ask("\nOutput file", default=default_path)
 
-    if os.path.exists(out_path):
-        if not Confirm.ask(f"  {out_path} already exists — overwrite?", default=False):
-            sys.exit(0)
+    if os.path.exists(out_path) and not Confirm.ask(
+        f"  {out_path} already exists — overwrite?", default=False
+    ):
+        sys.exit(0)
 
     # 11-12. Build config and write
     config: dict = {"name": name}

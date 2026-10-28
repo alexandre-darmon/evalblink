@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from evalblink import reporter
 from evalblink.reporter import _build_data, _slugify, write
@@ -84,14 +85,14 @@ def test_write_embeds_insights_in_json_and_markdown(tmp_path, monkeypatch):
     # Best combo scores 50% < 80% threshold → gate fails.
     assert out["passed"] is False
 
-    data = json.loads(open(out["json"]).read())
+    data = json.loads(Path(out["json"]).read_text())
     assert data["schema_version"] == 1
     insights = data["insights"]
     assert insights["best_quality"]["model"] == "m/cheap"
     assert insights["warnings"] == ["edge_case"]
     assert insights["passed"] is False
 
-    md = open(out["markdown"]).read()
+    md = Path(out["markdown"]).read_text()
     assert "Quality by tag" in md
     assert "Recommendation" in md
     assert "edge_case" in md

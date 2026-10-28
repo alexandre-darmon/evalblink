@@ -201,9 +201,11 @@ def weighted_match(evaluation_params, response, expected, tolerance=0.20):
     matched_order = 0
     for exp_item in expected:
         label = exp_item["use_case"]
-        if label in response_lookup:
-            if response_lookup[label]["order"] == exp_item["order"]:
-                matched_order += 1
+        if (
+            label in response_lookup
+            and response_lookup[label]["order"] == exp_item["order"]
+        ):
+            matched_order += 1
     order_score = matched_order / len(expected)
 
     return (
