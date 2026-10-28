@@ -68,7 +68,7 @@ Markdown report saved to results/2026-06-10_14-32_customer-support-classificatio
 pipx install evalblink        # or: uv tool install evalblink / pip install evalblink
 ```
 
-Example configs live in [`benchmarks/`](benchmarks/) in this repo; `evalblink init` scaffolds a new one interactively.
+Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) in this repo; `evalblink init` scaffolds a new one interactively.
 
 > **Local development (from the repo root):**
 > ```bash

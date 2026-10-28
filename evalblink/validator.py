@@ -7,6 +7,8 @@ import re
 import jinja2
 import jinja2.meta
 
+from .schemas import DEFAULT_MAX_TOKENS
+
 KNOWN_EVAL_TYPES = {"exact_match", "weighted_match", "llm_judge"}
 
 _SINGLE_BRACE_RE = re.compile(r"(?<!\{)\{(\w+)\}(?!\})")
@@ -36,7 +38,7 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
 
     # Inference
     inference = config.get("inference") or {}
-    max_tokens = inference.get("max_tokens", 100)
+    max_tokens = inference.get("max_tokens", DEFAULT_MAX_TOKENS)
     if (
         not isinstance(max_tokens, (int, float))
         or isinstance(max_tokens, bool)
@@ -45,7 +47,7 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         errors.append(
             f"inference.max_tokens must be a positive number (got {max_tokens!r})"
         )
-        max_tokens = 100
+        max_tokens = DEFAULT_MAX_TOKENS
 
     # Prompts
     prompts = config.get("prompts") or []

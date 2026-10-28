@@ -7,6 +7,10 @@ on:
   push:
     tags: ["v*"]
 
+# Least privilege by default; only the publish jobs get an OIDC token.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,7 +19,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install build twine
+      - run: pip install -e ".[dev]" build twine
+      # Never publish an artifact that fails the CI gates.
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+      - name: Check tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          version=$(python -c "import evalblink; print(evalblink.__version__)")
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match evalblink.__version__ ($version)"
+            exit 1
+          fi
       - run: python -m build
       - run: twine check --strict dist/*
       - uses: actions/upload-artifact@v4
@@ -40,7 +56,8 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tag push only: a manual run started from a tag must not reach PyPI.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     environment: pypi

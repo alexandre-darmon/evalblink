@@ -19,6 +19,11 @@ from typing import Any, TypedDict
 # written before this field existed are treated as version 0.
 SCHEMA_VERSION = 1
 
+# Applied when a config omits ``inference:`` or one of its keys. Shared by the
+# runner, reporter, estimator and validator so they can never disagree.
+DEFAULT_TEMPERATURE = 0
+DEFAULT_MAX_TOKENS = 100
+
 
 # ----------------------------------------------------------------------------
 # Config side — the shape of a parsed benchmark YAML file.

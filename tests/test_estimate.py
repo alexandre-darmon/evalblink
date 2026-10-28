@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from evalblink import estimate
 from evalblink.estimate import JUDGE_MAX_TOKENS, _est_tokens
+from evalblink.schemas import DEFAULT_MAX_TOKENS
 
 
 def _meta(prompt=0.0, completion=0.0, context_length=8000):
@@ -32,6 +33,16 @@ def _config(test_cases, evaluation=None, max_tokens=100, max_cost_usd=None):
     if max_cost_usd is not None:
         config["max_cost_usd"] = max_cost_usd
     return config
+
+
+def test_null_inference_uses_default_max_tokens():
+    # A bare `inference:` line in YAML parses as None.
+    config = _config(
+        [{"id": "c1", "variables": {"q": "abcd"}, "evaluation": "exact_match"}]
+    )
+    config["inference"] = None
+    est = estimate.estimate(config, {"m/x": _meta()})
+    assert est["rows"][0]["est_completion_tokens"] == DEFAULT_MAX_TOKENS
 
 
 def test_est_tokens_heuristic():

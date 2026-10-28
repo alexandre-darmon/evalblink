@@ -40,7 +40,7 @@ Issues = "https://github.com/alexandre-darmon/evalblink/issues"
 evalblink = "evalblink.main:main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.17", "pytest>=8.0"]
+dev = ["ruff~=0.17.3", "pytest>=8.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "evalblink.__version__" }
