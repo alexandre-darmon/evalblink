@@ -30,34 +30,47 @@ Most LLM eval tools are built for JavaScript developers, locked to a single vend
 Define a benchmark in YAML. Run one command. Get a results matrix, a versioned Markdown report, and a local cache so prompt iteration costs almost nothing.
 
 ```
-              Customer Support Classification — 2026-06-10_143205_customer-support-classification
- Model                          Prompt  Score   Pass/Scored  Errors  Prompt tok  Completion tok  Cost
- openai/gpt-4o-mini             v1      87.8%   43/49        1       4100        298             $0.000794
- openai/gpt-4o-mini             v2      90.0%   45/50        0       5010        321             $0.000944
- anthropic/claude-sonnet-4.6    v1      94.0%   47/50        0       4200        312             $0.017280
- anthropic/claude-sonnet-4.6    v2      96.0%   48/50        0       5120        344             $0.020520
- mistralai/mistral-small-2603   v1      85.4%   41/48        2       4000        289             $0.000773
- mistralai/mistral-small-2603   v2      88.0%   44/50        0       4900        308             $0.000920
-
-       QUALITY BY TAG — best combo (anthropic/claude-sonnet-4.6 / v2)
- Tag          Cases  Quality  Errors
- edge_case    5      60%      0     ⚠️
- non_english  4      50%      0     ⚠️
- billing      12     100%     0
- easy         30     100%     0
- medium       15     100%     0
+…
+⚠️  API error on openai/gpt-4o-mini / v1 / conv_048: OpenRouter request timed out after 4 attempt(s)
+…
+               Customer Support Classification — 2026-06-10_143205_customer-support-classification
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Model                        ┃ Prompt ┃ Score ┃ Pass/Scored ┃ Errors ┃ Prompt tok ┃ Completion tok ┃      Cost ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ openai/gpt-4o-mini           │ v1     │ 87.8% │       43/49 │      1 │       4018 │            294 │ $0.000784 │
+│ openai/gpt-4o-mini           │ v2     │ 90.0% │       45/50 │      0 │       5000 │            300 │ $0.000960 │
+│ anthropic/claude-sonnet-4.6  │ v1     │ 94.0% │       47/50 │      0 │       4100 │            300 │ $0.017500 │
+│ anthropic/claude-sonnet-4.6  │ v2     │ 96.0% │       48/50 │      0 │       5000 │            300 │ $0.021000 │
+│ mistralai/mistral-small-2603 │ v1     │ 85.4% │       41/48 │      2 │       3936 │            288 │ $0.000768 │
+│ mistralai/mistral-small-2603 │ v2     │ 88.0% │       44/50 │      0 │       5000 │            300 │ $0.000960 │
+└──────────────────────────────┴────────┴───────┴─────────────┴────────┴────────────┴────────────────┴───────────┘
+          QUALITY BY TAG — best combo
+      (anthropic/claude-sonnet-4.6 / v2)
+┏━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━┓
+┃ Tag         ┃ Cases ┃ Quality ┃ Errors ┃    ┃
+┡━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━┩
+│ edge_case   │     5 │     60% │      0 │ ⚠️ │
+│ non_english │     4 │     50% │      0 │ ⚠️ │
+│ billing     │    12 │    100% │      0 │    │
+│ easy        │    30 │    100% │      0 │    │
+│ medium      │    15 │    100% │      0 │    │
+└─────────────┴───────┴─────────┴────────┴────┘
 
 RECOMMENDATION
 Best quality : anthropic/claude-sonnet-4.6 / v2 (96.0%)
 Best value   : openai/gpt-4o-mini / v1 (87.8% · $0.0008/run)
+3 pipeline error(s) excluded from scoring.
 ⚠️  Warning  : edge_case quality is below 70%.
 ⚠️  Warning  : non_english quality is below 70%.
-
 Results saved to results/2026-06-10_143205_customer-support-classification.json
 Markdown report saved to results/2026-06-10_143205_customer-support-classification.md
+
+⚠  3 of 300 case(s) hit a pipeline error (API / judge failure) and are excluded from scores.
+
+PASS: best score meets quality_threshold (85).
 ```
 
-Rows follow the config's model × prompt order; the tag table lists warning rows first, then the rest alphabetically. **Pass/Scored** counts only genuinely scored cases — pipeline errors (a failed API call or an unusable judge reply) are shown in **Errors** and excluded from the score.
+Sample from a 50-case run (3 models × 2 prompts, `quality_threshold: 85`) in which three calls timed out. The lines before the table are trimmed: a `Test case: <id>` progress line per case, a one-line warning per failed call, and per-combo totals. Rows follow the config's model × prompt order; the tag table lists warning rows first, then the rest alphabetically. **Pass/Scored** counts only genuinely scored cases — pipeline errors (a failed API call or an unusable judge reply) are shown in **Errors** and excluded from the score. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the `quality_threshold` gate (see the CI/CD Integration section below). Names, ids, tags, error messages and model output are printed literally: Rich markup such as `[bold]` and `:emoji:` codes in them are not interpreted.
 
 ---
 
@@ -82,7 +95,7 @@ Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/eval
 export OPENROUTER_API_KEY=your_key_here    # or put it in a .env file
 ```
 
-The `.env` file is read from the directory you run `evalblink` in (or the nearest parent that has one), never from the installed package's directory. `evalblink run` exits 1 with a clear message, before any API call, if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `evalblink validate` and `evalblink run --dry-run` make no completion calls.
+The `.env` file is read from the directory you run `evalblink` in (or the nearest parent that has one), never from the installed package's directory. `evalblink run` exits 1 with a clear message, before any API call, if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `evalblink validate` and `evalblink run --dry-run` need no API key and make no completion calls (`--dry-run` only fetches the public model catalog).
 
 **3. Write a benchmark**
 
@@ -177,10 +190,10 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 | `models` | ✅ | List of OpenRouter model IDs |
 | `quality_threshold` | — | Top-level CI/CD gate: `evalblink run` exits 1 if the best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
-| `concurrency` | — | Max parallel API requests (default: `5`) |
+| `concurrency` | — | Max parallel API requests — a positive integer (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call — a positive integer (default: `100`) |
-| `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
+| `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
+| `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge — must be a string whenever present |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
 | `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions (`name`, `weight`, optional `tolerance`) |
@@ -201,8 +214,8 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 > **Validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
 >
 > - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type.
-> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a positive integer; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive integer (`50.5` and `true` are rejected); and a non-finite value (`.inf`, `.nan`) anywhere a number is checked.
-> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without `use_case`, a numeric `percent` and `order`.
+> - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a positive integer; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of 4300 or more digits makes the whole file `Invalid YAML`.
+> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without `use_case`, a numeric `percent` and `order`.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call.
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
@@ -217,8 +230,8 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 # Run a benchmark
 evalblink run benchmarks/classification.yaml
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
-evalblink run benchmarks/classification.yaml --no-cache  # bypass the cache for candidate calls (judge calls stay cached)
-evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls
+evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
+evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
 
 # Validate a config file (errors and warnings, no API calls)
 evalblink validate benchmarks/classification.yaml
@@ -248,6 +261,9 @@ evalblink cache clear --yes                              # without --yes it only
 ```
 
 `evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
+
+- `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
+- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
 
 ---
 
@@ -439,7 +455,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 ✓ Within budget: estimate $0.035544 ≤ max_cost_usd $10.000000.
 ```
 
-Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog are excluded from the estimate with a warning.
+Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog, or priced there with a negative or non-numeric value (such as the `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`).
 
 Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
@@ -478,15 +494,15 @@ concurrency: 5    # max parallel requests (default: 5)
 | Sequential | ~8–12 minutes |
 | Concurrent (default: 5) | ~45–90 seconds |
 
-Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the status line or in the JSON error body, plus local timeouts and connection errors — are retried with exponential backoff (1 s, 2 s, 4 s), up to 4 attempts. Any other failure of a call surfaces as a clear error (with the HTTP status when known): an error status, a non-JSON body such as an HTML 502 page, a reply with no usable `choices` / `message`, null or empty content, or missing usage data.
+Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the status line or in the JSON error body, plus local timeouts and connection errors — are retried with exponential backoff (1 s, 2 s, 4 s), up to 4 attempts. Other client-side errors (an undecodable body, a redirect loop) fail the call at once, without a retry. Any other failure of a call surfaces as a clear error (with the HTTP status when known): an error status, a non-JSON body such as an HTML 502 page, a reply with no usable `choices` / `message`, null or empty content, or missing usage data.
 
-**A failed call never aborts the run.** A candidate call that still fails after its retries — or hits a non-transient error such as an unknown model or a bad key — is recorded with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost; evalblink prints a one-line warning and carries on. A failed judge call is recorded the same way as a judge error (see [LLM-as-judge](#llm-as-judge)). Either kind counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, and the end of the run prints a prominent warning with the number of pipeline errors excluded from scores. If *nothing* could be scored, the run exits 1 (see [CI/CD Integration](#cicd-integration)).
+**A failed call never aborts the run.** A candidate call that still fails after its retries — or hits a non-transient error such as an unknown model or a bad key — is recorded with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost; evalblink prints a one-line warning and carries on. A failed judge call is recorded the same way as a judge error (see the LLM-as-judge section above). Either kind counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, and the end of the run prints a prominent warning with the number of pipeline errors excluded from scores. If *nothing* could be scored, the run exits 1 (see the CI/CD Integration section below).
 
 ---
 
 ## Caching
 
-Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. `--no-cache` bypasses the cache for candidate calls only — judge calls stay cached.
+Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example a read-only directory), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
 
 ```bash
 evalblink cache stats          # entry count and total size on disk
@@ -510,7 +526,7 @@ results/
   2026-06-10_143205_customer-support-classification.md     # human-readable report
 ```
 
-Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`, capped at 60 characters, and `benchmark` when nothing is left (e.g. a name with no ASCII letters or digits) — so any valid name gives a writable path. In the Markdown report's per-case tables, a pipeline-error case shows its status in the Score column (`API error`, `judge API error` or `judge error`) instead of a number. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
+Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`, capped at 60 characters, and `benchmark` when nothing is left (e.g. a name with no ASCII letters or digits) — so any valid name gives a writable path. In the Markdown report's per-case tables, a pipeline-error case shows its status in the Score column (`API error`, `judge API error` or `judge error`) instead of a number. Lone UTF-16 surrogates (for example a `"\ud800"` escape in the YAML or in model output) are replaced with `?` in requests, terminal output and the Markdown report. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
 
 ```bash
 evalblink report results/2026-06-10_143205_customer-support-classification.json
@@ -533,6 +549,8 @@ Verdict: Run B improves quality on 2/3 shared combo(s).
 
 Changed combos are listed first. `--detailed` adds per-combo test-case transitions (regressed / improved / new error / recovered) and a global summary.
 
+`report` and `compare` exit with a one-line message when a results file is missing, unreadable, not JSON, or not shaped like a run record (it needs string `benchmark` and `timestamp` fields and a well-formed `results` list). `history` lists every readable run and prints `⚠  Skipping <reason>` for each file it can't use. `report` and `history` recompute the insights from `results`, so the `pipeline error(s) excluded from scoring` line and the history **Errors** column show the run total, matching the warning at the end of the run.
+
 ---
 
 ## CI/CD Integration
@@ -546,7 +564,7 @@ Changed combos are listed first. `--detailed` adds per-combo test-case transitio
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-- **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only.
+- **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `--dry-run` needs no API key.
 - **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error` / judge error). The results are still written.
 - **Otherwise the `quality_threshold` gate decides:** best combo score ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The score covers scored cases only — pipeline errors are counted under **Errors** and excluded, never scored as failures — and when any occurred, the run ends with a warning giving their count.
 - `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
