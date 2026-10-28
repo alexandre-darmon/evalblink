@@ -24,6 +24,7 @@ _ERROR_LABELS = {
     "api_error": "API error",
     "judge_api_error": "judge API error",
     "judge_error": "judge error",
+    "internal_error": "internal error",
 }
 
 
@@ -77,10 +78,12 @@ def _build_data(config, results, timestamp) -> dict:
 def _write_json(data) -> str:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     file_path = f"{RESULTS_DIR}/{data['run_id']}.json"
+    # default=str: YAML can hand us dates/timestamps (e.g. an unquoted
+    # 2024-01-01 in expected_output) that json can't encode natively.
+    # Serialize first so a failure never leaves a truncated file behind.
+    text = json.dumps(data, indent=4, default=str)
     with open(file_path, "w") as f:
-        # default=str: YAML can hand us dates/timestamps (e.g. an unquoted
-        # 2024-01-01 in expected_output) that json can't encode natively.
-        json.dump(data, f, indent=4, default=str)
+        f.write(text)
     return file_path
 
 
@@ -245,6 +248,10 @@ def write(config, results, timestamp) -> dict:
     # `evaluation.quality_threshold`/`judge_threshold` (0-1) the scorers consume.
     summary = analysis.summarize(results, config.get("quality_threshold"))
     data["insights"] = summary
+    # Two runs of one benchmark in the same second must not overwrite each other.
+    base, n = data["run_id"], 2
+    while os.path.exists(f"{RESULTS_DIR}/{data['run_id']}.json"):
+        data["run_id"], n = f"{base}-{n}", n + 1
     json_path = _write_json(data)
     md_path = _write_markdown(data)
     console = make_console()

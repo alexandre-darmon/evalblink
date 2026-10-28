@@ -86,8 +86,13 @@ def _cache_set(key: str, value: dict) -> None:
 
 def _auth_headers() -> dict:
     """Standard OpenRouter request headers with the Bearer key from the env."""
+    key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if not key.isascii():
+        # httpx would raise UnicodeEncodeError building the header; every caller
+        # handles RuntimeError. Typical cause: a pasted no-break space or quote.
+        raise RuntimeError("OPENROUTER_API_KEY contains a non-ASCII character")
     return {
-        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "Authorization": f"Bearer {key}",
         "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
         "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
     }

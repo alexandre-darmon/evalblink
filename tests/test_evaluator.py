@@ -254,3 +254,13 @@ def test_judge_use_cache_is_passed_through(monkeypatch):
     monkeypatch.setattr(evaluator, "openrouter_request", fake)
     evaluate_llm_judge(None, {"judge_model": "j/m"}, "r", "t", "c", use_cache=False)
     assert seen["use_cache"] is False
+
+
+def test_judge_null_threshold_uses_the_default(
+    disable_cache, client_factory, completion
+):
+    # A bare `judge_threshold:` loads as None and means "default 0.70".
+    client = client_factory(completion(json.dumps({"reasoning": "r", "score": 4})))
+    params = {**JUDGE_PARAMS, "judge_threshold": None}
+    result = evaluate_llm_judge(client, params, "answer", "task", "criteria")
+    assert result["match_result"] is True  # 0.75 >= 0.70

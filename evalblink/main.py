@@ -46,6 +46,8 @@ def load_config(filepath):
         )
     except (yaml.YAMLError, ValueError) as exc:  # ValueError: a 5000-digit int
         sys.exit(f"Invalid YAML in {filepath}: {exc}")
+    except RecursionError:
+        sys.exit(f"Invalid YAML in {filepath}: nested too deeply")
     except OSError as exc:  # a directory, no permission, ...
         sys.exit(f"Cannot read config {filepath}: {exc.strerror or exc}")
 
@@ -80,14 +82,25 @@ def cmd_run(args):
     if not (os.getenv("OPENROUTER_API_KEY") or "").strip():
         console.print(
             "✗  OPENROUTER_API_KEY is not set — export it or add it to"
-            " .env (see .env.example). `--dry-run` works without it.",
+            " a .env file in this directory. `--dry-run` works without it.",
             style="red",
         )
         sys.exit(1)
 
+    # Check before paying for any call: results are written at the very end.
+    try:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+    except OSError as exc:
+        sys.exit(f"Cannot create {RESULTS_DIR}/: {exc.strerror or exc}")
+    if not os.access(RESULTS_DIR, os.W_OK | os.X_OK):
+        sys.exit(f"Cannot write to {RESULTS_DIR}/ — results would be lost.")
+
     use_cache = not args.no_cache
     results, timestamp = runner.run(config, verbose=args.verbose, use_cache=use_cache)
-    result = reporter.write(config, results, timestamp)
+    try:
+        result = reporter.write(config, results, timestamp)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"Could not write results: {exc}")
 
     # Pipeline errors (api_error / judge errors) are excluded from scores; say so
     # loudly, and fail outright when nothing at all could be scored.
@@ -136,7 +149,10 @@ def cmd_report(args):
         record = compare.load_record(args.file)
     except compare.RecordError as exc:
         sys.exit(str(exc))
-    reporter.write_from_record(record)
+    try:
+        reporter.write_from_record(record)
+    except (OSError, ValueError) as exc:  # read-only .md, NUL / too-long run_id
+        sys.exit(f"Could not write the report: {exc}")
     sys.exit(0)
 
 
@@ -146,8 +162,12 @@ def cmd_history(args):
         print("No results directory found. Run a benchmark first.")
         sys.exit(0)
 
+    try:
+        fnames = sorted(os.listdir(RESULTS_DIR))
+    except OSError as exc:
+        sys.exit(f"Cannot read {RESULTS_DIR}/: {exc.strerror or exc}")
     records = []
-    for fname in sorted(os.listdir(RESULTS_DIR)):
+    for fname in fnames:
         if not fname.endswith(".json"):
             continue
         try:
@@ -266,7 +286,10 @@ def cmd_models(args):
 
 def cmd_cache_stats(args):
     """Print cache entry count and total size."""
-    s = cache.stats()
+    try:
+        s = cache.stats()
+    except OSError as exc:
+        sys.exit(f"Cannot read the cache: {exc.strerror or exc}")
     size_kb = s["size_bytes"] / 1024
     print(f"Cache entries : {s['entries']}")
     print(f"Cache size    : {size_kb:.1f} KB")
@@ -275,11 +298,14 @@ def cmd_cache_stats(args):
 
 def cmd_cache_clear(args):
     """Delete all cached responses."""
-    if not args.yes:
-        s = cache.stats()
-        print(f"{s['entries']} cache entries. Pass --yes to confirm deletion.")
-        sys.exit(0)
-    removed = cache.clear()
+    try:
+        if not args.yes:
+            s = cache.stats()
+            print(f"{s['entries']} cache entries. Pass --yes to confirm deletion.")
+            sys.exit(0)
+        removed = cache.clear()
+    except OSError as exc:
+        sys.exit(f"Cannot clear the cache: {exc.strerror or exc}")
     print(f"Cleared {removed} cache entries.")
     sys.exit(0)
 
@@ -684,7 +710,7 @@ def build_parser():
     run_p.add_argument(
         "--no-cache",
         action="store_true",
-        help="bypass the local cache and force fresh API calls for all candidate requests",
+        help="bypass the local cache and force fresh API calls (candidate and judge)",
     )
     run_p.add_argument(
         "--dry-run",
@@ -814,7 +840,11 @@ def build_parser():
 
 def main(argv=None):
     # The .env next to the user's benchmarks — not the installed package's dir.
-    load_dotenv(find_dotenv(usecwd=True))
+    # utf-8-sig: a Windows editor's BOM would otherwise become part of the key name.
+    try:
+        load_dotenv(find_dotenv(usecwd=True), encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"⚠️  Ignoring .env: {exc} (save it as UTF-8).", file=sys.stderr)
     # Names, ids and model output may carry lone surrogates (a "\\ud800" YAML or
     # JSON escape); never let printing one abort a command.
     for stream in (sys.stdout, sys.stderr):
@@ -824,7 +854,13 @@ def main(argv=None):
             pass
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        print("\nInterrupted — no results written.", file=sys.stderr)
+        sys.exit(130)
+    except EOFError:  # `init` with stdin closed
+        sys.exit("\nNo input — aborted.")
 
 
 if __name__ == "__main__":

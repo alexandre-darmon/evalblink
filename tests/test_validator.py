@@ -397,9 +397,9 @@ def test_valid_weighted_config_returns_no_issues():
         (_set("quality_threshold", "high"), "between 0 and 100"),
         (_set("quality_threshold", 150), "between 0 and 100"),
         (_set("quality_threshold", True), "between 0 and 100"),
-        (_set("concurrency", 0), "concurrency must be a positive integer"),
-        (_set("concurrency", "4"), "concurrency must be a positive integer"),
-        (_set("concurrency", 2.5), "concurrency must be a positive integer"),
+        (_set("concurrency", 0), "concurrency must be a whole number"),
+        (_set("concurrency", "4"), "concurrency must be a whole number"),
+        (_set("concurrency", 2.5), "concurrency must be a whole number"),
         (_set("inference", "fast"), "'inference' must be a mapping"),
         (_set("evaluation", ["x"]), "'evaluation' must be a mapping"),
         (_set("inference.temperature", "hot"), "inference.temperature must be"),
@@ -461,7 +461,7 @@ def test_valid_weighted_config_returns_no_issues():
         ),
         # Round 2: bounds, non-finite numbers, integer max_tokens, duplicates.
         (_set("quality_threshold", -1), "between 0 and 100"),
-        (_set("concurrency", True), "concurrency must be a positive integer"),
+        (_set("concurrency", True), "concurrency must be a whole number"),
         (_set("quality_threshold", INF), "between 0 and 100"),
         (_set("quality_threshold", NAN), "between 0 and 100"),
         (_set("max_cost_usd", INF), "max_cost_usd must be"),
@@ -473,7 +473,7 @@ def test_valid_weighted_config_returns_no_issues():
         # Round 3: ints too large for a float are rejected, never an OverflowError.
         (_set("quality_threshold", HUGE), "between 0 and 100"),
         (_set("max_cost_usd", HUGE), "max_cost_usd must be"),
-        (_set("concurrency", HUGE), "concurrency must be a positive integer"),
+        (_set("concurrency", HUGE), "concurrency must be a whole number"),
         (_set("inference.temperature", HUGE), "inference.temperature must be"),
         (_set("inference.max_tokens", HUGE), "whole number like 100"),
         (
@@ -582,3 +582,43 @@ def test_trial_render_uses_per_case_variables():
     )
     [error] = validate(cfg)[0]
     assert "test_cases['bad']" in error and "UndefinedError" in error
+
+
+# ── round 4 ──────────────────────────────────────────────────────────────────
+
+
+def test_self_referencing_alias_is_an_error():
+    import yaml
+
+    config = _exact_match_config()
+    config["test_cases"][0]["expected_output"] = yaml.safe_load("&a [*a]")
+    errors, _ = validate(config)
+    assert errors == ["Config contains a self-referencing YAML alias (e.g. `&a [*a]`)"]
+
+
+@pytest.mark.parametrize("value, ok", [(100, True), (101, False)])
+def test_concurrency_is_capped(value, ok):
+    errors, _ = validate(_exact_match_config(concurrency=value))
+    assert (errors == []) is ok
+
+
+def test_unhashable_weighted_use_case_is_an_error():
+    config = _exact_match_config(
+        evaluation={
+            "quality_threshold": 0.8,
+            "variables": [
+                {"name": "use_case", "weight": 0.5},
+                {"name": "percent", "weight": 0.25},
+                {"name": "order", "weight": 0.25},
+            ],
+        },
+        test_cases=[
+            {
+                "id": "w1",
+                "evaluation": "weighted_match",
+                "expected_output": [{"use_case": {"a"}, "percent": 1, "order": 1}],
+            }
+        ],
+    )
+    errors, _ = validate(config)
+    assert any("needs use_case" in e for e in errors), errors

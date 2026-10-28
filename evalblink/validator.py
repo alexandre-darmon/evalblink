@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import jinja2
@@ -15,6 +16,10 @@ KNOWN_EVAL_TYPES = {"exact_match", "weighted_match", "llm_judge"}
 # Hardcoded in ``evaluator.weighted_match`` — every one must be weighted.
 WEIGHTED_DIMENSIONS = ("use_case", "percent", "order")
 
+# httpx's default pool holds 100 connections; more workers would only queue
+# (and time out) on it.
+MAX_CONCURRENCY = 100
+
 _SINGLE_BRACE_RE = re.compile(r"(?<!\{)\{(\w+)\}(?!\})")
 
 
@@ -24,6 +29,15 @@ def _template_vars(text: str) -> set[str]:
     Raises ``jinja2.TemplateSyntaxError`` on a malformed template.
     """
     return jinja2.meta.find_undeclared_variables(JINJA_ENV.parse(text))
+
+
+def _hashable(value) -> bool:
+    """weighted_match keys labels by ``use_case``; a YAML list/map/set can't be one."""
+    try:
+        hash(value)
+    except TypeError:
+        return False
+    return True
 
 
 def _mapping(value, label: str, errors: list[str]) -> dict:
@@ -52,6 +66,13 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         return [
             f"Config must be a YAML mapping of name/models/prompts/… (got {kind})"
         ], []
+    # The config is echoed into the results JSON (expected outputs, ids, ...);
+    # a self-referencing YAML alias (`&a [*a]`) would only fail there, after
+    # every API call has been paid for.
+    try:
+        json.dumps(config, default=str)
+    except (ValueError, RecursionError):
+        return ["Config contains a self-referencing YAML alias (e.g. `&a [*a]`)"], []
 
     # Required top-level fields — check presence and type
     for field in ("name", "models", "prompts", "test_cases"):
@@ -86,9 +107,12 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         _is_number(concurrency)
         and isinstance(concurrency, int)
         and not isinstance(concurrency, bool)
-        and concurrency >= 1
+        and 1 <= concurrency <= MAX_CONCURRENCY
     ):
-        errors.append(f"concurrency must be a positive integer (got {concurrency!r})")
+        errors.append(
+            f"concurrency must be a whole number from 1 to {MAX_CONCURRENCY}"
+            f" (got {concurrency!r})"
+        )
     max_cost_usd = config.get("max_cost_usd")
     if max_cost_usd is not None and not (
         _is_number(max_cost_usd) and max_cost_usd >= 0
@@ -249,7 +273,7 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             elif not all(
                 isinstance(item, dict)
                 and set(WEIGHTED_DIMENSIONS) <= item.keys()
-                and not isinstance(item["use_case"], (list, dict))
+                and _hashable(item["use_case"])
                 and _is_number(item["percent"])
                 for item in expected
             ):

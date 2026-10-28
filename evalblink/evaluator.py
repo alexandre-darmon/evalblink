@@ -81,7 +81,9 @@ def evaluate_llm_judge(
     if not judge_model:
         raise ValueError("Judge model not specified in evaluation parameters.")
 
-    threshold = evaluation_params.get("judge_threshold", 0.70)
+    threshold = evaluation_params.get("judge_threshold")
+    if threshold is None:  # absent or a bare `judge_threshold:`
+        threshold = 0.70
 
     reference_line = f"Reference answer: {reference}\n" if reference else ""
     judge_prompt = f"""You are an expert evaluator. Your goal is to assess quality, not style.

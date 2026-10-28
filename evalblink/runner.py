@@ -46,6 +46,47 @@ def render_template(prompt, variables, test_case):
 
 
 def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
+    """``_evaluate_case``, but no single case can crash the run.
+
+    Anything unexpected (a template that only fails on some renders, a value the
+    scorer can't handle) is recorded as an ``internal_error`` pipeline-error case
+    instead of discarding every other, already-paid-for result.
+    """
+    try:
+        return _evaluate_case(
+            client, model, prompt, config, test_case, verbose, use_cache
+        )
+    except Exception as exc:  # noqa: BLE001 — the point: one case never kills a run
+        error = f"{type(exc).__name__}: {exc}"
+        print(
+            f"⚠️  Internal error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+        )
+        return {
+            "model": model,
+            "prompt_id": prompt["id"],
+            "test_case": {
+                "id": test_case["id"],
+                "tags": test_case.get("tags") or [],
+                "evaluation": test_case.get("evaluation"),
+                "status": "internal_error",
+                "match_result": False,
+                "match_score": None,
+                "response": "",
+                "reasoning": None,
+                "expected": test_case.get("expected_output"),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost": 0.0,
+                "judge_prompt_tokens": 0,
+                "judge_completion_tokens": 0,
+                "judge_cost": 0.0,
+                "total_cost": 0.0,
+                "error": error,
+            },
+        }
+
+
+def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache):
     """Run one (model × prompt × test_case) triple and return a tagged result.
 
     Returned dict has ``"model"``, ``"prompt_id"``, and ``"test_case"`` keys.
@@ -222,8 +263,14 @@ def run(config, verbose=False, use_cache=True):
             )
             for model, prompt, test_case in tasks
         ]
-        # .result() blocks until each future completes; submission order is preserved.
-        case_results = [f.result() for f in futures]
+        try:
+            # .result() blocks until each future completes; submission order is preserved.
+            case_results = [f.result() for f in futures]
+        except KeyboardInterrupt:
+            # Ctrl-C: drop every queued call (only in-flight ones finish) so
+            # the run stops spending, then let main() exit.
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
 
     # Re-group by (model, prompt_id), maintaining config order within each group.
     groups: dict = defaultdict(list)

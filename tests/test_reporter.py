@@ -134,6 +134,7 @@ def test_any_name_writes_results(tmp_path, monkeypatch):
         ("api_error", "API error"),
         ("judge_api_error", "judge API error"),
         ("judge_error", "judge error"),
+        ("internal_error", "internal error"),
     ],
 )
 def test_markdown_shows_pipeline_error_status(tmp_path, monkeypatch, status, label):
@@ -154,3 +155,14 @@ def test_yaml_dates_in_results_are_json_serialized(tmp_path, monkeypatch):
     out = write({"name": "D"}, results, "ts")
     data = json.loads(Path(out["json"]).read_text())
     assert data["results"][0]["test_cases"][0]["expected"] == "2024-01-01"
+
+
+def test_unserializable_record_leaves_no_truncated_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "RESULTS_DIR", str(tmp_path))
+    results = _results()
+    loop = []
+    loop.append(loop)
+    results[0]["test_cases"][0]["expected"] = loop
+    with pytest.raises(ValueError):
+        write({"name": "L"}, results, "ts")
+    assert list(tmp_path.iterdir()) == []

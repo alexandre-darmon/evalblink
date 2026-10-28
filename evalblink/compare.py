@@ -69,8 +69,16 @@ def _record_problem(record) -> str | None:
             here = f"{where}.test_cases[{j}]"
             if not isinstance(tc, dict) or not isinstance(tc.get("id"), str):
                 return f"{here} is not an object with a string 'id'"
-            if tc.get("match_score") is not None and not is_number(tc["match_score"]):
+            if "match_score" not in tc:
+                return f"{here}.match_score is missing"
+            if tc["match_score"] is not None and not is_number(tc["match_score"]):
                 return f"{here}.match_score is not a finite number"
+            if tc["match_score"] is not None and not isinstance(
+                tc.get("match_result"), bool
+            ):
+                return f"{here}.match_result is missing or not true/false"
+            if tc.get("status") is not None and not isinstance(tc["status"], str):
+                return f"{here}.status is not a string"
             if not is_number(tc.get("total_cost")):
                 return f"{here}.total_cost is missing or not a finite number"
             tags = tc.get("tags")

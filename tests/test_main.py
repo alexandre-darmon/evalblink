@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import threading
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import dotenv
 import httpx
@@ -684,7 +687,7 @@ def fake_http(monkeypatch, tmp_path):
         def post(self, **kwargs):
             calls.append(kwargs)
             item = responses[min(len(calls), len(responses)) - 1]
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 raise item
             return item
 
@@ -1097,3 +1100,196 @@ def test_report_recomputes_insights_from_results(fake_http, tmp_path, capsys):
     assert _run_cli(["report", str(record)]) == 0
     [md] = (tmp_path / "results").glob("*.md")
     assert "**2 pipeline error(s)** excluded" in md.read_text()
+
+
+# ── round 4: environment, filesystem and signal paths ─────────────────────────
+
+
+def test_non_ascii_api_key_is_a_clean_api_error(fake_http, tmp_path, monkeypatch):
+    calls = fake_http(_ok("yes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-abc…")  # pasted "…"
+    assert _run_cli(["run", str(_write_cli_config(tmp_path))]) == 1
+    assert calls == []  # rejected before httpx builds the header
+    [record] = (tmp_path / "results").glob("*.json")
+    case = json.loads(record.read_text())["results"][0]["test_cases"][0]
+    assert case["status"] == "api_error" and "non-ASCII" in case["error"]
+    code = _run_cli(["models", "--no-cache"])
+    assert isinstance(code, str) and "non-ASCII" in code
+
+
+@pytest.mark.parametrize(
+    "raw", ["OPENROUTER_API_KEY=x\r\n".encode("utf-16"), b"# caf\xe9\nA=1\n"]
+)
+def test_non_utf8_dotenv_warns_instead_of_crashing(monkeypatch, tmp_path, capsys, raw):
+    monkeypatch.setattr(main, "load_dotenv", dotenv.load_dotenv)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_bytes(raw)
+    assert _run_cli(["cache", "stats"]) == 0
+    assert "Ignoring .env" in capsys.readouterr().err
+
+
+def test_dotenv_with_bom_still_sets_the_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "load_dotenv", dotenv.load_dotenv)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "placeholder")
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_bytes(b"\xef\xbb\xbfOPENROUTER_API_KEY=bom-key\r\n")
+    assert _run_cli(["cache", "stats"]) == 0
+    assert os.environ.get("OPENROUTER_API_KEY") == "bom-key"
+
+
+def test_ctrl_c_cancels_queued_calls_and_exits_130(fake_http, tmp_path, monkeypatch):
+    fake_http(_ok("y"))
+    calls = []
+
+    def post(self, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise KeyboardInterrupt  # what the main thread sees on Ctrl-C
+        threading.Event().wait(0.3)  # in flight while the run stops (sleep is stubbed)
+        return _ok("y")
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    cases = [
+        {
+            "id": f"c{i}",
+            "evaluation": "exact_match",
+            "expected_output": "y",
+            "variables": {"q": str(i)},  # distinct: no cache hits,
+        }
+        for i in range(20)
+    ]
+    path = _write_cli_config(tmp_path, test_cases=cases)
+    assert _run_cli(["run", str(path)]) == 130
+    assert len(calls) == 2  # the 18 queued calls were dropped, not sent
+    assert list((tmp_path / "results").glob("*.json")) == []
+
+
+def test_eof_during_init_is_a_clean_exit(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    def eof(*a, **k):
+        raise EOFError
+
+    monkeypatch.setattr(main.Prompt, "ask", eof)
+    code = _run_cli(["init"])
+    assert isinstance(code, str) and "No input" in code
+
+
+def test_unwritable_results_dir_fails_before_any_call(fake_http, tmp_path):
+    calls = fake_http(_ok("yes"))
+    (tmp_path / "results").write_text("a file, not a directory")
+    code = _run_cli(["run", str(_write_cli_config(tmp_path))])
+    assert isinstance(code, str) and "results/" in code
+    assert calls == []
+
+
+def test_two_runs_in_the_same_second_keep_both_records(
+    fake_http, tmp_path, monkeypatch
+):
+    fake_http(_ok("yes"))
+    fixed = datetime.datetime(2026, 1, 1, 12, 0, 0)
+    fake = SimpleNamespace(datetime=SimpleNamespace(now=lambda: fixed))
+    monkeypatch.setattr(main.runner, "datetime", fake)
+    path = _write_cli_config(tmp_path)
+    assert _run_cli(["run", str(path)]) == 0
+    assert _run_cli(["run", str(path)]) == 0
+    names = sorted(p.name for p in (tmp_path / "results").glob("*.json"))
+    assert names == ["2026-01-01_120000_cli-2.json", "2026-01-01_120000_cli.json"]
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX, non-root")
+def test_read_only_results_dir_fails_before_any_call(fake_http, tmp_path):
+    calls = fake_http(_ok("yes"))
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results").chmod(0o555)
+    try:
+        code = _run_cli(["run", str(_write_cli_config(tmp_path))])
+    finally:
+        (tmp_path / "results").chmod(0o755)
+    assert isinstance(code, str) and "Cannot write to results/" in code
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "command", [["history"], ["cache", "stats"], ["cache", "clear", "--yes"]]
+)
+def test_unreadable_directories_are_clean_errors(monkeypatch, tmp_path, command):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".evalblink_cache").mkdir()
+
+    def denied(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "listdir", denied)
+    code = _run_cli(command)
+    assert isinstance(code, str) and "Permission denied" in code
+
+
+def test_cache_clear_skips_a_directory_named_like_an_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".evalblink_cache" / "sub.json").mkdir(parents=True)
+    (tmp_path / ".evalblink_cache" / "k.json").write_text("{}")
+    assert _run_cli(["cache", "clear", "--yes"]) == 0
+    assert [p.name for p in (tmp_path / ".evalblink_cache").iterdir()] == ["sub.json"]
+
+
+def _good_record(**case):
+    tc = {"id": "c1", "match_score": 1.0, "match_result": True, "total_cost": 0.0}
+    tc.update(case)
+    return {
+        "benchmark": "B",
+        "timestamp": "2026-01-01_000000",
+        "results": [
+            {
+                "model": "a/b",
+                "prompt_id": "v1",
+                "score": 100.0,
+                "total_cost": 0.0,
+                "success": 1,
+                "total": 1,
+                "total_prompt_tokens": 1,
+                "total_completion_tokens": 1,
+                "test_cases": [tc],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {k: v for k, v in _good_record().items()} | {"run_id": "a\x00b"},
+        {k: v for k, v in _good_record().items()} | {"run_id": "x" * 300},
+    ],
+)
+def test_report_with_unusable_run_id_is_a_clean_error(monkeypatch, tmp_path, record):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(record))
+    code = _run_cli(["report", str(path)])
+    assert isinstance(code, str) and "Could not write the report" in code
+
+
+@pytest.mark.parametrize("drop", ["match_score", "match_result"])
+def test_record_missing_case_fields_is_rejected_by_report_and_history(
+    monkeypatch, tmp_path, capsys, drop
+):
+    monkeypatch.chdir(tmp_path)
+    record = _good_record(tags=["t"])
+    del record["results"][0]["test_cases"][0][drop]
+    (tmp_path / "results").mkdir()
+    path = tmp_path / "results" / "x.json"
+    path.write_text(json.dumps(record))
+    code = _run_cli(["report", str(path)])
+    assert isinstance(code, str) and drop in code
+    assert _run_cli(["history"]) == 0
+    assert "Skipping" in capsys.readouterr().out
+
+
+def test_deeply_nested_yaml_is_invalid_yaml(tmp_path):
+    path = tmp_path / "deep.yaml"
+    path.write_text("name: " + "[" * 5000 + "]" * 5000 + "\n")
+    code = _run_cli(["validate", str(path)])
+    assert isinstance(code, str) and "nested too deeply" in code

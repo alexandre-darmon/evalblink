@@ -7,7 +7,8 @@ exit (``SystemExit`` with an int code or a message); any other exception is a
 crash. Every ``run`` of a config that validates must also leave a results JSON
 that ``compare.load_record`` reads back.
 
-The corpus covers the bug classes fixed so far: malformed/odd config values,
+The corpus covers these input classes (environment, filesystem and signal
+paths are in ``test_main``): malformed/odd config values,
 non-finite and float-overflowing numbers, 4300+-digit ints, lone UTF-16
 surrogates, Rich markup in user/model text, every response-shape / status /
 transport failure, tampered cache entries, unwritable caches and malformed

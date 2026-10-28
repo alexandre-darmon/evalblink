@@ -336,7 +336,9 @@ def test_missing_tags_and_variables_do_not_crash(monkeypatch):
     assert combo["test_cases"][0]["tags"] == []
 
 
-def test_unknown_evaluation_type_raises(monkeypatch):
+def test_unexpected_case_failure_is_recorded_not_raised(monkeypatch):
+    # The validator rejects this typo; if anything still slips past it, that one
+    # case becomes an internal_error pipeline error and the run survives.
     config = _config(
         [
             {
@@ -344,15 +346,22 @@ def test_unknown_evaluation_type_raises(monkeypatch):
                 "variables": {"q": "x"},
                 "evaluation": "exactmatch",  # typo
                 "expected_output": "x",
-            }
+            },
+            {
+                "id": "c2",
+                "variables": {"q": "x"},
+                "evaluation": "exact_match",
+                "expected_output": "x",
+            },
         ]
     )
-    try:
-        _run(monkeypatch, config, [_resp("x")])
-        raised = False
-    except ValueError as exc:
-        raised = "exactmatch" in str(exc)
-    assert raised
+    results = _run(monkeypatch, config, [_resp("x"), _resp("x")])
+    bad, good = results[0]["test_cases"]
+    assert bad["status"] == "internal_error"
+    assert bad["match_score"] is None
+    assert "exactmatch" in bad["error"]
+    assert good["match_result"] is True
+    assert results[0]["errors"] == 1
 
 
 # --- mixed config: all three modes in one run -----------------------------
