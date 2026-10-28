@@ -18,7 +18,7 @@ dependencies = [
 evalblink = "evalblink.main:main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.15", "pytest>=8.0"]
+dev = ["ruff>=0.17", "pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -38,12 +38,8 @@ def _build_data(config, results, timestamp) -> dict:
         "run_id": run_id,
         "benchmark": config["name"],
         "judge_model": config.get("evaluation", {}).get("judge_model"),
-        "temperature": config["inference"]["temperature"]
-        if "temperature" in config["inference"]
-        else 0,
-        "max_tokens": config["inference"]["max_tokens"]
-        if "max_tokens" in config["inference"]
-        else 4096,
+        "temperature": config["inference"].get("temperature", 0),
+        "max_tokens": config["inference"].get("max_tokens", 4096),
         "quality_threshold": config.get("evaluation", {}).get(
             "quality_threshold", config.get("evaluation", {}).get("judge_threshold")
         ),
@@ -125,8 +121,10 @@ def _write_markdown(data) -> str:
             "## Recommendation",
             "",
             f"- **Best quality:** {_combo_label(top)} ({top['score']:.1f}%)",
-            f"- **Best value:** {_combo_label(value)} "
-            f"({value['score']:.1f}% · ${value['total_cost']:.4f})",
+            (
+                f"- **Best value:** {_combo_label(value)} "
+                f"({value['score']:.1f}% · ${value['total_cost']:.4f})"
+            ),
         ]
         for tag in summary["warnings"]:
             lines.append(f"- ⚠️ **Warning:** `{tag}` quality is below 70%.")

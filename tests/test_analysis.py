@@ -12,7 +12,6 @@ from evalblink.analysis import (
     tag_breakdown,
 )
 
-
 _AUTO = object()
 
 

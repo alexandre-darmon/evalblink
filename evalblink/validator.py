@@ -114,13 +114,15 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                 errors.append(
                     f"test_cases[{label}]: exact_match requires 'expected_output'"
                 )
-            elif isinstance(tc["expected_output"], str):
-                if len(tc["expected_output"]) > max_tokens * 4:
-                    warnings.append(
-                        f"test_cases[{label}]: expected_output is long"
-                        f" ({len(tc['expected_output'])} chars) relative to"
-                        f" inference.max_tokens ({max_tokens})"
-                    )
+            elif (
+                isinstance(tc["expected_output"], str)
+                and len(tc["expected_output"]) > max_tokens * 4
+            ):
+                warnings.append(
+                    f"test_cases[{label}]: expected_output is long"
+                    f" ({len(tc['expected_output'])} chars) relative to"
+                    f" inference.max_tokens ({max_tokens})"
+                )
 
         if eval_type == "llm_judge":
             has_llm_judge = True
