@@ -500,7 +500,7 @@ Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the stat
 
 No single test case can crash a run: anything unexpected while rendering or scoring one case (for example a template that uses `random`) records that case as `status: "internal_error"`, the same way as an API error, and the run carries on.
 
-**Ctrl-C** stops a run: queued calls are dropped (calls already in flight finish), evalblink prints `Interrupted — no results written.` and exits 130. Before the first call, `run` checks that it can write to `results/`; if it can't (a read-only directory, or a file named `results`), it exits 1 without spending anything.
+**Ctrl-C** stops a run at once: queued calls are dropped, calls in flight are abandoned (no more retries), evalblink prints `Interrupted — no results written.` and exits 130. Before the first call, `run` checks that it can write to `results/`; if it can't (a read-only directory, or a file named `results`), it exits 1 without spending anything.
 
 ---
 
