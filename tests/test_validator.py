@@ -647,4 +647,5 @@ def test_validate_compiles_each_template_once():
         prompts=[{"id": "v1", "template": template}], test_cases=cases
     )
     assert validate(config)[0] == []
-    assert runner._compile.cache_info().misses <= 2  # parse check + render
+    info = runner._compile.cache_info()
+    assert info.misses <= 2 and info.hits >= 49  # compiled once, reused per case

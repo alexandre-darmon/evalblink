@@ -493,6 +493,7 @@ def test_unknown_prices_stay_unknown_when_read_back_from_cache(
         "data": [
             {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
             {"id": "free/x", "pricing": {"prompt": "0"}},  # absent key = free
+            {"id": "free/y", "pricing": {}},
         ]
     }
     fresh = fetch_models(client_factory(body))
@@ -501,6 +502,11 @@ def test_unknown_prices_stay_unknown_when_read_back_from_cache(
         assert models["openrouter/auto"]["prompt"] is None
         assert models["openrouter/auto"]["completion"] is None
         assert models["free/x"]["completion"] == 0.0
+        assert models["free/y"] == {
+            **models["free/y"],
+            "prompt": 0.0,
+            "completion": 0.0,
+        }
 
 
 def test_null_content_error_is_short_and_names_finish_reason(client_factory):

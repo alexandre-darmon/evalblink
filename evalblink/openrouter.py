@@ -99,9 +99,9 @@ def _auth_headers() -> dict:
         "HTTP-Referer": "localhost",  # Optional. Site URL for rankings on openrouter.ai.
         "X-OpenRouter-Title": "evalblink",  # Optional. Site title for rankings on openrouter.ai.
     }
-    if (
-        key
-    ):  # no key: the public /models catalog works without one; "Bearer " is illegal
+    # No key: the public /models catalog works without one, and "Bearer " is
+    # an illegal header value.
+    if key:
         headers["Authorization"] = f"Bearer {key}"
     return headers
 

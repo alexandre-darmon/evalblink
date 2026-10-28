@@ -409,7 +409,9 @@ def _make_fake_prompt(answers: deque):
     class FakePrompt:
         @classmethod
         def ask(cls, question, **kwargs):
-            return answers.popleft()
+            answer = answers.popleft()
+            # None = press Enter: take the prompt's default, as Rich does.
+            return kwargs.get("default", "") if answer is None else answer
 
     return FakePrompt
 
@@ -1337,3 +1339,37 @@ def test_judge_api_error_is_warned_and_recorded(fake_http, tmp_path, capsys):
     [record] = (tmp_path / "results").glob("*.json")
     case = json.loads(record.read_text())["results"][0]["test_cases"][0]
     assert case["status"] == "judge_api_error" and "no judge" in case["error"]
+
+
+def test_init_defaults_are_a_free_judge_and_reasoning_headroom(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    answers = deque(
+        [
+            "Defaults",  # name
+            "llm_judge",  # mode
+            "free/x:free",  # model
+            "",  # stop
+            "Summarize: {{ text }}",  # template
+            "",  # system
+            "p",  # 'text' per case
+            None,  # judge model: default
+            None,  # judge threshold: default
+            None,  # temperature: default
+            None,  # max_tokens: default
+            "tc_001",
+            "A mountain scene",
+            "Must be concise",
+            "",  # tags
+            "",  # quality threshold
+            str(tmp_path / "defaults.yaml"),
+        ]
+    )
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(deque([False])))
+    assert _run_cli(["init"]) == 0
+    config = yaml.safe_load((tmp_path / "defaults.yaml").read_text())
+    assert config["evaluation"]["judge_model"] == main.INIT_JUDGE_MODEL
+    assert main.INIT_JUDGE_MODEL.endswith(":free")
+    assert config["inference"]["max_tokens"] == 1024
