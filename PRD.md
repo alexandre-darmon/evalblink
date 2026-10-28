@@ -199,7 +199,7 @@ test_cases:
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: `4096`) |
+| `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge`, normalized 0–1 (default: `0.70`) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match`, 0–1 |
@@ -519,7 +519,7 @@ Both `system` and `template` are rendered (variables injected) before hashing �
 
 **Cache is always on** — bypass it per-run with `--no-cache`. There is no `cache:` config key.
 
-> Cache + `temperature: 0` = fully reproducible benchmarks. evalblink warns if cache is active with `temperature > 0`.
+> Cache + `temperature: 0` = fully reproducible benchmarks.
 
 ```bash
 evalblink cache stats    # entry count and total size on disk
@@ -742,7 +742,7 @@ evalblink/
 │   ├── weighted_match_config.yaml
 │   └── classification.yaml          # mixed-mode: exact_match + llm_judge
 ├── docs/
-│   └── skills/              # practitioner guides (content planned for V1.1)
+│   └── skills/              # practitioner guides (planned for V1.1)
 ├── tests/                   # offline unit tests (fake httpx.Client, no API key needed)
 ├── results/                 # git-ignored
 ├── .evalblink_cache/        # git-ignored
@@ -780,9 +780,9 @@ evalblink/
 
 ---
 
-## 22. `[V1 — shipped]` Evaluation Methodology — `/docs/skills/`
+## 22. `[V1.1 — planned]` Evaluation Methodology — `/docs/skills/`
 
-evalblink ships with four practitioner guides covering the full evaluation workflow. **Content is planned for V1.1** — the directory structure (`docs/skills/`) is in place.
+Four practitioner guides covering the full evaluation workflow. **Planned for V1.1 — not written yet.**
 
 | Guide | What it will cover |
 |---|---|

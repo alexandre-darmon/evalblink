@@ -5,8 +5,9 @@
 Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. No JavaScript, no vendor lock-in.
 
 ```bash
-pip install evalblink
-evalblink run benchmarks/classification.yaml
+pipx install evalblink        # or: uv tool install evalblink
+evalblink init                # scaffold a benchmark YAML
+evalblink run my_benchmark.yaml
 ```
 
 ---
@@ -64,8 +65,10 @@ Markdown report saved to results/2026-06-10_14-32_customer-support-classificatio
 **1. Install**
 
 ```bash
-pip install evalblink
+pipx install evalblink        # or: uv tool install evalblink / pip install evalblink
 ```
+
+Example configs live in [`benchmarks/`](benchmarks/) in this repo; `evalblink init` scaffolds a new one interactively.
 
 > **Local development (from the repo root):**
 > ```bash
@@ -94,10 +97,6 @@ models:
 inference:
   temperature: 0
   max_tokens: 200
-
-evaluation:
-  judge_model: "openai/gpt-4o"
-  judge_threshold: 0.70
 
 evaluation:
   judge_model: "openai/gpt-4o"
@@ -173,7 +172,7 @@ evalblink run benchmarks/classification.yaml
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `concurrency` | — | Max parallel API requests (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
-| `inference.max_tokens` | — | Max output tokens per call (default: `4096`) |
+| `inference.max_tokens` | — | Max output tokens per call (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
@@ -436,7 +435,7 @@ concurrency: 5    # max parallel requests (default: 5)
 | Sequential | ~8–12 minutes |
 | Concurrent (default: 5) | ~45–90 seconds |
 
-Failed API calls are retried with exponential backoff (up to 3 attempts). After 3 failures, the test case is scored `null` and listed under "API Errors" in the report.
+Failed API calls are retried with exponential backoff (up to 4 attempts). After 4 failures, the test case is scored `null` and listed under "API Errors" in the report.
 
 ---
 
@@ -449,7 +448,7 @@ evalblink cache stats    # entry count and total size on disk
 evalblink cache clear    # wipe cache (--yes to skip confirmation)
 ```
 
-> Cache + `temperature: 0` = fully reproducible benchmarks. evalblink warns you if you enable cache with temperature > 0.
+> Cache + `temperature: 0` = fully reproducible benchmarks.
 
 ---
 
@@ -459,8 +458,8 @@ Every run produces two files:
 
 ```
 results/
-  2026-06-10_14-32_classification_a3f2b1.json   # full data, git-friendly
-  2026-06-10_14-32_classification_a3f2b1.md     # human-readable report
+  2026-06-10_14-32_customer-support-classification.json   # full data, git-friendly
+  2026-06-10_14-32_customer-support-classification.md     # human-readable report
 ```
 
 The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
@@ -498,9 +497,9 @@ evalblink exits `0` (pass) or `1` (fail) based on `quality_threshold`.
 
 ---
 
-## Evaluation Methodology — `/docs/skills/`
+## Evaluation Methodology — `/docs/skills/` (planned, V1.1)
 
-evalblink ships four practitioner guides covering the full evaluation workflow. No code required.
+Four practitioner guides covering the full evaluation workflow are planned for V1.1. No code required.
 
 | Guide | What it covers |
 |---|---|
@@ -547,9 +546,9 @@ evalblink ships four practitioner guides covering the full evaluation workflow. 
 - `evalblink validate` — static config validation, no API calls
 - `evalblink init` — interactive YAML scaffolding
 - `evalblink models` — live OpenRouter model catalog with filtering
-- `/docs/skills/` methodology guides
 
 **V1.1**
+- `/docs/skills/` methodology guides
 - `evalblink calibrate` — validate judge scores against human labels (Pearson + Cohen's Kappa)
 - Pairwise judge mode with double-pass order-swap tie detection
 
@@ -565,7 +564,8 @@ evalblink ships four practitioner guides covering the full evaluation workflow. 
 ## Installation
 
 ```bash
-pip install evalblink
+pipx install evalblink        # or: uv tool install evalblink / pip install evalblink
+evalblink --version
 ```
 
 Requires Python 3.10+. One environment variable: `OPENROUTER_API_KEY`.
