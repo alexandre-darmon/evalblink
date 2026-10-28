@@ -6,7 +6,7 @@ inference:
   max_tokens: 1024  # reasoning models (e.g. poolside/laguna) need headroom beyond the label itself
 
 evaluation:
-  judge_model: "openai/gpt-oss-120b:free"
+  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from every candidate
   judge_threshold: 0.70
 
 prompts:
@@ -26,8 +26,8 @@ prompts:
       Conversation: {{ conversation }}
 
 models:
-  - "google/gemma-4-31b-it:free"
-  - "poolside/laguna-xs.2:free"
+  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"

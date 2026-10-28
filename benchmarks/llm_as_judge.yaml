@@ -1,9 +1,10 @@
-name: "Customer Support Classification"
+# benchmarks/llm_as_judge.yaml
+name: "Customer Support Quality"
 inference:
   temperature: 0
   max_tokens: 1024
 evaluation:
-  judge_model: "openai/gpt-oss-120b:free"
+  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from the candidate
   judge_threshold: 0.70
 
 prompts:
@@ -22,9 +23,8 @@ prompts:
       - Propose a concrete next step in every response.
       - Keep your response under 100 words.
 
-    template: "Customer message: {{customer_message}}"
+    template: "Customer message: {{ customer_message }}"
 
-  
   - id: "v2"
     system: >
       You are Alex, a senior customer support agent at an e-commerce company.
@@ -38,14 +38,10 @@ prompts:
       - Never use generic phrases like "I understand your frustration" alone —
         show you understood the specific situation.
       - Propose a concrete next step in every response.
-    template: "Customer message: {{customer_message}}"
+    template: "Customer message: {{ customer_message }}"
 
-      
 models:
-  - "google/gemma-4-31b-it:free"
-
-variables:
-  labels: "order_issue, billing, product_question, other"
+  - "poolside/laguna-xs-2.1:free"
 
 test_cases:
   # Edge case — emotional frustration before resolution

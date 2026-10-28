@@ -1,24 +1,20 @@
-# benchmarks/classification.yaml
-name: "Customer Support Classification"
+# benchmarks/exact_match_classification.yaml
+name: "Customer Support Classification (exact match)"
 
 inference:
   temperature: 0
-  max_tokens: 50
-
-
-
-
+  max_tokens: 1024  # headroom in case the model spends tokens on reasoning before the label
 
 prompts:
   - id: "v1"
     template: >
-      Classify this conversation. 
+      Classify this conversation.
       Return only a valid label from the list. No JSON. No explanation. No punctuation.
       Choose from: {{ labels }}.
       Conversation: {{ conversation }}
 
 models:
-  - "google/gemma-4-31b-it:free"
+  - "nvidia/nemotron-3.5-lightning:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"
@@ -30,7 +26,7 @@ test_cases:
     expected_output: "order_issue"
     evaluation: "exact_match"
     tags: ["order", "easy"]
-  
+
   - id: "conv_002"
     variables:
       conversation: "I cannot see my bill."
