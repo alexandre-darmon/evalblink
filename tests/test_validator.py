@@ -622,3 +622,30 @@ def test_unhashable_weighted_use_case_is_an_error():
     )
     errors, _ = validate(config)
     assert any("needs use_case" in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    "value, ok", [(4096, True), (None, True), (0, False), (1.5, False), ("4k", False)]
+)
+def test_judge_max_tokens_must_be_a_positive_int(value, ok):
+    config = _llm_judge_config()
+    config["evaluation"]["judge_max_tokens"] = value
+    errors, _ = validate(config)
+    assert (errors == []) is ok, errors
+
+
+def test_validate_compiles_each_template_once():
+    from evalblink import runner
+
+    runner._compile.cache_clear()
+    cases = [
+        {"id": f"c{i}", "evaluation": "exact_match", "expected_output": "x"}
+        for i in range(50)
+    ]
+    template = "Classify {{ text }} #" + "unique-template-for-this-test"
+    config = _exact_match_config(
+        prompts=[{"id": "v1", "template": template}], test_cases=cases
+    )
+    assert validate(config)[0] == []
+    info = runner._compile.cache_info()
+    assert info.misses <= 2 and info.hits >= 49  # compiled once, reused per case

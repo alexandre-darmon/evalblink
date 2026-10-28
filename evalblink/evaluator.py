@@ -13,6 +13,7 @@ import re
 import httpx
 
 from .openrouter import is_number, openrouter_request
+from .schemas import DEFAULT_JUDGE_MAX_TOKENS
 
 
 def _extract_json(raw):
@@ -101,19 +102,22 @@ def evaluate_llm_judge(
         Then return ONLY valid JSON, no markdown:
         {{"reasoning": "<your analysis>", "score": <integer 1-5>}}"""
 
-    # The judge must be deterministic regardless of candidate inference settings.
-    # Use a dedicated max_tokens — reasoning + JSON needs more room than the
-    # candidate's configured max_tokens (e.g. 50).
+    # The judge must be deterministic regardless of candidate inference settings,
+    # with its own budget: reasoning + JSON needs far more room than a candidate's
+    # max_tokens (e.g. 50).
+    judge_max_tokens = evaluation_params.get("judge_max_tokens")
+    if judge_max_tokens is None:  # absent or a bare `judge_max_tokens:`
+        judge_max_tokens = DEFAULT_JUDGE_MAX_TOKENS
     try:
         judge_response = openrouter_request(
             client,
             prompt=judge_prompt,
             model=judge_model,
             temperature=0,
-            max_tokens=512,
+            max_tokens=judge_max_tokens,
             use_cache=use_cache,
         )
-    except (RuntimeError, httpx.HTTPError):
+    except (RuntimeError, httpx.HTTPError) as exc:
         # Judge API failed (error response, timeout, rate limit) — pipeline
         # failure, not a real evaluation. score is None, not 0.
         return {
@@ -127,6 +131,7 @@ def evaluate_llm_judge(
             "judge_completion_tokens": 0,
             "judge_cost": 0.0,
             "from_cache": False,
+            "error": str(exc) or type(exc).__name__,
         }
 
     from_cache = judge_response.get("from_cache", False)

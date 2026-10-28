@@ -77,24 +77,37 @@ def best_value(results) -> dict:
     return max(results, key=lambda c: c["score"] / max(c["total_cost"], _COST_FLOOR))
 
 
+def _gate_score(combo) -> float:
+    """Pass rate (%) with unscored cases counted as failures."""
+    total = combo.get("total")
+    if total is None:  # a hand-built combo without counts: its score is all we have
+        return combo["score"]
+    return combo.get("success", 0) / total * 100 if total else 0.0
+
+
 def summarize(results, quality_threshold) -> dict | None:
     """Single entry point: winners, the best combo's tag breakdown, and the gate.
 
-    ``passed`` is the CI/CD verdict — the best combo's score vs ``quality_threshold``.
-    When ``quality_threshold`` is ``None`` no gate is configured, so ``passed`` is
-    ``True``. Returns ``None`` when ``results`` is empty.
+    ``passed`` is the CI/CD verdict against ``quality_threshold``. It is
+    fail-safe: ``gate_score`` is the best combo's pass rate with every unscored
+    (pipeline-error) case counted as a failure, so a run where most calls failed
+    can't pass on the few that were scored. When ``quality_threshold`` is
+    ``None`` no gate is configured, so ``passed`` is ``True``. Returns ``None`` when ``results`` is empty.
     """
     if not results:
         return None
     top = best_quality(results)
     breakdown = tag_breakdown(top)
+    errors = sum(c.get("errors") or 0 for c in results)
+    gate_score = max(_gate_score(c) for c in results)
     return {
         "best_quality": top,
         "best_value": best_value(results),
         "tag_breakdown": breakdown,
         "warnings": [r["tag"] for r in breakdown if r["warn"]],
         # Run total (every combo), matching the end-of-run pipeline-error warning.
-        "errors": sum(c.get("errors") or 0 for c in results),
-        "passed": quality_threshold is None or top["score"] >= quality_threshold,
+        "errors": errors,
+        "gate_score": gate_score,
+        "passed": quality_threshold is None or gate_score >= quality_threshold,
         "quality_threshold": quality_threshold,
     }

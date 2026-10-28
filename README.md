@@ -6,8 +6,8 @@ Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. 
 
 ```bash
 pipx install evalblink        # or: uv tool install evalblink
-evalblink init                # scaffold a benchmark YAML
-evalblink run my_benchmark.yaml
+evalblink init                # scaffold a benchmark YAML (it prints the path it wrote)
+evalblink run benchmarks/my-benchmark.yaml
 ```
 
 ---
@@ -178,7 +178,12 @@ evalblink run my_benchmark.yaml --dry-run     # optional: cost estimate, no comp
 evalblink run my_benchmark.yaml
 ```
 
-Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) use only free (`:free`) OpenRouter models — free models are rate-limited, so expect the occasional retry.
+Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) use only free (`:free`) OpenRouter models — free models are rate-limited, so expect the occasional retry. They live in the repository, not in the installed package:
+
+```bash
+git clone https://github.com/alexandre-darmon/evalblink && cd evalblink
+evalblink run benchmarks/exact_match_classification.yaml   # also the default when you pass no path
+```
 
 ---
 
@@ -195,6 +200,7 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge — must be a string whenever present |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
+| `evaluation.judge_max_tokens` | — | Output budget of each judge call — a positive whole number (default: `4096`; reasoning judges need thousands) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
 | `evaluation.variables` | ✅ if `weighted_match` used | Weighted dimension definitions (`name`, `weight`, optional `tolerance`) |
 | `prompts[].id` | ✅ | Unique identifier used in reports |
@@ -215,7 +221,7 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 >
 > - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type; a self-referencing YAML alias (`&a [*a]`), which could not be written to the results JSON.
 > - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
-> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent` and `order`.
+> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
@@ -251,6 +257,7 @@ evalblink models
 evalblink models --provider anthropic
 evalblink models --free
 evalblink models --min-context 100k
+evalblink models --no-cache          # refetch instead of using the 24h catalog cache
 
 # Scaffold a new benchmark interactively
 evalblink init
@@ -263,7 +270,7 @@ evalblink cache clear --yes                              # without --yes it only
 `evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
-- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
+- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog (and a free judge, `nvidia/nemotron-3-ultra-550b-a55b:free`, by default), defaults `max_tokens` to 1024 so free reasoning models have room to answer, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
 
 ---
 
@@ -317,7 +324,7 @@ inference:
   temperature: 0
   max_tokens: 1024
 evaluation:
-  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from the candidate
+  judge_model: "nvidia/nemotron-3-ultra-550b-a55b:free"  # different vendor from the candidate
   judge_threshold: 0.70
 
 prompts:
@@ -358,7 +365,7 @@ test_cases:
     tags: ["frustration", "edge_case"]
 ```
 
-The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
+The judge reasons step by step before committing to a score (chain-of-thought-first, G-Eval / MT-Bench style). The judge returns a score of 1–5, normalized to 0–1. Cases scoring below `judge_threshold` count as failures. The judge gets its own output budget, `evaluation.judge_max_tokens` (default 4096), independent of the candidate's `inference.max_tokens`: judges that reason at length before answering can use thousands of tokens (the free `nvidia/nemotron-3.5-lightning:free` takes 2,000–6,000 per verdict, which is why the examples use the more concise `nemotron-3-ultra`) and return nothing when the budget runs out — raise it if you see `judge_api_error … finish_reason: length`. A failed judge call prints a one-line `Judge API error on …` warning and keeps the reason in the case's `error` field. The judge's reasoning is stored in the JSON record (`results[].test_cases[].reasoning`) — not in the Markdown report — so you can check *why* a response scored poorly. If the judge call fails or its reply has no usable score, the case is a pipeline error (`status` `judge_api_error` / `judge_error`, score `null`): it counts under **Errors** and is excluded from the score, never as a 0.
 
 **Built-in bias mitigations:**
 - Judge prompt instructs against rewarding length (verbosity bias: 10–20% magnitude)
@@ -506,7 +513,7 @@ No single test case can crash a run: anything unexpected while rendering or scor
 
 ## Caching
 
-Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached — rerun with `--no-cache` to retry it. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example the cache directory is read-only), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
+Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached: `--no-cache` retries it for that run only (it neither reads nor writes the cache), so run `evalblink cache clear --yes` to drop the bad entry for good. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example the cache directory is read-only), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
 
 ```bash
 evalblink cache stats          # entry count and total size on disk
@@ -532,7 +539,7 @@ results/
 
 A second run of the same benchmark within the same second gets a `-2` (`-3`, …) suffix instead of overwriting the first.
 
-Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`, capped at 60 characters, and `benchmark` when nothing is left (e.g. a name with no ASCII letters or digits) — so any valid name gives a writable path. In the Markdown report's per-case tables, a pipeline-error case shows its status in the Score column (`API error`, `judge API error` or `judge error`) instead of a number. Lone UTF-16 surrogates (for example a `"\ud800"` escape in the YAML or in model output) are replaced with `?` in requests, terminal output and the Markdown report. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
+Filenames are `YYYY-MM-DD_HHMMSS_<slug>`, where the slug is the benchmark `name` lowercased with each run of non-alphanumeric characters turned into `-`, capped at 60 characters, and `benchmark` when nothing is left (e.g. a name with no ASCII letters or digits) — so any valid name gives a writable path. In the Markdown report's per-case tables, a pipeline-error case shows its status in the Score column (`API error`, `judge API error`, `judge error` or `internal error`) instead of a number. Lone UTF-16 surrogates (for example a `"\ud800"` escape in the YAML or in model output) are replaced with `?` in requests, terminal output and the Markdown report. The JSON includes schema versioning so `evalblink compare` handles old files gracefully — it never hard-blocks on a version mismatch. Regenerate the Markdown report at any time:
 
 ```bash
 evalblink report results/2026-06-10_143205_customer-support-classification.json
@@ -571,8 +578,8 @@ Changed combos are listed first. `--detailed` adds per-combo test-case transitio
 ```
 
 - **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `--dry-run` needs no API key.
-- **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error` / judge error). The results are still written.
-- **Otherwise the `quality_threshold` gate decides:** best combo score ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The score covers scored cases only — pipeline errors are counted under **Errors** and excluded, never scored as failures — and when any occurred, the run ends with a warning giving their count.
+- **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`). The results are still written.
+- **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
 - `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
 
 ---

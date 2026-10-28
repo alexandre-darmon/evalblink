@@ -7,7 +7,8 @@ Pure logic — no network. Each test feeds a config plus a fake pricing catalog
 from __future__ import annotations
 
 from evalblink import estimate
-from evalblink.estimate import JUDGE_MAX_TOKENS, _est_tokens
+from evalblink.estimate import _est_tokens
+from evalblink.schemas import DEFAULT_JUDGE_MAX_TOKENS as JUDGE_MAX_TOKENS
 from evalblink.schemas import DEFAULT_MAX_TOKENS
 
 

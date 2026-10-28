@@ -23,6 +23,9 @@ SCHEMA_VERSION = 1
 # runner, reporter, estimator and validator so they can never disagree.
 DEFAULT_TEMPERATURE = 0
 DEFAULT_MAX_TOKENS = 100
+# The judge reasons before its JSON verdict; reasoning models (e.g. the free
+# nemotron-3.5-lightning, 2k-6k) need thousands of tokens. `evaluation.judge_max_tokens`.
+DEFAULT_JUDGE_MAX_TOKENS = 4096
 
 
 # ----------------------------------------------------------------------------

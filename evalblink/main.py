@@ -30,6 +30,8 @@ from evalblink.validator import _template_vars
 from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
+# init's suggested judge: free, and the one the shipped benchmarks use.
+INIT_JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 RESULTS_DIR = "results"
 
 
@@ -125,6 +127,12 @@ def cmd_run(args):
     if result["passed"]:
         print(f"\nPASS: best score meets quality_threshold ({threshold}).")
         sys.exit(0)
+    if errors:
+        print(
+            f"\nFAIL: best score is below quality_threshold ({threshold}) once the"
+            f" {errors} case(s) that could not be scored count as failures."
+        )
+        sys.exit(1)
     print(f"\nFAIL: best score is below quality_threshold ({threshold}).")
     sys.exit(1)
 
@@ -317,7 +325,11 @@ def _jinja_vars(text: str) -> list[str]:
     count, as ``text`` and ``user``); raises ``jinja2.TemplateSyntaxError``.
     """
     needed = _template_vars(text)
-    return [w for w in dict.fromkeys(re.findall(r"\w+", text)) if w in needed]
+    # Words inside {{ }} / {% %} only, so prose that happens to contain a
+    # variable's name ("Review: {{ review }}") doesn't reorder the questions.
+    inner = " ".join(re.findall(r"\{[{%](.*?)[}%]\}", text, flags=re.DOTALL))
+    ordered = [w for w in dict.fromkeys(re.findall(r"\w+", inner)) if w in needed]
+    return ordered + sorted(needed - set(ordered))
 
 
 def _ask(console, question, parse, hint, **kwargs):
@@ -471,7 +483,7 @@ def cmd_init(args):
             "  Judge model",
             _checked(str.strip),
             "A judge model ID is required.",
-            default="openai/gpt-4o",
+            default=INIT_JUDGE_MODEL,
         )
         judge_threshold = _ask(
             console,
@@ -496,7 +508,9 @@ def cmd_init(args):
         "  Max tokens",
         _number(int, 1),
         "Enter a positive whole number, e.g. 100 or 1024",
-        default="1024" if mode == "llm_judge" else "100",
+        # Headroom: free reasoning models spend tokens before answering and
+        # return null content when the budget runs out.
+        default="1024",
     )
 
     # 8. Test cases
@@ -638,12 +652,17 @@ YAML CONFIG KEYS
   inference.temperature         default: 0
   inference.max_tokens          default: 100
   variables                     global key/value pairs injected into templates
-  quality_threshold             CI gate 0–100; exit 1 if best score is below
+  quality_threshold             CI gate 0–100; exit 1 if the best score (unscored
+                                cases counted as failures) is below
+  concurrency                   parallel requests, 1–100 (default: 5)
   evaluation.judge_model        required for llm_judge
   evaluation.judge_threshold    default: 0.70
+  evaluation.judge_max_tokens   judge output budget (default: 4096)
+  evaluation.quality_threshold  per-case pass threshold 0–1, required for weighted_match
+  evaluation.variables          use_case/percent/order weights, required for weighted_match
   test_cases[].id               required
   test_cases[].evaluation       exact_match | llm_judge | weighted_match  (required)
-  test_cases[].expected_output  required for exact_match
+  test_cases[].expected_output  required for exact_match and weighted_match
   test_cases[].criteria         required for llm_judge
   test_cases[].reference        optional gold answer injected into the judge prompt
   test_cases[].variables        per-case variables
@@ -839,19 +858,20 @@ def build_parser():
 
 
 def main(argv=None):
+    # Names, ids and model output may carry lone surrogates (a "\\ud800" YAML or
+    # JSON escape), and a cp1252 pipe can't encode emoji; never let printing one
+    # abort a command.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):  # not a TextIOWrapper (redirected)
+            pass
     # The .env next to the user's benchmarks — not the installed package's dir.
     # utf-8-sig: a Windows editor's BOM would otherwise become part of the key name.
     try:
         load_dotenv(find_dotenv(usecwd=True), encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
         print(f"⚠️  Ignoring .env: {exc} (save it as UTF-8).", file=sys.stderr)
-    # Names, ids and model output may carry lone surrogates (a "\\ud800" YAML or
-    # JSON escape); never let printing one abort a command.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="replace")
-        except (AttributeError, ValueError):  # not a TextIOWrapper (redirected)
-            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

@@ -264,3 +264,25 @@ def test_judge_null_threshold_uses_the_default(
     params = {**JUDGE_PARAMS, "judge_threshold": None}
     result = evaluate_llm_judge(client, params, "answer", "task", "criteria")
     assert result["match_result"] is True  # 0.75 >= 0.70
+
+
+def test_judge_budget_defaults_high_and_is_configurable(
+    disable_cache, client_factory, completion
+):
+    from evalblink.schemas import DEFAULT_JUDGE_MAX_TOKENS
+
+    body = completion(json.dumps({"reasoning": "r", "score": 4}))
+    client = client_factory(body)
+    evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert client.calls[0]["json"]["max_tokens"] == DEFAULT_JUDGE_MAX_TOKENS >= 4096
+    client = client_factory(body)
+    params = {**JUDGE_PARAMS, "judge_max_tokens": 777}
+    evaluate_llm_judge(client, params, "answer", "task", "criteria")
+    assert client.calls[0]["json"]["max_tokens"] == 777
+
+
+def test_judge_api_error_keeps_the_reason(disable_cache, client_factory, error_body):
+    client = client_factory(error_body(400, "model not found"))
+    result = evaluate_llm_judge(client, JUDGE_PARAMS, "answer", "task", "criteria")
+    assert result["status"] == "judge_api_error"
+    assert "model not found" in result["error"]

@@ -306,6 +306,17 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
         )
     if has_llm_judge:
+        judge_max_tokens = evaluation.get("judge_max_tokens")
+        if judge_max_tokens is not None and not (
+            _is_number(judge_max_tokens)
+            and isinstance(judge_max_tokens, int)
+            and not isinstance(judge_max_tokens, bool)
+            and judge_max_tokens >= 1
+        ):
+            errors.append(
+                "evaluation.judge_max_tokens must be a positive whole number like 4096"
+                f" (got {judge_max_tokens!r})"
+            )
         judge_threshold = evaluation.get("judge_threshold")
         if judge_threshold is not None and not (
             _is_number(judge_threshold) and 0 <= judge_threshold <= 1

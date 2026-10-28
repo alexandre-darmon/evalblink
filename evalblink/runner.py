@@ -9,6 +9,7 @@ decisions — that's the reporter's job.
 from __future__ import annotations
 
 import datetime
+import functools
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -29,6 +30,12 @@ from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 JINJA_ENV = SandboxedEnvironment()
 
 
+@functools.lru_cache(maxsize=512)
+def _compile(source: str):
+    """One compile per distinct template (validate renders every prompt × case)."""
+    return JINJA_ENV.from_string(source)
+
+
 def render_template(prompt, variables, test_case):
     if variables:
         render_kwargs = dict(variables)
@@ -36,9 +43,9 @@ def render_template(prompt, variables, test_case):
         render_kwargs = {}
     if test_case.get("variables"):
         render_kwargs.update(test_case["variables"])
-    rendered_prompt = JINJA_ENV.from_string(prompt["template"]).render(**render_kwargs)
+    rendered_prompt = _compile(prompt["template"]).render(**render_kwargs)
     rendered_system = (
-        JINJA_ENV.from_string(prompt["system"]).render(**render_kwargs)
+        _compile(prompt["system"]).render(**render_kwargs)
         if prompt.get("system")
         else None
     )
@@ -173,6 +180,12 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         judge_prompt_tokens = judge_result["judge_prompt_tokens"]
         judge_completion_tokens = judge_result["judge_completion_tokens"]
         judge_cost = judge_result["judge_cost"]
+        if judge_result.get("error"):
+            error = judge_result["error"]
+            if not CANCELLED.is_set():
+                print(
+                    f"⚠️  Judge API error on {model} / {prompt['id']} / {test_case['id']}: {error}"
+                )
         if verbose:
             print(
                 f"Judge status: {judge_result['status']} "

@@ -469,3 +469,58 @@ def test_cancelled_run_stops_retrying(client_factory, error_body, monkeypatch):
     with pytest.raises(RuntimeError, match="cancelled"):
         openrouter_request(client, "p", "m", use_cache=False)
     assert len(client.calls) == 1
+
+
+# --- release review fixes ----------------------------------------------------
+
+
+def test_no_key_sends_no_authorization_header(monkeypatch):
+    # "Bearer " (empty key) is an illegal header value in httpx/h11; the public
+    # /models catalog (dry-run, models, init) must work without a key.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    headers = openrouter._auth_headers()
+    assert "Authorization" not in headers
+    request = httpx.Client().build_request("GET", "https://x.test/", headers=headers)
+    assert "authorization" not in request.headers
+    monkeypatch.setenv("OPENROUTER_API_KEY", " sk-test ")
+    assert openrouter._auth_headers()["Authorization"] == "Bearer sk-test"
+
+
+def test_unknown_prices_stay_unknown_when_read_back_from_cache(
+    client_factory, _models_cache
+):
+    body = {
+        "data": [
+            {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+            {"id": "free/x", "pricing": {"prompt": "0"}},  # absent key = free
+            {"id": "free/y", "pricing": {}},
+        ]
+    }
+    fresh = fetch_models(client_factory(body))
+    cached = fetch_models(client_factory(AssertionError("must hit the cache")))
+    for models in (fresh, cached):
+        assert models["openrouter/auto"]["prompt"] is None
+        assert models["openrouter/auto"]["completion"] is None
+        assert models["free/x"]["completion"] == 0.0
+        assert models["free/y"] == {
+            **models["free/y"],
+            "prompt": 0.0,
+            "completion": 0.0,
+        }
+
+
+def test_null_content_error_is_short_and_names_finish_reason(client_factory):
+    body = {
+        "choices": [
+            {
+                "message": {"content": None, "reasoning": "x" * 2000},
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0},
+    }
+    with pytest.raises(RuntimeError) as exc:
+        openrouter_request(client_factory(body), "p", "m", use_cache=False)
+    message = str(exc.value)
+    assert "null content" in message and "finish_reason: length" in message
+    assert "xxxx" not in message and len(message) < 200

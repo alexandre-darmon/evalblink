@@ -409,7 +409,9 @@ def _make_fake_prompt(answers: deque):
     class FakePrompt:
         @classmethod
         def ask(cls, question, **kwargs):
-            return answers.popleft()
+            answer = answers.popleft()
+            # None = press Enter: take the prompt's default, as Rich does.
+            return kwargs.get("default", "") if answer is None else answer
 
     return FakePrompt
 
@@ -596,6 +598,9 @@ def test_jinja_vars_helper():
     assert main._jinja_vars("Hello {{ name }}, score {{ score }}") == ["name", "score"]
     assert main._jinja_vars("{{ x }} and {{ x }} again") == ["x"]
     assert main._jinja_vars("no variables here") == []
+    # Order follows the {{ }} blocks, not prose that mentions a variable's name.
+    text = "Classify this review. Labels: {{ labels }}. Review: {{ review }}"
+    assert main._jinja_vars(text) == ["labels", "review"]
 
 
 # ── validate ──────────────────────────────────────────────────────────────────
@@ -746,9 +751,18 @@ def test_run_with_some_pipeline_errors_warns_and_uses_the_gate(
     assert "1 of 2 case(s) hit a pipeline error" in out
     assert "no case could be scored" not in out
 
-    # The scored case passes (100%), so a gate of 90 passes too.
+    # The scored case passes (100% of scored), but the gate is fail-safe: the
+    # unscored case counts as a failure, 1/2 = 50% < 90.
     fake_http(_ok("yes"), httpx.Response(400, text="<html>bad</html>"))
     path = _write_cli_config(tmp_path, quality_threshold=90)
+    assert _run_cli(["run", str(path), "--no-cache"]) == 1
+    assert "1 case(s) that could not be scored count as failures" in (
+        capsys.readouterr().out
+    )
+
+    # A gate the worst case still clears passes despite the error.
+    fake_http(_ok("yes"), httpx.Response(400, text="<html>bad</html>"))
+    path = _write_cli_config(tmp_path, quality_threshold=50)
     assert _run_cli(["run", str(path), "--no-cache"]) == 0
 
 
@@ -1301,3 +1315,61 @@ def test_deeply_nested_yaml_is_invalid_yaml(tmp_path):
     path.write_text("name: " + "[" * 5000 + "]" * 5000 + "\n")
     code = _run_cli(["validate", str(path)])
     assert isinstance(code, str) and "nested too deeply" in code
+
+
+def test_judge_api_error_is_warned_and_recorded(fake_http, tmp_path, capsys):
+    cfg = _write_cli_config(
+        tmp_path,
+        evaluation={"judge_model": "j/x"},
+        test_cases=[
+            {
+                "id": "c1",
+                "evaluation": "llm_judge",
+                "criteria": "good",
+                "variables": {"q": "1"},
+            }
+        ],
+    )
+    fake_http(
+        _ok("an answer"),
+        httpx.Response(404, json={"error": {"code": 404, "message": "no judge"}}),
+    )
+    assert _run_cli(["run", str(cfg), "--no-cache"]) == 1  # nothing scored
+    assert "Judge API error on m/a / v1 / c1" in capsys.readouterr().out
+    [record] = (tmp_path / "results").glob("*.json")
+    case = json.loads(record.read_text())["results"][0]["test_cases"][0]
+    assert case["status"] == "judge_api_error" and "no judge" in case["error"]
+
+
+def test_init_defaults_are_a_free_judge_and_reasoning_headroom(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: _FAKE_MODELS
+    )
+    answers = deque(
+        [
+            "Defaults",  # name
+            "llm_judge",  # mode
+            "free/x:free",  # model
+            "",  # stop
+            "Summarize: {{ text }}",  # template
+            "",  # system
+            "p",  # 'text' per case
+            None,  # judge model: default
+            None,  # judge threshold: default
+            None,  # temperature: default
+            None,  # max_tokens: default
+            "tc_001",
+            "A mountain scene",
+            "Must be concise",
+            "",  # tags
+            "",  # quality threshold
+            str(tmp_path / "defaults.yaml"),
+        ]
+    )
+    monkeypatch.setattr(main, "Prompt", _make_fake_prompt(answers))
+    monkeypatch.setattr(main, "Confirm", _make_fake_confirm(deque([False])))
+    assert _run_cli(["init"]) == 0
+    config = yaml.safe_load((tmp_path / "defaults.yaml").read_text())
+    assert config["evaluation"]["judge_model"] == main.INIT_JUDGE_MODEL
+    assert main.INIT_JUDGE_MODEL.endswith(":free")
+    assert config["inference"]["max_tokens"] == 1024

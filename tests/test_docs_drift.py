@@ -51,7 +51,7 @@ def test_docs_contain_complete_examples():
     assert len(list(_complete_configs())) >= 4
 
 
-@pytest.mark.parametrize("config", _complete_configs())
+@pytest.mark.parametrize("config", list(_complete_configs()))
 def test_doc_examples_validate(config):
     errors, _ = validate(config)
     assert errors == []
@@ -93,7 +93,7 @@ def test_cli_reference_is_parsed():
     assert len(list(_documented_invocations())) >= 10
 
 
-@pytest.mark.parametrize("argv", _documented_invocations(), ids=" ".join)
+@pytest.mark.parametrize("argv", list(_documented_invocations()), ids=" ".join)
 def test_documented_flags_exist(argv):
     words = [w for w in argv if not w.startswith("-")]
     # Longest documented subcommand prefix, e.g. "cache clear" before "cache".

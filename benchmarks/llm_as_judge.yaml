@@ -4,7 +4,7 @@ inference:
   temperature: 0
   max_tokens: 1024
 evaluation:
-  judge_model: "nvidia/nemotron-3.5-lightning:free"  # different vendor from the candidate
+  judge_model: "nvidia/nemotron-3-ultra-550b-a55b:free"  # different vendor from the candidate
   judge_threshold: 0.70
 
 prompts:
