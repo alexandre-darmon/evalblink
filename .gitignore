@@ -10,3 +10,4 @@ results/*
 .DS_Store
 dist/
 build/
+.claude/worktrees/
