@@ -6,7 +6,7 @@ Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. 
 
 ```bash
 pipx install evalblink        # or: uv tool install evalblink
-evalblink init                # scaffold a benchmark YAML (it prints the path it wrote)
+evalblink init                # 3 questions (Enter = defaults) → a starter benchmark that runs as-is
 evalblink run benchmarks/my-benchmark.yaml
 ```
 
@@ -82,7 +82,7 @@ Sample from a 50-case run (3 models × 2 prompts, `quality_threshold: 85`) in wh
 pipx install evalblink        # or: uv tool install evalblink / pip install evalblink
 ```
 
-Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) in this repo; `evalblink init` scaffolds a new one interactively.
+Example configs live in [`benchmarks/`](https://github.com/alexandre-darmon/evalblink/tree/main/benchmarks) in this repo; `evalblink init` writes a commented starter you edit.
 
 > **Local development (from the repo root):**
 > ```bash
@@ -259,8 +259,9 @@ evalblink models --free
 evalblink models --min-context 100k
 evalblink models --no-cache          # refetch instead of using the 24h catalog cache
 
-# Scaffold a new benchmark interactively
+# Write a commented starter benchmark (3 questions; --yes for none)
 evalblink init
+evalblink init my-eval.yaml --yes
 
 # Cache management
 evalblink cache stats
@@ -270,7 +271,7 @@ evalblink cache clear --yes                              # without --yes it only
 `evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
-- `init` asks again when an answer is invalid (empty name, duplicate model or test-case id, an empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100). It detects template variables the way `validate` does, so `{{ text|upper }}` and `{{ user.name }}` count as `text` and `user`. It suggests free models from the catalog (and a free judge, `nvidia/nemotron-3-ultra-550b-a55b:free`, by default), defaults `max_tokens` to 1024 so free reasoning models have room to answer, and carries on without suggestions when the catalog can't be fetched. The default filename is `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits). Before writing, it runs `validate` on the result and exits 1 without writing if there are errors.
+- `init` asks three questions: a name, the evaluation mode (`exact_match` or `llm_judge`) and the models to compare, comma-separated. Press Enter at each for the defaults. It then writes a complete, commented starter: an example prompt and example test cases, `temperature: 0`, `max_tokens: 1024` (headroom for free reasoning models) and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`. The file validates and runs as-is; replace the example test cases with your own in your editor. The default model is the free `poolside/laguna-xs-2.1:free` (or the first free catalog model if OpenRouter has retired it). Models absent from the catalog get a warning, and an empty name or model list is asked again. `init` carries on without suggestions when the catalog can't be fetched. The output file is the optional path argument, or `benchmarks/<slug>.yaml` (`benchmarks/benchmark.yaml` for a name with no letters or digits); an existing file is only overwritten after you confirm. `init --yes` asks nothing and writes the `exact_match` starter with the default model, refusing to overwrite an existing file. Before writing, `init` runs `validate` on the result and exits 1 without writing if there are errors.
 
 ---
 
@@ -634,7 +635,7 @@ Four practitioner guides covering the full evaluation workflow are planned for V
 - Concurrent API calls (`ThreadPoolExecutor`), exponential backoff retry
 - Local caching, schema versioning, run compare (`--detailed` per-case transitions)
 - `evalblink validate` — static config validation, no API calls
-- `evalblink init` — interactive YAML scaffolding
+- `evalblink init` — a commented starter benchmark from three questions
 - `evalblink models` — live OpenRouter model catalog with filtering
 
 **V1.1**

@@ -57,3 +57,5 @@ jobs:
           test "$(/tmp/venv/bin/evalblink --version)" = "$want"
           for f in "${{ github.workspace }}"/benchmarks/*.yaml; do /tmp/venv/bin/evalblink validate "$f"; done
           /tmp/venv/bin/evalblink --help > /dev/null
+          /tmp/venv/bin/evalblink init --yes starter.yaml
+          /tmp/venv/bin/evalblink validate starter.yaml

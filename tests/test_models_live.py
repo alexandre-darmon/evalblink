@@ -16,6 +16,8 @@ import httpx
 import pytest
 import yaml
 
+from evalblink import starter
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("EVALBLINK_NETWORK_TESTS") != "1",
     reason="network test; set EVALBLINK_NETWORK_TESTS=1",
@@ -39,7 +41,8 @@ def _configs():
 
 
 def _referenced_models():
-    refs = set()
+    # `evalblink init` writes these into every starter benchmark.
+    refs = {("starter.py", starter.DEFAULT_MODEL), ("starter.py", starter.JUDGE_MODEL)}
     for source, cfg in _configs():
         for model in cfg.get("models") or []:
             refs.add((source, model))
