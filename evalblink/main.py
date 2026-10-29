@@ -403,15 +403,18 @@ def cmd_init(args):
             "Enter one or more model IDs separated by commas, e.g. a/b, c/d",
             default=default_model,
         )
-        if models_meta:
-            for m in models:
-                if m not in models_meta:
-                    console.print(
-                        f"⚠  {m} is not in the OpenRouter catalog — check the ID.",
-                        style="yellow",
-                    )
+
+    written = models + ([starter.JUDGE_MODEL] if mode == "llm_judge" else [])
+    for m in written if models_meta else []:
+        if m not in models_meta:
+            console.print(
+                f"⚠  {m} is not in the OpenRouter catalog — check the ID.",
+                style="yellow",
+            )
 
     out_path = args.path or f"benchmarks/{reporter._slugify(name)}.yaml"
+    if os.path.isdir(out_path):
+        sys.exit(f"{out_path} is a directory — pass a file path.")
     if os.path.exists(out_path):
         if args.yes:
             sys.exit(f"{out_path} already exists — pass another path.")

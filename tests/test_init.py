@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 
+import httpx
 import pytest
 import yaml
 from rich.text import Text
@@ -107,11 +108,17 @@ def test_yes_asks_nothing_and_never_overwrites(monkeypatch, tmp_path):
     assert path.read_text() == "mine"
 
 
-def test_declined_overwrite_leaves_the_file(monkeypatch, tmp_path):
+@pytest.mark.parametrize("answer", [False, ""])  # "" = Enter: the default is no
+def test_declined_overwrite_leaves_the_file(monkeypatch, tmp_path, answer):
     out = tmp_path / "x.yaml"
     out.write_text("mine")
-    assert _init(monkeypatch, [str(out)], ["X", "", ""], confirms=[False]) == 0
+    assert _init(monkeypatch, [str(out)], ["X", "", ""], confirms=[answer]) == 0
     assert out.read_text() == "mine"
+
+
+def test_a_directory_is_refused_before_any_overwrite_question(monkeypatch, tmp_path):
+    code = _init(monkeypatch, [str(tmp_path)], ["X", "", ""])  # no confirm asked
+    assert isinstance(code, str) and "is a directory" in code
 
 
 def test_overwrite_prompt_escapes_markup_in_the_path(monkeypatch, tmp_path):
@@ -122,9 +129,14 @@ def test_overwrite_prompt_escapes_markup_in_the_path(monkeypatch, tmp_path):
     assert _load(out)["name"] == "X"
 
 
-def test_catalog_down_falls_back_to_the_default_model(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("down"), httpx.ConnectError("offline")]
+)
+def test_catalog_down_falls_back_to_the_default_model(
+    monkeypatch, tmp_path, capsys, failure
+):
     out = tmp_path / "x.yaml"
-    code = _init(monkeypatch, [str(out)], ["X", "", ""], catalog=RuntimeError("down"))
+    code = _init(monkeypatch, [str(out)], ["X", "", ""], catalog=failure)
     assert code == 0
     assert _load(out)["models"] == [starter.DEFAULT_MODEL]
     stdout = capsys.readouterr().out
@@ -137,21 +149,45 @@ def test_retired_default_is_replaced_by_a_free_suggestion(
 ):
     catalog = {
         "a/audio-model": FREE,  # zero-priced but not a `:free` id: listed last
-        "z/text:free": FREE,
+        "a/paid": CATALOG["a/b"],  # never suggested
+        **{f"z/text-{i}:free": FREE for i in range(6)},
     }
     out = tmp_path / "x.yaml"
     assert _init(monkeypatch, [str(out)], ["X", "", ""], catalog=catalog) == 0
-    assert _load(out)["models"] == ["z/text:free"]
+    assert _load(out)["models"] == ["z/text-0:free"]
     stdout = capsys.readouterr().out
-    assert stdout.index("z/text:free") < stdout.index("a/audio-model")
+    assert "a/paid" not in stdout
+    assert "z/text-4:free" in stdout and "z/text-5:free" not in stdout  # top five
+    assert "a/audio-model" not in stdout  # sorted after the `:free` ids
 
 
-@pytest.mark.parametrize("out", ["{dir}", "\ud800.yaml"])
+def test_no_free_model_in_the_catalog_keeps_the_shipped_default(monkeypatch, tmp_path):
+    out = tmp_path / "x.yaml"
+    catalog = {"a/b": CATALOG["a/b"]}
+    assert _init(monkeypatch, [str(out), "--yes"], catalog=catalog) == 0
+    assert _load(out)["models"] == [starter.DEFAULT_MODEL]
+
+
+def test_retired_judge_is_flagged(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "x.yaml"
+    assert _init(monkeypatch, [str(out)], ["X", "llm_judge", ""]) == 0
+    stdout = capsys.readouterr().out
+    assert f"{starter.JUDGE_MODEL} is not in the OpenRouter catalog" in stdout
+    assert f"{starter.DEFAULT_MODEL} is not" not in stdout
+
+
+def test_yes_flags_a_default_absent_from_the_catalog(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "x.yaml"
+    catalog = {"a/b": CATALOG["a/b"]}
+    assert _init(monkeypatch, [str(out), "-y"], catalog=catalog) == 0
+    assert "is not in the OpenRouter catalog" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("out", ["file/x.yaml", "\ud800.yaml"])
 def test_unwritable_output_path_is_a_clean_error(monkeypatch, tmp_path, out):
     monkeypatch.chdir(tmp_path)
-    out = out.format(dir=tmp_path)
-    confirms = [True] if out == str(tmp_path) else []  # it "exists"
-    code = _init(monkeypatch, [out], ["X", "", ""], confirms=confirms)
+    (tmp_path / "file").write_text("")  # a parent that is a file
+    code = _init(monkeypatch, [out], ["X", "", ""])
     assert isinstance(code, str) and "Cannot write" in code
 
 
