@@ -6,7 +6,7 @@ concurrency: 2  # free models rate-limit parallel bursts
 
 inference:
   temperature: 0
-  max_tokens: 1024
+  max_tokens: 2048  # the edge case makes reasoning models think longer
 
 prompts:
   - id: "v1"
