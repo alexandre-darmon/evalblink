@@ -77,7 +77,7 @@ def best_value(results) -> dict:
     return max(results, key=lambda c: c["score"] / max(c["total_cost"], _COST_FLOOR))
 
 
-def _gate_score(combo) -> float:
+def fail_safe_score(combo) -> float:
     """Pass rate (%) with unscored cases counted as failures."""
     total = combo.get("total")
     if total is None:  # a hand-built combo without counts: its score is all we have
@@ -85,13 +85,26 @@ def _gate_score(combo) -> float:
     return combo.get("success", 0) / total * 100 if total else 0.0
 
 
-def summarize(results, quality_threshold) -> dict | None:
+def _gated(results, gate) -> list:
+    """The combos the CI gate looks at: all, or those ``gate`` names."""
+    gate = gate or {}
+    return [
+        c
+        for c in results
+        if gate.get("model") in (None, c["model"])
+        and gate.get("prompt") in (None, c["prompt_id"])
+    ]
+
+
+def summarize(results, quality_threshold, gate=None) -> dict | None:
     """Single entry point: winners, the best combo's tag breakdown, and the gate.
 
     ``passed`` is the CI/CD verdict against ``quality_threshold``. It is
     fail-safe: ``gate_score`` is the best combo's pass rate with every unscored
     (pipeline-error) case counted as a failure, so a run where most calls failed
-    can't pass on the few that were scored. When ``quality_threshold`` is
+    can't pass on the few that were scored. ``gate`` (``{model?, prompt?}``)
+    restricts the verdict to the combos it names; by default the best combo of
+    the run decides. When ``quality_threshold`` is
     ``None`` no gate is configured, so ``passed`` is ``True`` — unless no case
     at all could be scored, which never passes (``run`` exits 1 then too).
     Returns ``None`` when ``results`` is empty.
@@ -101,7 +114,8 @@ def summarize(results, quality_threshold) -> dict | None:
     top = best_quality(results)
     breakdown = tag_breakdown(top)
     errors = sum(c.get("errors") or 0 for c in results)
-    gate_score = max(_gate_score(c) for c in results)
+    gated = _gated(results, gate)
+    gate_score = max((fail_safe_score(c) for c in gated), default=0.0)
     total = sum(c.get("total") or 0 for c in results)
     nothing_scored = bool(total) and errors >= total
     return {
@@ -115,4 +129,5 @@ def summarize(results, quality_threshold) -> dict | None:
         "passed": not nothing_scored
         and (quality_threshold is None or gate_score >= quality_threshold),
         "quality_threshold": quality_threshold,
+        "gate": gate or None,
     }

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+from .analysis import fail_safe_score
 from .openrouter import is_number
 
 # Score deltas smaller than this (in percentage points) read as "stable" — keeps
@@ -116,6 +117,19 @@ def load_record(path) -> dict:
     return record
 
 
+def _case_ids(combo):
+    """The combo's test-case ids, or ``None`` for a record without cases."""
+    cases = combo.get("test_cases")
+    if not isinstance(cases, list):
+        return None
+    return frozenset(str(tc.get("id")) for tc in cases if isinstance(tc, dict))
+
+
+def _same_cases(a, b) -> bool:
+    ids_a, ids_b = _case_ids(a), _case_ids(b)
+    return ids_a is None or ids_b is None or ids_a == ids_b
+
+
 def _index(record) -> dict:
     """Map ``(model, prompt_id)`` → combo for one record's ``results``."""
     return {(c["model"], c["prompt_id"]): c for c in record.get("results", [])}
@@ -140,16 +154,25 @@ def diff(record_a, record_b) -> dict:
     improved = 0
     comparable = 0
     uneven = 0
+    other_cases = 0
     for key in keys:
         a = index_a.get(key)
         b = index_b.get(key)
+        same_cases = gate_delta = None
         if a and b:
             present_in = "both"
             score_delta = b["score"] - a["score"]
             cost_delta = b["total_cost"] - a["total_cost"]
+            # Fail-safe pass rate (unscored cases count as failures), as the
+            # CI gate computes it: comparable even when errors changed.
+            gate_delta = fail_safe_score(b) - fail_safe_score(a)
+            same_cases = _same_cases(a, b)
+            # A slice (`run --tag/--limit`) against a full run: not comparable.
+            if not same_cases:
+                other_cases += 1
             # Scores exclude pipeline errors: a combo whose error count changed
             # was scored over different cases, so it isn't counted either way.
-            if (a.get("errors") or 0) != (b.get("errors") or 0):
+            elif (a.get("errors") or 0) != (b.get("errors") or 0):
                 uneven += 1
             else:
                 comparable += 1
@@ -174,12 +197,17 @@ def diff(record_a, record_b) -> dict:
                 "errors_a": (a.get("errors") or 0) if a else None,
                 "errors_b": (b.get("errors") or 0) if b else None,
                 "present_in": present_in,
+                "same_cases": same_cases,
+                "gate_delta": gate_delta,
             }
         )
 
     rows.sort(
         key=lambda r: (
-            r["present_in"] == "both" and _is_stable(r) and not _uneven(r),
+            r["present_in"] == "both"
+            and _is_stable(r)
+            and not _uneven(r)
+            and r["same_cases"],
             r["model"],
             r["prompt_id"],
         )
@@ -201,8 +229,33 @@ def diff(record_a, record_b) -> dict:
         "schema_b": schema_b,
         "version_note": version_note,
         "rows": rows,
-        "verdict": _verdict(improved, comparable, uneven, rows),
+        "verdict": _verdict(improved, comparable, uneven, other_cases, rows),
     }
+
+
+def regressions(diff_result, tolerance=0.0) -> list:
+    """Shared combos whose fail-safe pass rate dropped by more than
+    ``tolerance`` points — the ``compare --fail-on-regression`` verdict.
+
+    The rate counts unscored (pipeline-error) cases as failures, like the CI
+    gate, so a run that breaks with new errors regresses. Combos that ran
+    different test cases (a ``--tag``/``--limit`` slice) are not compared.
+    """
+    return [
+        r
+        for r in diff_result["rows"]
+        if r["present_in"] == "both"
+        and r["same_cases"] is not False
+        and r["gate_delta"] < -max(tolerance, _SCORE_EPS)
+    ]
+
+
+def compared(diff_result) -> int:
+    """How many shared combos ``regressions`` actually checks."""
+    return sum(
+        r["present_in"] == "both" and r["same_cases"] is not False
+        for r in diff_result["rows"]
+    )
 
 
 def _is_stable(row) -> bool:
@@ -216,10 +269,15 @@ def _uneven(row) -> bool:
     return row["present_in"] == "both" and row["errors_a"] != row["errors_b"]
 
 
-def _verdict(improved, comparable, uneven, rows) -> str:
+def _verdict(improved, comparable, uneven, other_cases, rows) -> str:
     """One-line summary of B versus A over like-for-like shared combos."""
     only = [r for r in rows if r["present_in"] != "both"]
     only_note = f" {len(only)} combo(s) present in only one run." if only else ""
+    if other_cases:
+        only_note += (
+            f" {other_cases} shared combo(s) left out: they ran different test"
+            " cases (e.g. a `run --tag` / `--limit` slice)."
+        )
     if uneven:
         only_note += (
             f" {uneven} shared combo(s) left out: their number of pipeline errors"
@@ -227,7 +285,7 @@ def _verdict(improved, comparable, uneven, rows) -> str:
             " like-for-like."
         )
     if not comparable:
-        if uneven:
+        if uneven or other_cases:
             return "No like-for-like shared combos." + only_note
         return "No combos in common between the two runs." + only_note
     if improved == comparable:

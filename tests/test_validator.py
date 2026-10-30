@@ -649,3 +649,108 @@ def test_validate_compiles_each_template_once():
     assert validate(config)[0] == []
     info = runner._compile.cache_info()
     assert info.misses <= 2 and info.hits >= 49  # compiled once, reused per case
+
+
+# ── unknown keys ──────────────────────────────────────────────────────────────
+
+
+def test_unknown_top_level_key_is_an_error_with_a_suggestion():
+    errors, _ = validate(_exact_match_config(qualty_threshold=85))
+    assert errors == [
+        "unknown key 'qualty_threshold' — did you mean 'quality_threshold'?"
+    ]
+
+
+def test_unknown_nested_keys_are_warnings_naming_their_place():
+    config = _llm_judge_config()
+    config["inference"]["max_token"] = 50
+    config["evaluation"]["judge_modle"] = "x"
+    config["prompts"][0]["sytem"] = "s"
+    config["test_cases"][0]["tag"] = ["a"]
+    errors, warnings = validate(config)
+    assert errors == []
+    assert "inference: unknown key 'max_token' — did you mean 'max_tokens'?" in warnings
+    assert any(w.startswith("evaluation: unknown key 'judge_modle'") for w in warnings)
+    assert "prompts['v1']: unknown key 'sytem' — did you mean 'system'?" in warnings
+    assert "test_cases['tc_001']: unknown key 'tag' — did you mean 'tags'?" in warnings
+
+
+def test_user_keys_starting_with_underscore_or_x_dash_are_free():
+    config = _exact_match_config(_anchors={"a": 1}, **{"x-owner": "me"})
+    config["test_cases"][0]["x-note"] = "why this case"
+    assert validate(config) == ([], [])
+
+
+def test_an_unknown_key_without_a_close_match_has_no_suggestion():
+    errors, _ = validate(_exact_match_config(zzzz=1))
+    assert errors == ["unknown key 'zzzz'"]
+
+
+def test_keys_read_outside_the_readme_table_are_known():
+    from evalblink.validator import KNOWN_KEYS
+
+    assert {"quality_threshold", "gate", "concurrency", "max_cost_usd"} <= KNOWN_KEYS[
+        ""
+    ]
+    assert {"reference", "human_score", "tags"} <= KNOWN_KEYS["test_cases[]"]
+
+
+# ── gate ──────────────────────────────────────────────────────────────────────
+
+
+def test_gate_must_name_a_model_and_prompt_of_the_config():
+    ok = _exact_match_config(
+        quality_threshold=80, gate={"model": "openai/gpt-4o", "prompt": "v1"}
+    )
+    assert validate(ok) == ([], [])
+    bad = _exact_match_config(
+        quality_threshold=80, gate={"model": "x/y", "prompt": ["v1"]}
+    )
+    errors, _ = validate(bad)
+    assert "gate.model 'x/y' is not one of the config's models" in errors
+    assert "gate.prompt ['v1'] is not one of the config's prompts" in errors
+    errors, _ = validate(_exact_match_config(quality_threshold=80, gate={"modle": "x"}))
+    assert errors == ["gate: unknown key 'modle' — did you mean 'model'?"]
+    errors, _ = validate(_exact_match_config(gate="openai/gpt-4o"))
+    assert any("'gate' must be a mapping" in e for e in errors)
+
+
+def test_gate_without_a_threshold_warns():
+    _, warnings = validate(_exact_match_config(gate={"prompt": "v1"}))
+    assert "gate has no effect without a top-level quality_threshold" in warnings
+
+
+def test_unknown_keys_in_weighted_variables_are_warnings():
+    config = _weighted_config()
+    config["evaluation"]["variables"][0]["wieght"] = 1
+    _, warnings = validate(config)
+    assert (
+        "evaluation.variables[0]: unknown key 'wieght' — did you mean 'weight'?"
+        in warnings
+    )
+
+
+def test_every_key_in_the_readme_config_table_is_known():
+    import re
+    from pathlib import Path
+
+    from evalblink.validator import KNOWN_KEYS
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    table = readme[
+        readme.index("## Configuration Reference") : readme.index("## CLI Reference")
+    ]
+    documented = re.findall(r"^\| `([^`]+)`", table, flags=re.MULTILINE)
+    assert len(documented) > 15, "the config table moved — update this test"
+    for key in documented:
+        *parents, leaf = key.replace("[]", "").split(".")
+        section = {
+            (): "",
+            ("inference",): "inference",
+            ("evaluation",): "evaluation",
+            ("evaluation", "variables"): "evaluation.variables[]",
+            ("prompts",): "prompts[]",
+            ("test_cases",): "test_cases[]",
+            ("gate",): "gate",
+        }[tuple(parents)]
+        assert leaf in KNOWN_KEYS[section], key

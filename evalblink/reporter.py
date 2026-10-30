@@ -71,6 +71,8 @@ def _build_data(config, results, timestamp) -> dict:
             "quality_threshold", evaluation.get("judge_threshold")
         ),
         "timestamp": timestamp,
+        # `run --model/--prompt/--tag/--limit`, so `compare` pairs like with like.
+        "filters": config.get("_filters"),
         "results": results,
     }
 
@@ -179,14 +181,14 @@ def _write_markdown(data) -> str:
 
 def _print_table(data, console: Console) -> None:
     table = Table(title=f"{data['benchmark']} — {data['run_id']}")
-    table.add_column("Model")
-    table.add_column("Prompt")
-    table.add_column("Score", justify="right")
-    table.add_column("Pass/Scored", justify="right")
-    table.add_column("Errors", justify="right")
-    table.add_column("Prompt tok", justify="right")
-    table.add_column("Completion tok", justify="right")
-    table.add_column("Cost", justify="right")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Prompt", overflow="fold")
+    table.add_column("Score", justify="right", overflow="fold")
+    table.add_column("Pass/Scored", justify="right", overflow="fold")
+    table.add_column("Errors", justify="right", overflow="fold")
+    table.add_column("Prompt tok", justify="right", overflow="fold")
+    table.add_column("Completion tok", justify="right", overflow="fold")
+    table.add_column("Cost", justify="right", overflow="fold")
     for run in data["results"]:
         scored = run.get("scored", run["total"])
         errors = run.get("errors", 0)
@@ -208,11 +210,11 @@ def _print_insights(summary, console: Console) -> None:
     value = summary["best_value"]
 
     tags = Table(title=f"QUALITY BY TAG — best combo ({_combo_label(top)})")
-    tags.add_column("Tag")
-    tags.add_column("Cases", justify="right")
-    tags.add_column("Quality", justify="right")
-    tags.add_column("Errors", justify="right")
-    tags.add_column("", justify="left")
+    tags.add_column("Tag", overflow="fold")
+    tags.add_column("Cases", justify="right", overflow="fold")
+    tags.add_column("Quality", justify="right", overflow="fold")
+    tags.add_column("Errors", justify="right", overflow="fold")
+    tags.add_column("", justify="left", overflow="fold")
     for row in summary["tag_breakdown"]:
         warn = "⚠️" if row["warn"] else ""
         style = "yellow" if row["warn"] else None
@@ -250,7 +252,9 @@ def write(config, results, timestamp) -> dict:
     data = _build_data(config, results, timestamp)
     # The CI gate is a top-level percentage (0-100), distinct from the per-case
     # `evaluation.quality_threshold`/`judge_threshold` (0-1) the scorers consume.
-    summary = analysis.summarize(results, config.get("quality_threshold"))
+    summary = analysis.summarize(
+        results, config.get("quality_threshold"), config.get("gate")
+    )
     data["insights"] = summary
     # Two runs of one benchmark in the same second must not overwrite each other.
     base, n = data["run_id"], 2
@@ -302,11 +306,11 @@ def render_estimate(est, console: Console | None = None) -> None:
     """
     console = console or make_console()
     table = Table(title="DRY RUN — estimated cost (no API calls)")
-    table.add_column("Model")
-    table.add_column("Prompt")
-    table.add_column("Est prompt tok", justify="right")
-    table.add_column("Est completion tok", justify="right")
-    table.add_column("Est cost", justify="right")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Prompt", overflow="fold")
+    table.add_column("Est prompt tok", justify="right", overflow="fold")
+    table.add_column("Est completion tok", justify="right", overflow="fold")
+    table.add_column("Est cost", justify="right", overflow="fold")
     for row in est["rows"]:
         combo_cost = row["est_cost"] + row["est_judge_cost"]
         table.add_row(
@@ -327,18 +331,32 @@ def render_estimate(est, console: Console | None = None) -> None:
         style="dim",
     )
 
+    for unknown in est.get("unknown_models", []):
+        hint = (
+            f" — did you mean '{unknown['suggestion']}'?"
+            if unknown["suggestion"]
+            else ""
+        )
+        console.print(
+            f"✗ Unknown model '{unknown['model']}': not in the OpenRouter catalog{hint}",
+            style="red",
+            soft_wrap=True,
+        )
+
     for over in est.get("over_output_limit", []):
         console.print(
             f"⚠️  {over['setting']} ({over['budget']}) is above {over['model']}'s"
             f" output limit ({over['limit']} tokens) — lower it to {over['limit']}"
             " or less.",
             style="yellow",
+            soft_wrap=True,
         )
 
     for model in est["missing_pricing"]:
         console.print(
             f"⚠️  No pricing for '{model}' — excluded from the estimate.",
             style="yellow",
+            soft_wrap=True,
         )
 
     budget = est["max_cost_usd"]
@@ -383,6 +401,8 @@ def _comparison_note_and_style(row) -> tuple[str, str | None]:
     """A ``compare`` row's Notes text and colour."""
     if row["present_in"] != "both":
         return {"a_only": "only in A", "b_only": "only in B"}[row["present_in"]], None
+    if row.get("same_cases") is False:
+        return "different test cases", "yellow"
     errors_a, errors_b = row.get("errors_a"), row.get("errors_b")
     note = f"pipeline errors {errors_a} → {errors_b}" if errors_a or errors_b else ""
     if errors_a != errors_b:
@@ -404,11 +424,11 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
     """
     console = console or make_console()
     table = Table(title=f"DELTA: {diff_result['run_a']} → {diff_result['run_b']}")
-    table.add_column("Model")
-    table.add_column("Prompt")
-    table.add_column("Quality Δ", justify="right")
-    table.add_column("Cost Δ", justify="right")
-    table.add_column("Notes")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Prompt", overflow="fold")
+    table.add_column("Quality Δ", justify="right", overflow="fold")
+    table.add_column("Cost Δ", justify="right", overflow="fold")
+    table.add_column("Notes", overflow="fold")
     for row in diff_result["rows"]:
         note, style = _comparison_note_and_style(row)
         table.add_row(
@@ -453,10 +473,10 @@ def _render_case_combo(combo, console: Console) -> None:
         console.print(f"{label}: no case changes", style="dim")
         return
     table = Table(title=f"CASE CHANGES — {label}")
-    table.add_column("Test case")
-    table.add_column("Change")
-    table.add_column("A → B")
-    table.add_column("Score Δ", justify="right")
+    table.add_column("Test case", overflow="fold")
+    table.add_column("Change", overflow="fold")
+    table.add_column("A → B", overflow="fold")
+    table.add_column("Score Δ", justify="right", overflow="fold")
     for row in changed:
         text, style = _TRANSITION_STYLE[row["transition"]]
         a_to_b = f"{row['a_state'] or '—'} → {row['b_state'] or '—'}"
@@ -497,16 +517,16 @@ def render_detailed(detailed_result, console: Console | None = None) -> None:
     if summary["worst_regressed"]:
         total_combos = len(detailed_result["case_combos"])
         worst = Table(title="WORST-REGRESSED CASES")
-        worst.add_column("Test case")
-        worst.add_column("Regressed in", justify="right")
+        worst.add_column("Test case", overflow="fold")
+        worst.add_column("Regressed in", justify="right", overflow="fold")
         for item in summary["worst_regressed"]:
             worst.add_row(item["id"], f"{item['count']}/{total_combos} combos")
         console.print(worst)
 
     if summary["tag_net"]:
         tags = Table(title="PER-TAG CONCENTRATION (net case change)")
-        tags.add_column("Tag")
-        tags.add_column("Net", justify="right")
+        tags.add_column("Tag", overflow="fold")
+        tags.add_column("Net", justify="right", overflow="fold")
         for item in summary["tag_net"]:
             net = item["net"]
             style = "red" if net < 0 else "green" if net > 0 else None

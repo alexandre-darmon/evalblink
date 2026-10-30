@@ -11,3 +11,4 @@ results/*
 dist/
 build/
 .claude/worktrees/
+.coverage

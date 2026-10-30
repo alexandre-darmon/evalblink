@@ -197,6 +197,7 @@ test_cases:
 | `models` | ✅ | List of OpenRouter model IDs |
 | `quality_threshold` | — | Top-level CI/CD gate: exits 1 if best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
+| `gate` | — | `{model, prompt}`, either optional: the `quality_threshold` gate checks the combos it names instead of the best combo of the run |
 | `concurrency` | — | Max parallel API requests — a whole number from 1 to 100 (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
@@ -221,6 +222,8 @@ test_cases:
 > **Three threshold fields, three distinct concepts.** `quality_threshold` at the top level (0–100 %) is the CI/CD gate on the best combo's aggregate score. `evaluation.quality_threshold` (0–1) is the per-case pass threshold for `weighted_match`. `evaluation.judge_threshold` (0–1) is the per-case pass threshold for `llm_judge`. All three can coexist in one config.
 
 > **Self-preference warning:** if `evaluation.judge_model` shares a vendor prefix with any model in `models` (e.g. `anthropic/claude-*` judging `anthropic/claude-*`), evalblink emits a warning at run start. Self-preference bias runs 10–25% in magnitude — use a judge from a different model family when possible.
+
+> **Unknown keys:** a top-level key the code doesn't read is an error with a `did you mean` suggestion (a misspelled `quality_threshold` would silently disable the gate); an unknown nested key is a warning naming its place. Keys starting with `_` or `x-` are free.
 
 > **Static validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
 >
@@ -476,7 +479,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 - Prompt tokens estimated as `len(rendered_text) / 4`
 - Completion tokens use the configured `max_tokens` as a ceiling, or the model's output limit if lower — per combo, that × the number of test cases
 - Judge tokens estimated separately per `llm_judge` case (prompt + criteria + `max_tokens` worth of response in, `evaluation.judge_max_tokens` out, default 4096); each row's `Est cost` includes its judge share, and the `Judge cost (llm_judge cases)` line is printed only when the estimated judge cost is non-zero (not with a free judge model)
-- Models missing from the pricing catalog, or priced there with a negative or non-numeric value (OpenRouter quotes `-1` for its `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`)
+- A model absent from the catalog is reported as `✗ Unknown model '<id>': not in the OpenRouter catalog — did you mean '<closest>'?` and `--dry-run` exits 1. A model listed with a negative or non-numeric price (OpenRouter quotes `-1` for its `openrouter/*` routers) has unknown pricing: it is excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`)
 - Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
 - Exits 1 if the estimate exceeds `max_cost_usd`; exits 0 otherwise
 
@@ -553,9 +556,10 @@ A cached entry is checked exactly like a fresh response: one that can't be read 
 > Cache + `temperature: 0` = fully reproducible benchmarks.
 
 ```bash
-evalblink cache stats          # entry count and total size on disk
-evalblink cache clear          # prints the entry count only — deletes nothing
-evalblink cache clear --yes    # delete every entry
+evalblink cache stats            # cached responses, their size, and whether the model catalog is cached
+evalblink cache clear            # prints the response count only — deletes nothing
+evalblink cache clear --yes      # delete every cached response (the model catalog is kept)
+evalblink cache clear --yes --all  # also the cached model catalog
 ```
 
 Both `stats` and `clear` count every `.json` file in `.evalblink_cache/`, including `models.json`.
@@ -571,15 +575,19 @@ evalblink run                               # the only YAML in benchmarks/, else
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
 evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
 evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
+evalblink run my_benchmark.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
+evalblink run my_benchmark.yaml --tag edge_case --limit 5     # a slice of the test cases
 
 # Validate a config (errors and warnings, no API calls)
 evalblink validate benchmarks/classification.yaml
 
 # Compare two finished runs (quality + cost deltas; offline, no API calls)
-evalblink compare results/<run_a>.json results/<run_b>.json
-evalblink compare results/<run_a>.json results/<run_b>.json --detailed  # per-case transitions
+evalblink compare                                        # the two latest runs of a benchmark
+evalblink compare <run_a> <run_b> --detailed             # paths, run IDs or unique prefixes; per-case transitions
+evalblink compare baseline.json --fail-on-regression 2   # CI: the latest run vs a kept baseline; exit 1 on a drop > 2 points
 
 # Regenerate Markdown report from existing JSON
+evalblink report                                         # the latest run
 evalblink report results/<run>.json
 
 # List past runs
@@ -768,7 +776,7 @@ Data used per model:
 2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`) → exit 1 (results are still written).
 3. Otherwise the `quality_threshold` gate decides, fail-safe: for each combination the gate score is passed / total cases, so every case that could not be scored counts as a failure (`analysis.summarize` → `gate_score`). Best gate score ≥ `quality_threshold` → exit 0, below it → exit 1 (when errors are what pulled it below, the FAIL line says so). No `quality_threshold` → gate not enforced, exit 0. The record's `insights.passed` matches: `false` whenever nothing could be scored.
 
-`--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
+`--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the catalog, 0 otherwise. A top-level `gate: {model, prompt}` makes the gate check those combos instead of the best one, and the PASS/FAIL line names them. Between runs, `evalblink compare <baseline> --fail-on-regression POINTS` exits 1 when a combo's fail-safe pass rate (unscored cases count as failures) drops by more than `POINTS` against the latest run of the same benchmark and `run` filters.
 
 Per-case pipeline errors never abort the run: they are counted under Errors and excluded from the displayed Score, while the gate counts them as failures (a run where 9 of 10 calls failed can't pass on the 1 that was scored); when any occurred, the run ends with a prominent warning giving their count.
 

@@ -195,6 +195,7 @@ evalblink run benchmarks/exact_match_classification.yaml
 | `models` | ✅ | List of OpenRouter model IDs |
 | `quality_threshold` | — | Top-level CI/CD gate: `evalblink run` exits 1 if the best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
+| `gate` | — | `{model, prompt}`, either optional: the `quality_threshold` gate checks the combos it names instead of the best combo of the run |
 | `concurrency` | — | Max parallel API requests — a whole number from 1 to 100 (default: `5`) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
@@ -220,6 +221,7 @@ evalblink run benchmarks/exact_match_classification.yaml
 > **Validation:** `evalblink validate` — and `evalblink run`, which validates first — reports config mistakes as errors (exit 1) instead of failing mid-run:
 >
 > - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type; a self-referencing YAML alias (`&a [*a]`), which could not be written to the results JSON.
+> - **Unknown keys:** a top-level key the code doesn't read is an error, with a suggestion when one is close (`unknown key 'qualty_threshold' — did you mean 'quality_threshold'?`): a misspelled `quality_threshold` would otherwise switch the CI gate off without a word. An unknown key inside `inference`, `evaluation`, a prompt or a test case is a warning naming where it is. Keys starting with `_` or `x-` are yours (YAML anchors, notes) and never flagged.
 > - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
 > - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
@@ -238,15 +240,21 @@ evalblink run benchmarks/classification.yaml
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
 evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
 evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
+evalblink run my_benchmark.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
+evalblink run my_benchmark.yaml --tag edge_case --limit 5     # a slice of the test cases
+python -m evalblink run …                                 # same CLI when `evalblink` isn't on PATH
 
 # Validate a config file (errors and warnings, no API calls)
 evalblink validate benchmarks/classification.yaml
 
 # Compare two runs (quality + cost deltas; offline)
+evalblink compare                                        # the two latest runs of a benchmark
 evalblink compare results/<run_a>.json results/<run_b>.json
-evalblink compare results/<run_a>.json results/<run_b>.json --detailed  # per-case transitions
+evalblink compare <run_a> <run_b> --detailed             # run IDs or unique prefixes; per-case transitions
+evalblink compare baseline.json --fail-on-regression 2   # CI: the latest run vs a kept baseline; exit 1 on a drop > 2 points
 
 # Regenerate a Markdown report from an existing JSON result
+evalblink report                                         # the latest run
 evalblink report results/<run>.json
 
 # List past runs
@@ -467,7 +475,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 ✓ Within budget: estimate $0.089304 ≤ max_cost_usd $10.000000.
 ```
 
-Per combo, **Est completion tok** is `max_tokens` (or the model's output limit, if lower) × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog, or priced there with a negative or non-numeric value (such as the `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`). Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
+Per combo, **Est completion tok** is `max_tokens` (or the model's output limit, if lower) × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. A model that isn't in the catalog at all is almost always a typo: `--dry-run` prints `✗ Unknown model 'openai/gpt-4o-mni': not in the OpenRouter catalog — did you mean 'openai/gpt-4o-mini'?` and exits 1. A model listed with a negative or non-numeric price (such as the `openrouter/*` routers) has unknown pricing: it is excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`). Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
 
 Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
@@ -521,12 +529,13 @@ No single test case can crash a run: anything unexpected while rendering or scor
 Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached: `--no-cache` retries it for that run only (it neither reads nor writes the cache), so run `evalblink cache clear --yes` to drop the bad entry for good. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example the cache directory is read-only), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
 
 ```bash
-evalblink cache stats          # entry count and total size on disk
-evalblink cache clear          # prints the entry count only — deletes nothing
-evalblink cache clear --yes    # delete every entry
+evalblink cache stats            # cached responses, their size, and whether the model catalog is cached
+evalblink cache clear            # prints the response count only — deletes nothing
+evalblink cache clear --yes      # delete every cached response
+evalblink cache clear --yes --all  # also the cached model catalog (refetched on next use)
 ```
 
-Both commands also count `.evalblink_cache/models.json`, the OpenRouter model catalog cached for `--dry-run`, `models` and `init`.
+The model catalog (`.evalblink_cache/models.json`, used by `--dry-run`, `models` and `init`) is counted apart from responses, and `clear` keeps it unless you pass `--all`.
 
 > Cache + `temperature: 0` = fully reproducible benchmarks.
 
@@ -585,7 +594,17 @@ Changed combos are listed first. Scores leave out pipeline-error cases, so when 
 - **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `--dry-run` needs no API key.
 - **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`). The results are still written.
 - **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The JSON record's `insights.passed` matches the exit code: it is `false` whenever nothing could be scored, even with `quality_threshold: 0` or none. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
-- `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
+- **`gate:`** narrows the gate to one combo: `gate: {model: openai/gpt-4o-mini, prompt: v2}` makes the PASS/FAIL line read `PASS: openai/gpt-4o-mini / v2 score meets quality_threshold (80).` Either key can be left out. A `--model` / `--prompt` filter that removes the gated combo drops the gate for that run, with a note.
+- `--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the OpenRouter catalog (with a `did you mean` suggestion), 0 otherwise.
+- **Regression check between runs:** `evalblink compare <baseline> --fail-on-regression POINTS` compares a kept run record with the latest run of the same benchmark (and the same `run` filters), and exits 1 when a combo's pass rate drops by more than `POINTS` (`0` = any drop beyond ±0.05). The rate counts cases that couldn't be scored as failures, like the gate, so a run that breaks with new API errors fails it. Combos that ran different test cases (a `--tag` / `--limit` slice against a full run) aren't compared, and when no combo can be compared at all — the test set changed, or a model was renamed — it exits 1 and asks you to refresh the baseline. With no other run to compare with, it exits 0 with a note.
+
+```yaml
+# Keep a baseline record in the repo (copy one from results/ after a good run).
+- run: evalblink run my_benchmark.yaml
+  env:
+    OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+- run: evalblink compare benchmarks/baseline.json --fail-on-regression 2
+```
 
 ---
 

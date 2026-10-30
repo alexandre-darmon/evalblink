@@ -25,7 +25,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Live model catalog (pricing + context) is cached on disk for a day so a
 # dry-run estimate doesn't refetch it on every invocation (PRD §15).
-MODELS_CACHE_PATH = os.path.join(cache.CACHE_DIR, "models.json")
+MODELS_CACHE_PATH = os.path.join(cache.CACHE_DIR, cache.CATALOG_FILE)
 # Bumped when the cached fields change; an older cache file is refetched.
 MODELS_CACHE_FORMAT = 2
 MODELS_TTL_SECONDS = 24 * 3600
