@@ -740,7 +740,7 @@ def test_every_key_in_the_readme_config_table_is_known():
     table = readme[
         readme.index("## Configuration Reference") : readme.index("## CLI Reference")
     ]
-    documented = re.findall(r"^\| `([^`]+)`", table, flags=re.M)
+    documented = re.findall(r"^\| `([^`]+)`", table, flags=re.MULTILINE)
     assert len(documented) > 15, "the config table moved — update this test"
     for key in documented:
         *parents, leaf = key.replace("[]", "").split(".")
