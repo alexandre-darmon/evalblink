@@ -302,9 +302,9 @@ conv_004,"I was charged twice, and the parcel never arrived.",billing,bill;order
 ```
 
 - **Columns** `id`, `evaluation`, `expected_output`, `criteria`, `reference`, `tags` and `human_score` are the test-case fields. Every other column is a template variable (`conversation` above fills `{{ conversation }}`); global `variables:` still apply.
-- **CSV / TSV:** the first row names the columns. `tags` are separated by `;`. An empty cell leaves a field unset, while an empty variable stays an empty string. A `weighted_match` `expected_output` is a JSON array in its cell. Files saved by Excel as "CSV UTF-8" (with a byte-order mark) work.
-- **JSONL:** one JSON object per line, with the same keys as a YAML test case; extra keys are variables too.
-- **No `id` column?** Each row is named after its line (`line_2`, `line_3`…).
+- **CSV / TSV:** the first row names the columns; field headers match whatever their case (`ID`, `Tags`, `Expected Output`). `tags` are separated by `;`. An empty cell leaves a field unset, while an empty variable stays an empty string. A `weighted_match` `expected_output` is a JSON array in its cell. Every row must have one cell per column, and an unclosed quote is an error rather than a cell that swallows the next rows. Excel's exports work: "CSV UTF-8" (with a byte-order mark), and the `;`-separated CSV it writes in locales that use a decimal comma.
+- **JSONL** (or `.ndjson`): one JSON object per line, with the same keys as a YAML test case; extra keys are variables too, and `null` leaves a field unset.
+- **No `id` column?** Each row is named after the line it starts on (`line_2`, `line_3`…).
 - Mistakes stop before any API call with the file and line: `Invalid test cases in bench.yaml: cases.csv:4: 3 cells but 2 columns — quote values that contain the delimiter`. A column whose name is close to a field (`expeced_output`) gets a warning, since it would otherwise silently become a variable.
 
 The file is expanded into the usual list before validation, so `validate`, `--dry-run`, the run filters and every report treat its rows exactly like YAML test cases. [`benchmarks/csv_classification.yaml`](https://github.com/alexandre-darmon/evalblink/blob/main/benchmarks/csv_classification.yaml) is a complete example.

@@ -7,7 +7,7 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 ## [0.1.3] — 2026-10-30
 
 ### Added
-- Test cases from a CSV, TSV or JSONL file: `test_cases: {file: cases.csv, evaluation: exact_match}`, relative to the YAML. Case-field columns keep their meaning, every other column is a template variable, and errors name the file and line. Example: `benchmarks/csv_classification.yaml`.
+- Test cases from a CSV, TSV or JSONL file: `test_cases: {file: cases.csv, evaluation: exact_match}`, relative to the YAML. Case-field columns keep their meaning (headers match whatever their case), every other column is a template variable, Excel exports (BOM, `;`-separated) work, and errors — a short row, an unclosed quote — name the file and line. Example: `benchmarks/csv_classification.yaml`.
 - The `init` starter shows how to switch to a file.
 
 ## [0.1.2] — 2026-10-30
