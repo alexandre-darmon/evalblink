@@ -8,7 +8,8 @@ decides — ``reporter.render_estimate`` formats the result.
 Estimates are deliberately rough and honest:
 - prompt tokens ≈ ``len(text) / 4`` (the ~4-chars-per-token rule of thumb),
 - completion tokens = the configured ``max_tokens`` (a ceiling — real outputs
-  are usually shorter).
+  are usually shorter), capped at the model's own output limit from the catalog;
+  a budget above that limit is reported in ``over_output_limit``.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ import math
 
 from .runner import render_template
 from .schemas import DEFAULT_JUDGE_MAX_TOKENS, DEFAULT_MAX_TOKENS
-
-# Mirrors the fixed judge budget in ``evaluator.evaluate_llm_judge``.
 
 
 def _est_tokens(text) -> int:
@@ -40,6 +39,17 @@ def _price(models_meta, model, missing):
     return meta["prompt"], meta["completion"]
 
 
+def _capped(models_meta, model, budget, setting, over):
+    """``budget`` capped at ``model``'s output limit; records each excess once."""
+    cap = (models_meta.get(model) or {}).get("max_output")
+    if cap is None or budget <= cap:
+        return budget
+    entry = {"model": model, "setting": setting, "budget": budget, "limit": cap}
+    if entry not in over:
+        over.append(entry)
+    return cap
+
+
 def estimate(config, models_meta) -> dict:
     """Estimate the cost of running ``config`` against ``models_meta`` pricing.
 
@@ -54,6 +64,7 @@ def estimate(config, models_meta) -> dict:
     if judge_max_tokens is None:
         judge_max_tokens = DEFAULT_JUDGE_MAX_TOKENS
     missing: list = []
+    over: list = []
 
     rows = []
     total_cost = 0.0
@@ -61,6 +72,9 @@ def estimate(config, models_meta) -> dict:
 
     for model in config["models"]:
         cand_prompt_price, cand_completion_price = _price(models_meta, model, missing)
+        cand_tokens = _capped(
+            models_meta, model, max_tokens, "inference.max_tokens", over
+        )
         for prompt in config["prompts"]:
             est_prompt_tokens = 0
             est_completion_tokens = 0
@@ -72,24 +86,31 @@ def estimate(config, models_meta) -> dict:
                 )
                 prompt_tok = _est_tokens((rendered_system or "") + rendered)
                 est_prompt_tokens += prompt_tok
-                est_completion_tokens += max_tokens
+                est_completion_tokens += cand_tokens
                 est_cost += (
-                    prompt_tok * cand_prompt_price + max_tokens * cand_completion_price
+                    prompt_tok * cand_prompt_price + cand_tokens * cand_completion_price
                 )
                 if test_case.get("evaluation") == "llm_judge":
                     judge_prompt_price, judge_completion_price = _price(
                         models_meta, judge_model, missing
                     )
                     # The judge sees the rendered prompt, the criteria, and the
-                    # candidate's response (unknown here — assume max_tokens worth).
+                    # candidate's response (unknown here — assume its full budget).
                     judge_prompt_tok = (
                         prompt_tok
                         + _est_tokens(test_case.get("criteria", ""))
-                        + max_tokens
+                        + cand_tokens
+                    )
+                    judge_tokens = _capped(
+                        models_meta,
+                        judge_model,
+                        judge_max_tokens,
+                        "evaluation.judge_max_tokens",
+                        over,
                     )
                     est_judge_cost += (
                         judge_prompt_tok * judge_prompt_price
-                        + judge_max_tokens * judge_completion_price
+                        + judge_tokens * judge_completion_price
                     )
             rows.append(
                 {
@@ -111,6 +132,7 @@ def estimate(config, models_meta) -> dict:
         "total_cost": total_cost,
         "judge_cost": total_judge_cost,
         "missing_pricing": missing,
+        "over_output_limit": over,
         "max_cost_usd": max_cost_usd,
         "over_budget": over_budget,
     }

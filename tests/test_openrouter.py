@@ -104,6 +104,7 @@ def test_fetch_models_parses_and_caches(client_factory, _models_cache):
         "completion": 0.002,
         "context_length": 8000,
         "text": True,
+        "max_output": None,
     }
     # Missing completion price defaults to 0 for free models.
     assert models["free/x"]["completion"] == 0.0
@@ -115,7 +116,12 @@ def test_fetch_models_parses_and_caches(client_factory, _models_cache):
 def test_fetch_models_uses_fresh_cache(client_factory, _models_cache):
     with open(_models_cache, "w") as f:
         json.dump(
-            {"fetched_at": time.time(), "models": {"cached/m": {"prompt": 9.0}}}, f
+            {
+                "format": openrouter.MODELS_CACHE_FORMAT,
+                "fetched_at": time.time(),
+                "models": {"cached/m": {"prompt": 9.0}},
+            },
+            f,
         )
     client = client_factory(_catalog())
     models = fetch_models(client)
@@ -126,6 +132,7 @@ def test_fetch_models_uses_fresh_cache(client_factory, _models_cache):
             "completion": 0.0,
             "context_length": None,
             "text": None,
+            "max_output": None,
         }
     }
     assert len(client.calls) == 0  # no network
@@ -143,7 +150,14 @@ def test_fetch_models_refetches_stale_cache(client_factory, _models_cache):
 
 def test_fetch_models_bypass_cache(client_factory, _models_cache):
     with open(_models_cache, "w") as f:
-        json.dump({"fetched_at": time.time(), "models": {"cached/m": {}}}, f)
+        json.dump(
+            {
+                "format": openrouter.MODELS_CACHE_FORMAT,
+                "fetched_at": time.time(),
+                "models": {"cached/m": {}},
+            },
+            f,
+        )
     client = client_factory(_catalog())
     models = fetch_models(client, use_cache=False)
     assert "a/b" in models
@@ -442,6 +456,7 @@ def test_catalog_unknown_prices_and_bad_context_are_normalized(
         "completion": 0.0,
         "context_length": None,
         "text": None,
+        "max_output": None,
     }
     assert models["h/x"]["prompt"] is None and models["h/x"]["context_length"] is None
     assert models["ok/x"]["context_length"] == 8192
@@ -452,6 +467,7 @@ def test_stale_format_models_cache_is_renormalized(client_factory, _models_cache
     with open(_models_cache, "w") as f:
         json.dump(
             {
+                "format": openrouter.MODELS_CACHE_FORMAT,
                 "fetched_at": time.time(),
                 "models": {
                     "r/x": {"prompt": -1, "completion": -1, "context_length": "?"}
@@ -464,6 +480,7 @@ def test_stale_format_models_cache_is_renormalized(client_factory, _models_cache
         "completion": None,
         "context_length": None,
         "text": None,
+        "max_output": None,
     }
 
 
@@ -562,3 +579,35 @@ def test_text_modality_survives_the_cache(
     entry = {"id": "m/x", "pricing": {"prompt": "0"}, "architecture": architecture}
     assert fetch_models(client_factory({"data": [entry]}))["m/x"]["text"] is text
     assert fetch_models(client_factory({"data": []}))["m/x"]["text"] is text  # cached
+
+
+@pytest.mark.parametrize(
+    "top_provider, cap",
+    [
+        ({"max_completion_tokens": 2048}, 2048),
+        ({"max_completion_tokens": "4000"}, 4000),
+        ({"max_completion_tokens": None}, None),
+        ({"max_completion_tokens": 0}, None),
+        ({"max_completion_tokens": -5}, None),
+        ({"max_completion_tokens": True}, None),
+        ({"max_completion_tokens": 1e400}, None),
+        ({}, None),
+        (None, None),
+        ([2048], None),
+    ],
+)
+def test_output_cap_survives_the_cache(
+    client_factory, _models_cache, top_provider, cap
+):
+    entry = {"id": "m/x", "pricing": {"prompt": "0"}, "top_provider": top_provider}
+    assert fetch_models(client_factory({"data": [entry]}))["m/x"]["max_output"] == cap
+    assert fetch_models(client_factory({"data": []}))["m/x"]["max_output"] == cap
+
+
+def test_a_cache_from_an_older_release_is_refetched(client_factory, _models_cache):
+    # 0.1.0 wrote no "format" and no text / max_output fields.
+    with open(_models_cache, "w") as f:
+        json.dump({"fetched_at": time.time(), "models": {"old/m": {}}}, f)
+    client = client_factory(_catalog())
+    assert "a/b" in fetch_models(client) and len(client.calls) == 1
+    assert "a/b" in fetch_models(client) and len(client.calls) == 1  # now cached

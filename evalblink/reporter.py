@@ -322,9 +322,18 @@ def render_estimate(est, console: Console | None = None) -> None:
         console.print(f"Judge cost (llm_judge cases): ${est['judge_cost']:.6f}")
     console.print(f"Estimated total cost: ${est['total_cost']:.6f}", style="bold")
     console.print(
-        "Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.",
+        "Estimate only — completion tokens assume max_tokens (capped at each"
+        " model's output limit); prompt tokens ≈ chars/4.",
         style="dim",
     )
+
+    for over in est.get("over_output_limit", []):
+        console.print(
+            f"⚠️  {over['setting']} ({over['budget']}) is above {over['model']}'s"
+            f" output limit ({over['limit']} tokens) — lower it to {over['limit']}"
+            " or less.",
+            style="yellow",
+        )
 
     for model in est["missing_pricing"]:
         console.print(
@@ -370,6 +379,22 @@ def _fmt_cost_delta(delta) -> str:
     return f"{delta:+.4f} {arrow}"
 
 
+def _comparison_note_and_style(row) -> tuple[str, str | None]:
+    """A ``compare`` row's Notes text and colour."""
+    if row["present_in"] != "both":
+        return {"a_only": "only in A", "b_only": "only in B"}[row["present_in"]], None
+    errors_a, errors_b = row.get("errors_a"), row.get("errors_b")
+    note = f"pipeline errors {errors_a} → {errors_b}" if errors_a or errors_b else ""
+    if errors_a != errors_b:
+        return note, "yellow"  # scored over different cases: not like-for-like
+    delta = row["score_delta"]
+    if delta > 0.05:
+        return note, "green"
+    if delta < -0.05:
+        return note, "red"
+    return note, None
+
+
 def render_comparison(diff_result, console: Console | None = None) -> None:
     """Print the run-to-run delta table (quality + cost) for ``compare``.
 
@@ -384,21 +409,14 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
     table.add_column("Quality Δ", justify="right")
     table.add_column("Cost Δ", justify="right")
     table.add_column("Notes")
-    note_for = {"a_only": "only in A", "b_only": "only in B", "both": ""}
     for row in diff_result["rows"]:
-        delta = row["score_delta"]
-        style = None
-        if delta is not None:
-            if delta > 0.05:
-                style = "green"
-            elif delta < -0.05:
-                style = "red"
+        note, style = _comparison_note_and_style(row)
         table.add_row(
             row["model"],
             row["prompt_id"],
-            _fmt_score_delta(delta),
+            _fmt_score_delta(row["score_delta"]),
             _fmt_cost_delta(row["cost_delta"]),
-            note_for[row["present_in"]],
+            note,
             style=style,
         )
     console.print(table)

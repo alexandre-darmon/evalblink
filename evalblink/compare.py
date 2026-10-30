@@ -125,9 +125,11 @@ def diff(record_a, record_b) -> dict:
     """Per-combo deltas from run A to run B over the union of their combos.
 
     Each row is ``{model, prompt_id, score_a, score_b, score_delta, cost_a,
-    cost_b, cost_delta, present_in}`` where ``present_in`` is
-    ``"both" | "a_only" | "b_only"``. Combos missing from one side carry ``None``
-    for that side's score/cost and a ``None`` delta. Rows are sorted with
+    cost_b, cost_delta, errors_a, errors_b, present_in}`` where ``present_in``
+    is ``"both" | "a_only" | "b_only"``. Combos missing from one side carry
+    ``None`` for that side's score/cost/errors and a ``None`` delta. Scores
+    exclude pipeline-error cases, so a shared combo whose error count differs
+    is not like-for-like; the verdict says how many there are. Rows are sorted with
     changed-or-missing combos first, then by model/prompt name.
     """
     index_a = _index(record_a)
@@ -137,6 +139,7 @@ def diff(record_a, record_b) -> dict:
     rows = []
     improved = 0
     comparable = 0
+    uneven = 0
     for key in keys:
         a = index_a.get(key)
         b = index_b.get(key)
@@ -144,9 +147,14 @@ def diff(record_a, record_b) -> dict:
             present_in = "both"
             score_delta = b["score"] - a["score"]
             cost_delta = b["total_cost"] - a["total_cost"]
-            comparable += 1
-            if score_delta > _SCORE_EPS:
-                improved += 1
+            # Scores exclude pipeline errors: a combo whose error count changed
+            # was scored over different cases, so it isn't counted either way.
+            if (a.get("errors") or 0) != (b.get("errors") or 0):
+                uneven += 1
+            else:
+                comparable += 1
+                if score_delta > _SCORE_EPS:
+                    improved += 1
         elif b:
             present_in = "b_only"
             score_delta = cost_delta = None
@@ -163,13 +171,15 @@ def diff(record_a, record_b) -> dict:
                 "cost_a": a["total_cost"] if a else None,
                 "cost_b": b["total_cost"] if b else None,
                 "cost_delta": cost_delta,
+                "errors_a": (a.get("errors") or 0) if a else None,
+                "errors_b": (b.get("errors") or 0) if b else None,
                 "present_in": present_in,
             }
         )
 
     rows.sort(
         key=lambda r: (
-            r["present_in"] == "both" and _is_stable(r),
+            r["present_in"] == "both" and _is_stable(r) and not _uneven(r),
             r["model"],
             r["prompt_id"],
         )
@@ -191,7 +201,7 @@ def diff(record_a, record_b) -> dict:
         "schema_b": schema_b,
         "version_note": version_note,
         "rows": rows,
-        "verdict": _verdict(improved, comparable, rows),
+        "verdict": _verdict(improved, comparable, uneven, rows),
     }
 
 
@@ -201,11 +211,24 @@ def _is_stable(row) -> bool:
     return delta is not None and abs(delta) <= _SCORE_EPS
 
 
-def _verdict(improved, comparable, rows) -> str:
-    """One-line summary of B versus A."""
+def _uneven(row) -> bool:
+    """A shared combo whose pipeline-error count changed between the runs."""
+    return row["present_in"] == "both" and row["errors_a"] != row["errors_b"]
+
+
+def _verdict(improved, comparable, uneven, rows) -> str:
+    """One-line summary of B versus A over like-for-like shared combos."""
     only = [r for r in rows if r["present_in"] != "both"]
     only_note = f" {len(only)} combo(s) present in only one run." if only else ""
+    if uneven:
+        only_note += (
+            f" {uneven} shared combo(s) left out: their number of pipeline errors"
+            " (excluded from scores) changed, so their quality Δ is not"
+            " like-for-like."
+        )
     if not comparable:
+        if uneven:
+            return "No like-for-like shared combos." + only_note
         return "No combos in common between the two runs." + only_note
     if improved == comparable:
         return f"Run B improves quality on all {comparable} shared combo(s).{only_note}"

@@ -92,7 +92,9 @@ def summarize(results, quality_threshold) -> dict | None:
     fail-safe: ``gate_score`` is the best combo's pass rate with every unscored
     (pipeline-error) case counted as a failure, so a run where most calls failed
     can't pass on the few that were scored. When ``quality_threshold`` is
-    ``None`` no gate is configured, so ``passed`` is ``True``. Returns ``None`` when ``results`` is empty.
+    ``None`` no gate is configured, so ``passed`` is ``True`` — unless no case
+    at all could be scored, which never passes (``run`` exits 1 then too).
+    Returns ``None`` when ``results`` is empty.
     """
     if not results:
         return None
@@ -100,6 +102,8 @@ def summarize(results, quality_threshold) -> dict | None:
     breakdown = tag_breakdown(top)
     errors = sum(c.get("errors") or 0 for c in results)
     gate_score = max(_gate_score(c) for c in results)
+    total = sum(c.get("total") or 0 for c in results)
+    nothing_scored = bool(total) and errors >= total
     return {
         "best_quality": top,
         "best_value": best_value(results),
@@ -108,6 +112,7 @@ def summarize(results, quality_threshold) -> dict | None:
         # Run total (every combo), matching the end-of-run pipeline-error warning.
         "errors": errors,
         "gate_score": gate_score,
-        "passed": quality_threshold is None or gate_score >= quality_threshold,
+        "passed": not nothing_scored
+        and (quality_threshold is None or gate_score >= quality_threshold),
         "quality_threshold": quality_threshold,
     }

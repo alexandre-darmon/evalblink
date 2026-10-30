@@ -25,6 +25,8 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Live model catalog (pricing + context) is cached on disk for a day so a
 # dry-run estimate doesn't refetch it on every invocation (PRD §15).
 MODELS_CACHE_PATH = os.path.join(cache.CACHE_DIR, "models.json")
+# Bumped when the cached fields change; an older cache file is refetched.
+MODELS_CACHE_FORMAT = 2
 MODELS_TTL_SECONDS = 24 * 3600
 
 # OpenRouter / upstream errors that are worth retrying: gateway timeouts and
@@ -255,11 +257,9 @@ def _price(value) -> float | None:
 
 
 def _normalize(meta: dict) -> dict:
-    """``{prompt, completion, context_length, text}`` with unknown values as ``None``."""
-    try:
-        context = int(meta.get("context_length"))
-    except (TypeError, ValueError, OverflowError):
-        context = None
+    """``{prompt, completion, context_length, text, max_output}`` with unknown
+    values as ``None``."""
+    context = _positive_int(meta.get("context_length"))
     text = meta.get("text")
     return {
         # An absent key reads as free (OpenRouter omits zero prices); None is unknown.
@@ -267,7 +267,19 @@ def _normalize(meta: dict) -> dict:
         "completion": _price(meta.get("completion", "")),
         "context_length": context,
         "text": text if isinstance(text, bool) else None,
+        # The provider's cap on completion tokens for this model.
+        "max_output": _positive_int(meta.get("max_output")),
     }
+
+
+def _positive_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
 
 
 def _is_text(architecture) -> bool | None:
@@ -280,7 +292,7 @@ def _is_text(architecture) -> bool | None:
 
 
 def _parse_models(data: list) -> dict:
-    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length, text}}``.
+    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length, text, max_output}}``.
 
     Prices are per-token USD floats (``0`` for free models) or ``None`` when the
     catalog's value is unusable; a malformed entry never sinks the whole catalog.
@@ -291,18 +303,22 @@ def _parse_models(data: list) -> dict:
             continue
         pricing = entry.get("pricing")
         pricing = pricing if isinstance(pricing, dict) else {}
+        top = entry.get("top_provider")
         models[entry["id"]] = _normalize(
             {
                 **pricing,
                 "context_length": entry.get("context_length"),
                 "text": _is_text(entry.get("architecture")),
+                "max_output": top.get("max_completion_tokens")
+                if isinstance(top, dict)
+                else None,
             }
         )
     return models
 
 
 def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
-    """Return ``{model_id: {prompt, completion, context_length, text}}`` from OpenRouter.
+    """Return ``{model_id: {prompt, completion, context_length, text, max_output}}`` from OpenRouter.
 
     The catalog is cached on disk for ``MODELS_TTL_SECONDS`` (24h); a fresh cache
     is served without a network call. Prices are per-token USD floats, or
@@ -313,7 +329,8 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
         try:
             with open(MODELS_CACHE_PATH) as f:
                 cached = json.load(f)
-            if time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS:
+            fresh = time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS
+            if fresh and cached.get("format") == MODELS_CACHE_FORMAT:
                 return {k: _normalize(v) for k, v in cached["models"].items()}
         except (
             OSError,
@@ -342,7 +359,15 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
     try:
         os.makedirs(cache.CACHE_DIR, exist_ok=True)
         with open(MODELS_CACHE_PATH, "w") as f:
-            json.dump({"fetched_at": time.time(), "models": models}, f, indent=4)
+            json.dump(
+                {
+                    "format": MODELS_CACHE_FORMAT,
+                    "fetched_at": time.time(),
+                    "models": models,
+                },
+                f,
+                indent=4,
+            )
     except OSError as exc:
         print(f"⚠️  Could not cache the model catalog ({exc}); continuing.")
     return models

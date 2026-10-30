@@ -162,3 +162,57 @@ def test_negative_or_unknown_catalog_price_is_missing_pricing():
         assert est["missing_pricing"] == ["m/x"]
         assert est["total_cost"] == 0.0
         assert est["over_budget"] is False
+
+
+def test_budgets_are_capped_at_the_models_output_limit():
+    config = _config(
+        [
+            {
+                "id": "c1",
+                "variables": {"q": "a"},
+                "evaluation": "llm_judge",
+                "criteria": "x",
+            },
+            {
+                "id": "c2",
+                "variables": {"q": "b"},
+                "evaluation": "llm_judge",
+                "criteria": "x",
+            },
+        ],
+        evaluation={"judge_model": "j/x"},
+        max_tokens=5000,
+    )
+    meta = {
+        "m/x": {**_meta(completion=1.0), "max_output": 2048},
+        "j/x": {**_meta(prompt=1.0, completion=1.0), "max_output": 1000},
+    }
+    est = estimate.estimate(config, meta)
+    assert est["rows"][0]["est_completion_tokens"] == 2 * 2048
+    assert est["over_output_limit"] == [
+        {
+            "model": "m/x",
+            "setting": "inference.max_tokens",
+            "budget": 5000,
+            "limit": 2048,
+        },
+        {
+            "model": "j/x",
+            "setting": "evaluation.judge_max_tokens",
+            "budget": JUDGE_MAX_TOKENS,
+            "limit": 1000,
+        },
+    ]
+    assert est["rows"][0]["est_cost"] == 2 * 2048  # candidate prompts are free
+    # The judge reads the prompt, the criteria and the capped candidate reply.
+    judge_in = 2 * (_est_tokens("a") + _est_tokens("x") + 2048)
+    assert est["judge_cost"] == judge_in + 2 * 1000
+    at_limit = estimate.estimate(
+        config,
+        {
+            "m/x": {**_meta(), "max_output": 5000},
+            "j/x": {**_meta(), "max_output": JUDGE_MAX_TOKENS},
+        },
+    )
+    assert at_limit["over_output_limit"] == []
+    assert at_limit["rows"][0]["est_completion_tokens"] == 2 * 5000

@@ -991,3 +991,67 @@ def test_judge_api_error_is_warned_and_recorded(fake_http, tmp_path, capsys):
     [record] = (tmp_path / "results").glob("*.json")
     case = json.loads(record.read_text())["results"][0]["test_cases"][0]
     assert case["status"] == "judge_api_error" and "no judge" in case["error"]
+
+
+# ── run / validate without a path ─────────────────────────────────────────────
+
+
+def _bench_dir(tmp_path, *names):
+    (tmp_path / "benchmarks").mkdir(exist_ok=True)
+    for name in names:
+        path = _write_cli_config(tmp_path)
+        path.rename(tmp_path / "benchmarks" / name)
+
+
+@pytest.mark.parametrize("command", ["validate", "run"])
+def test_no_path_uses_the_only_yaml_in_benchmarks(
+    monkeypatch, tmp_path, capsys, command
+):
+    monkeypatch.chdir(tmp_path)
+    _bench_dir(tmp_path, "mine.yaml")
+    (tmp_path / "benchmarks" / "notes.txt").write_text("not a config")
+    (tmp_path / "benchmarks" / "dir.yaml").mkdir()  # not a file
+    (tmp_path / "benchmarks" / "._mine.yaml").write_text("")  # macOS junk
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _run_cli([command])  # run stops at the missing key, after loading the config
+    captured = capsys.readouterr()
+    assert f"Using {os.path.join('benchmarks', 'mine.yaml')}" in captured.err
+    assert "Config not found" not in captured.out + captured.err
+
+
+def test_no_path_with_several_configs_lists_them(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _bench_dir(tmp_path, "a.yaml", "b.yml")
+    code = _run_cli(["validate"])
+    assert isinstance(code, str) and "Several configs" in code
+    assert "benchmarks/a.yaml" in code and "benchmarks/b.yml" in code
+
+
+def test_no_path_in_the_repo_keeps_the_example_default(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _bench_dir(tmp_path, "a.yaml", "exact_match_classification.yaml")
+    assert _run_cli(["validate"]) == 0
+    assert f"Using {main.DEFAULT_CONFIG}" in capsys.readouterr().err
+
+
+def test_no_path_and_no_benchmarks_suggests_init(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = _run_cli(["validate"])
+    assert isinstance(code, str) and "evalblink init" in code
+
+
+# ── models --text ─────────────────────────────────────────────────────────────
+
+
+def test_models_text_drops_only_known_non_text_models(monkeypatch, capsys):
+    catalog = {
+        "t/known": {"prompt": 0.0, "completion": 0.0, "text": True},
+        "t/unknown": {"prompt": 0.0, "completion": 0.0, "text": None},
+        "a/music": {"prompt": 0.0, "completion": 0.0, "text": False},
+    }
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    assert _run_cli(["models", "--free", "--text"]) == 0
+    out = capsys.readouterr().out
+    assert "t/known" in out and "t/unknown" in out and "a/music" not in out
