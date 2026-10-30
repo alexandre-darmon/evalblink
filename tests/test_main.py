@@ -116,12 +116,14 @@ def test_run_without_api_key_exits_1_before_any_call(monkeypatch, capsys, key):
     assert "OPENROUTER_API_KEY is not set" in capsys.readouterr().out
 
 
-def test_no_subcommand_errors(monkeypatch):
+def test_no_subcommand_prints_help_and_the_quickstart(monkeypatch, capsys):
     monkeypatch.setattr(main.sys, "argv", ["evalblink"])
     with pytest.raises(SystemExit) as exc:
         main.main()
-    # argparse exits 2 on a required-subcommand parse error.
-    assert exc.value.code == 2
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "QUICKSTART" in out and "evalblink init" in out
+    assert "OPENROUTER_API_KEY" in out
 
 
 # --- run --dry-run --------------------------------------------------------
@@ -133,7 +135,9 @@ def test_dry_run_estimates_without_running(monkeypatch):
     monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(main.openrouter, "fetch_models", lambda client: {"m": {}})
     monkeypatch.setattr(
-        main.estimate, "estimate", lambda config, meta: {"over_budget": False}
+        main.estimate,
+        "estimate",
+        lambda config, meta: {"over_budget": False, "unknown_models": []},
     )
     monkeypatch.setattr(
         main.reporter, "render_estimate", lambda est: seen.update(rendered=est)
@@ -150,7 +154,7 @@ def test_dry_run_estimates_without_running(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 0
-    assert seen["rendered"] == {"over_budget": False}
+    assert seen["rendered"] == {"over_budget": False, "unknown_models": []}
 
 
 def test_dry_run_exits_1_when_over_budget(monkeypatch):
@@ -199,7 +203,9 @@ def test_cache_clear_without_yes_shows_count(monkeypatch, capsys):
 
 def test_cache_clear_with_yes_deletes(monkeypatch, capsys):
     cleared = {}
-    monkeypatch.setattr(main.cache, "clear", lambda: cleared.update(called=True) or 5)
+    monkeypatch.setattr(
+        main.cache, "clear", lambda include_catalog: cleared.update(called=True) or 5
+    )
     monkeypatch.setattr(main.sys, "argv", ["evalblink", "cache", "clear", "--yes"])
     with pytest.raises(SystemExit) as exc:
         main.main()
@@ -909,6 +915,26 @@ def test_cache_clear_skips_a_directory_named_like_an_entry(monkeypatch, tmp_path
     assert [p.name for p in (tmp_path / ".evalblink_cache").iterdir()] == ["sub.json"]
 
 
+def test_cache_keeps_the_model_catalog_apart_from_responses(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    cache_dir = tmp_path / ".evalblink_cache"
+    cache_dir.mkdir()
+    (cache_dir / "k.json").write_text("{}")
+    (cache_dir / "models.json").write_text("{}")
+    assert _run_cli(["cache", "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "Cached responses : 1" in out and "Model catalog    : cached" in out
+    assert _run_cli(["cache", "clear"]) == 0
+    assert "1 cached response." in capsys.readouterr().out
+    assert _run_cli(["cache", "clear", "--yes"]) == 0
+    assert "Cleared 1 cache file." in capsys.readouterr().out
+    assert [p.name for p in cache_dir.iterdir()] == ["models.json"]
+    assert _run_cli(["cache", "clear", "--yes", "--all"]) == 0
+    assert list(cache_dir.iterdir()) == []
+
+
 def _good_record(**case):
     tc = {"id": "c1", "match_score": 1.0, "match_result": True, "total_cost": 0.0}
     tc.update(case)
@@ -1055,3 +1081,202 @@ def test_models_text_drops_only_known_non_text_models(monkeypatch, capsys):
     assert _run_cli(["models", "--free", "--text"]) == 0
     out = capsys.readouterr().out
     assert "t/known" in out and "t/unknown" in out and "a/music" not in out
+
+
+# ── run filters ───────────────────────────────────────────────────────────────
+
+
+def _filter_config(tmp_path):
+    return _write_cli_config(
+        tmp_path,
+        models=["m/a", "m/b"],
+        prompts=[
+            {"id": "v1", "template": "Q: {{ q }}"},
+            {"id": "v2", "template": "{{ q }}?"},
+        ],
+        test_cases=[
+            {
+                "id": f"c{i}",
+                "evaluation": "exact_match",
+                "expected_output": "yes",
+                "variables": {"q": str(i)},
+                "tags": ["odd" if i % 2 else "even"],
+            }
+            for i in range(1, 6)
+        ],
+        quality_threshold=50,
+        gate={"model": "m/b"},
+    )
+
+
+def test_run_filters_narrow_the_matrix(fake_http, tmp_path, capsys):
+    calls = fake_http(_ok("yes"))
+    path = _filter_config(tmp_path)
+    argv = ["run", str(path), "-m", "m/a", "-p", "v2", "--tag", "odd", "-n", "2"]
+    assert _run_cli(argv) == 0
+    assert len(calls) == 2  # 1 model × 1 prompt × 2 cases
+    assert {c["json"]["model"] for c in calls} == {"m/a"}
+    err = capsys.readouterr().err
+    assert "Filtered: 1 model(s) × 1 prompt(s) × 2 case(s)" in err
+    assert "gate ignored" in err  # the gate's m/b is filtered out
+
+
+@pytest.mark.parametrize(
+    "argv, message",
+    [
+        (["-m", "m/zzz"], "No model 'm/zzz' in the config. Available: m/a, m/b"),
+        (["-p", "v9"], "No prompt 'v9' in the config. Available: v1, v2"),
+        (["--tag", "nope"], "No test case has tag 'nope'."),
+    ],
+)
+def test_run_filters_name_what_exists(fake_http, tmp_path, argv, message):
+    fake_http(_ok("yes"))
+    code = _run_cli(["run", str(_filter_config(tmp_path)), *argv])
+    assert code == message
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "two"])
+def test_limit_must_be_positive(tmp_path, value, capsys):
+    assert _run_cli(["run", "x.yaml", "--limit", value]) == 2
+    assert "use 1 or more" in capsys.readouterr().err
+
+
+def test_gate_names_its_combo_in_the_verdict(fake_http, tmp_path, capsys):
+    fake_http(_ok("yes"))
+    path = _write_cli_config(
+        tmp_path, models=["m/a", "m/b"], quality_threshold=50, gate={"model": "m/b"}
+    )
+    assert _run_cli(["run", str(path)]) == 0
+    assert "PASS: m/b score meets quality_threshold (50)." in capsys.readouterr().out
+
+
+# ── dry-run: unknown model ────────────────────────────────────────────────────
+
+
+def test_dry_run_fails_on_a_model_missing_from_the_catalog(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    catalog = {"openai/gpt-4o-mini": {"prompt": 1e-7, "completion": 1e-7}}
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    path = _write_cli_config(tmp_path, models=["openai/gpt-4o-mni"])
+    assert _run_cli(["run", str(path), "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "Unknown model 'openai/gpt-4o-mni'" in out
+    assert "did you mean 'openai/gpt-4o-mini'?" in out
+    path = _write_cli_config(tmp_path, models=["openai/gpt-4o-mini"])
+    assert _run_cli(["run", str(path), "--dry-run"]) == 0
+
+
+# ── compare / report without paths ────────────────────────────────────────────
+
+
+def _results_dir(tmp_path, *runs):
+    """Write run records: (run_id, benchmark, score, errors) each."""
+    (tmp_path / "results").mkdir(exist_ok=True)
+    for run_id, benchmark, score, errors in runs:
+        record = _good_record()
+        record.update(run_id=run_id, benchmark=benchmark, timestamp=run_id[:17])
+        record["results"][0].update(score=score, errors=errors)
+        (tmp_path / "results" / f"{run_id}.json").write_text(json.dumps(record))
+
+
+def test_compare_without_paths_diffs_the_two_latest_runs_of_a_benchmark(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 90.0, 0),
+        ("2026-01-02_000000_b", "B", 70.0, 0),
+        ("2026-01-03_000000_other", "Other", 10.0, 0),
+        ("2026-01-04_000000_b", "B", 60.0, 0),
+    )
+    # Latest run is B's 01-04; it is compared with B's previous one, 01-02.
+    assert _run_cli(["compare"]) == 0
+    assert "2026-01-02_000000_b.json → results" in capsys.readouterr().err
+    assert _run_cli(["compare", "--fail-on-regression"]) == 1
+    assert "REGRESSION: a/b / v1 quality -10.0 points" in capsys.readouterr().out
+    assert _run_cli(["compare", "--fail-on-regression", "15"]) == 0
+    assert "No regression beyond 15 point(s)." in capsys.readouterr().out
+
+
+def test_compare_accepts_run_id_prefixes(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 50.0, 0),
+        ("2026-01-02_000000_b", "B", 90.0, 0),
+        ("2026-01-02_120000_b", "B", 90.0, 0),
+    )
+    assert (
+        _run_cli(["compare", "2026-01-01", "2026-01-02_12", "--fail-on-regression"])
+        == 0
+    )
+    code = _run_cli(["compare", "2026-01-01", "2026-01-02"])
+    assert isinstance(code, str) and "matches several runs" in code
+    code = _run_cli(["compare", "2026-01-01", "nope"])
+    assert isinstance(code, str) and "not found" in code.lower()
+
+
+def test_compare_regression_ignores_combos_whose_errors_changed(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 90.0, 0),
+        ("2026-01-02_000000_b", "B", 40.0, 3),  # dropped, but over other cases
+    )
+    assert _run_cli(["compare", "--fail-on-regression"]) == 0
+
+
+@pytest.mark.parametrize(
+    "runs, message",
+    [
+        ((), "No run records"),
+        ((("2026-01-01_000000_b", "B", 9.0, 0),), "Only one run of 'B'"),
+    ],
+)
+def test_compare_without_paths_explains_what_is_missing(
+    monkeypatch, tmp_path, runs, message
+):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(tmp_path, *runs)
+    code = _run_cli(["compare"])
+    assert isinstance(code, str) and message in code
+    code = _run_cli(["compare", "only-one.json"])
+    assert isinstance(code, str) and "Pass two runs" in code
+
+
+def test_report_without_a_path_uses_the_latest_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert isinstance(_run_cli(["report"]), str)  # no results/ yet
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 9.0, 0),
+        ("2026-01-02_000000_b", "B", 9.0, 0),
+    )
+    assert _run_cli(["report"]) == 0
+    assert "Using results/2026-01-02_000000_b.json" in capsys.readouterr().err
+    assert (tmp_path / "results" / "2026-01-02_000000_b.md").exists()
+    assert not (tmp_path / "results" / "2026-01-01_000000_b.md").exists()
+
+
+# ── tables never truncate ids ─────────────────────────────────────────────────
+
+
+def test_tables_wrap_long_ids_instead_of_cutting_them(monkeypatch, capsys):
+    long_id = "vendor/a-very-long-model-identifier-that-will-not-fit:free"
+    catalog = {long_id: {"prompt": 0.0, "completion": 0.0, "context_length": 1}}
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    monkeypatch.setenv("COLUMNS", "60")
+    assert _run_cli(["models"]) == 0
+    out = capsys.readouterr().out
+    assert "…" not in out
+    first_column = [
+        line.split("│")[1].strip() for line in out.splitlines() if line.startswith("│")
+    ]
+    assert "".join(first_column) == long_id

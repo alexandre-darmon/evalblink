@@ -14,6 +14,7 @@ Estimates are deliberately rough and honest:
 
 from __future__ import annotations
 
+import difflib
 import math
 
 from .runner import render_template
@@ -125,13 +126,27 @@ def estimate(config, models_meta) -> dict:
             total_cost += est_cost + est_judge_cost
             total_judge_cost += est_judge_cost
 
+    # Absent from a non-empty catalog: almost always a typo, and every call to
+    # it would fail — unlike a listed model whose price is just unknown.
+    unknown = [m for m in missing if models_meta and m not in models_meta]
+    unknown_models = [
+        {
+            "model": m,
+            "suggestion": next(
+                iter(difflib.get_close_matches(str(m), models_meta, n=1)), None
+            ),
+        }
+        for m in unknown
+    ]
+
     max_cost_usd = config.get("max_cost_usd")
     over_budget = max_cost_usd is not None and total_cost > max_cost_usd
     return {
         "rows": rows,
         "total_cost": total_cost,
         "judge_cost": total_judge_cost,
-        "missing_pricing": missing,
+        "missing_pricing": [m for m in missing if m not in unknown],
+        "unknown_models": unknown_models,
         "over_output_limit": over,
         "max_cost_usd": max_cost_usd,
         "over_budget": over_budget,

@@ -538,7 +538,9 @@ def test_dry_run_survives_every_catalog(cli, tmp_path):
             cli.serve([factory])
             code = cli(["run", path, "--dry-run"], f"dry-run {label}/{name}")
             if name == "negative":
-                assert code == 0  # all pricing unknown: $0, nothing over budget
+                # All pricing unknown: $0, nothing over budget — unless a model
+                # isn't in the catalog at all (markup/surrogate ids), which fails.
+                assert code == (0 if label in ("base", "judge_ref_big") else 1)
             shutil.rmtree(tmp_path / ".evalblink_cache", ignore_errors=True)
 
 

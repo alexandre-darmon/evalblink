@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 
@@ -21,6 +22,86 @@ WEIGHTED_DIMENSIONS = ("use_case", "percent", "order")
 MAX_CONCURRENCY = 100
 
 _SINGLE_BRACE_RE = re.compile(r"(?<!\{)\{(\w+)\}(?!\})")
+
+# Every key the pipeline reads, per section. A misspelled key is otherwise
+# silently ignored — `qualty_threshold:` would turn the CI gate off.
+KNOWN_KEYS = {
+    "": {
+        "name",
+        "models",
+        "prompts",
+        "test_cases",
+        "variables",
+        "inference",
+        "evaluation",
+        "quality_threshold",
+        "gate",
+        "concurrency",
+        "max_cost_usd",
+    },
+    "inference": {"temperature", "max_tokens"},
+    "evaluation": {
+        "judge_model",
+        "judge_threshold",
+        "judge_max_tokens",
+        "quality_threshold",
+        "variables",
+    },
+    "evaluation.variables[]": {"name", "weight", "tolerance"},
+    "gate": {"model", "prompt"},
+    "prompts[]": {"id", "template", "system"},
+    "test_cases[]": {
+        "id",
+        "evaluation",
+        "variables",
+        "expected_output",
+        "criteria",
+        "reference",
+        "tags",
+        "human_score",  # collected now, read by the planned `calibrate`
+    },
+}
+
+
+def _unknown_keys(config: dict) -> tuple[list[str], list[str]]:
+    """Errors for unknown top-level keys, warnings for unknown nested ones.
+
+    Keys starting with ``_`` or ``x-`` are free for the user (YAML anchors,
+    notes), as in docker-compose.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    def check(mapping, section, where, out):
+        if not isinstance(mapping, dict):
+            return
+        known = KNOWN_KEYS[section]
+        for key in mapping:
+            name = str(key)
+            if name in known or name.startswith(("_", "x-")):
+                continue
+            close = difflib.get_close_matches(name, known, n=1)
+            hint = f" — did you mean '{close[0]}'?" if close else ""
+            out.append(f"{where}unknown key '{name}'{hint}")
+
+    check(config, "", "", errors)
+    check(config.get("inference"), "inference", "inference: ", warnings)
+    evaluation = config.get("evaluation")
+    check(evaluation, "evaluation", "evaluation: ", warnings)
+    if isinstance(evaluation, dict) and isinstance(evaluation.get("variables"), list):
+        for i, var in enumerate(evaluation["variables"]):
+            check(
+                var, "evaluation.variables[]", f"evaluation.variables[{i}]: ", warnings
+            )
+    check(config.get("gate"), "gate", "gate: ", errors)
+    for section, field in (("prompts[]", "prompts"), ("test_cases[]", "test_cases")):
+        items = config.get(field)
+        for i, item in enumerate(items if isinstance(items, list) else []):
+            if isinstance(item, dict):
+                item_id = item.get("id")
+                label = f"'{item_id}'" if isinstance(item_id, str) and item_id else i
+                check(item, section, f"{field}[{label}]: ", warnings)
+    return errors, warnings
 
 
 def _template_vars(text: str) -> set[str]:
@@ -55,8 +136,6 @@ def _mapping(value, label: str, errors: list[str]) -> dict:
 
 def validate(config: dict) -> tuple[list[str], list[str]]:
     """Return (errors, warnings). Errors block the run; warnings are advisory."""
-    errors: list[str] = []
-    warnings: list[str] = []
 
     # An empty YAML file loads as None; a bare list or scalar is not a config.
     if config is None:
@@ -73,6 +152,8 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         json.dumps(config, default=str)
     except (ValueError, RecursionError):
         return ["Config contains a self-referencing YAML alias (e.g. `&a [*a]`)"], []
+
+    errors, warnings = _unknown_keys(config)
 
     # Required top-level fields — check presence and type
     for field in ("name", "models", "prompts", "test_cases"):
@@ -368,6 +449,16 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                         f"evaluation.variables '{dim}': weight (and tolerance, if"
                         " set) must be numbers"
                     )
+
+    # CI gate on one combo instead of the best one
+    gate = _mapping(config.get("gate"), "gate", errors)
+    models = config.get("models") if isinstance(config.get("models"), list) else []
+    for key, choices in (("model", models), ("prompt", prompt_ids)):
+        value = gate.get(key)
+        if value is not None and not (isinstance(value, str) and value in choices):
+            errors.append(f"gate.{key} {value!r} is not one of the config's {key}s")
+    if gate and config.get("quality_threshold") is None:
+        warnings.append("gate has no effect without a top-level quality_threshold")
 
     # Heuristic warnings
     if has_llm_judge and max_tokens < 200:

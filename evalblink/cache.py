@@ -17,6 +17,9 @@ import os
 import tempfile
 
 CACHE_DIR = ".evalblink_cache"
+# The OpenRouter model catalog (``openrouter.fetch_models``) shares the
+# directory but is not a cached response.
+CATALOG_FILE = "models.json"
 
 
 def sha256_key(payload: dict) -> str:
@@ -76,20 +79,32 @@ def _is_file(name: str) -> bool:
     return os.path.isfile(os.path.join(CACHE_DIR, name))
 
 
+def _files(include_catalog: bool) -> list[str]:
+    if not os.path.isdir(CACHE_DIR):
+        return []
+    return [
+        f
+        for f in os.listdir(CACHE_DIR)
+        if f.endswith(".json")
+        and _is_file(f)
+        and (include_catalog or f != CATALOG_FILE)
+    ]
+
+
 def stats() -> dict:
-    """Entry count and total size of the cache directory."""
-    if not os.path.isdir(CACHE_DIR):
-        return {"entries": 0, "size_bytes": 0}
-    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json") and _is_file(f)]
+    """Cached responses (count, total size) and whether the model catalog is cached."""
+    files = _files(include_catalog=False)
     size = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in files)
-    return {"entries": len(files), "size_bytes": size}
+    return {
+        "entries": len(files),
+        "size_bytes": size,
+        "catalog": CATALOG_FILE in _files(include_catalog=True),
+    }
 
 
-def clear() -> int:
-    """Delete all cached responses. Returns number of files removed."""
-    if not os.path.isdir(CACHE_DIR):
-        return 0
-    files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json") and _is_file(f)]
+def clear(include_catalog: bool = False) -> int:
+    """Delete cached responses (and the model catalog if asked); returns the count."""
+    files = _files(include_catalog)
     for f in files:
         os.remove(os.path.join(CACHE_DIR, f))
     return len(files)

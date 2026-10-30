@@ -204,3 +204,16 @@ def test_nothing_scored_never_passes_even_with_a_zero_threshold():
     scored = {**combo, "success": 0, "errors": 0}
     assert summarize([scored], 0)["passed"] is True
     assert summarize([scored], None)["passed"] is True
+
+
+def test_gate_decides_on_the_combo_it_names():
+    def combo(model, prompt, success):
+        c = _combo(model, prompt, success * 10.0, 0.0, [_case([], True)] * 10)
+        return {**c, "success": success, "total": 10, "errors": 0}
+
+    results = [combo("a", "v1", 9), combo("b", "v1", 5), combo("b", "v2", 7)]
+    assert summarize(results, 80)["passed"] is True  # best combo: a / v1
+    assert summarize(results, 80, {"model": "b"})["passed"] is False
+    assert summarize(results, 60, {"model": "b"})["gate_score"] == 70.0
+    assert summarize(results, 60, {"model": "b", "prompt": "v1"})["passed"] is False
+    assert summarize(results, 60, {"prompt": "v2"})["gate"] == {"prompt": "v2"}

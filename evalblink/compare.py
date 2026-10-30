@@ -205,6 +205,22 @@ def diff(record_a, record_b) -> dict:
     }
 
 
+def regressions(diff_result, tolerance=0.0) -> list:
+    """Like-for-like shared combos whose quality dropped by more than
+    ``tolerance`` points — the ``compare --fail-on-regression`` verdict.
+
+    A combo whose pipeline-error count changed is not like-for-like and never
+    counts (see :func:`diff`).
+    """
+    return [
+        r
+        for r in diff_result["rows"]
+        if r["present_in"] == "both"
+        and not _uneven(r)
+        and r["score_delta"] < -max(tolerance, _SCORE_EPS)
+    ]
+
+
 def _is_stable(row) -> bool:
     """Whether a both-sides row's quality is unchanged (for sort ordering)."""
     delta = row["score_delta"]
