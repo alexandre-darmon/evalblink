@@ -208,6 +208,7 @@ evalblink run benchmarks/exact_match_classification.yaml
 | `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces); rendered in a sandbox |
 | `prompts[].system` | — | Optional system message (also a sandboxed Jinja2 template) |
 | `variables` | — | Global key/value pairs injected into all templates |
+| `test_cases` | ✅ | The list of test cases below, or `{file: cases.csv, evaluation?}` to load them from a CSV, TSV or JSONL file (see [Test cases from a file](#test-cases-from-a-csv-or-jsonl-file)) |
 | `test_cases[].id` | ✅ | Unique identifier |
 | `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
 | `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth (string for `exact_match`, JSON array for `weighted_match`) |
@@ -281,6 +282,32 @@ evalblink cache clear --yes                              # without --yes it only
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
 - `init` asks three questions: a name, the evaluation mode (`exact_match` or `llm_judge`) and the models to compare, comma-separated. Press Enter at each for the defaults. It then writes a complete, commented starter: an example prompt and example test cases, `temperature: 0`, `max_tokens: 1024` (headroom for free reasoning models), `concurrency: 2` (free models rate-limit bursts) and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`. The file validates and runs as-is; replace the example test cases with your own in your editor. The default model is the free `poolside/laguna-xs-2.1:free` (or the first free catalog model if OpenRouter has retired it). While you choose, it lists up to five free text models from the catalog (text in, text-only out; audio and image generators are left out) and a small paid option without free-tier rate limits, `google/gemma-4-31b-it`, with its price. That option is never preselected. Models absent from the catalog get a warning, and an empty name or model list is asked again. `init` carries on without suggestions when the catalog can't be fetched. The output file is the optional path argument, or `benchmarks/<slug>.yaml`, relative to the directory you run `init` in (never the install directory); `init` prints its absolute path when done (`benchmarks/benchmark.yaml` for a name with no letters or digits); an existing file is only overwritten after you confirm. `init --yes` asks nothing and writes the `exact_match` starter with the default model, refusing to overwrite an existing file. Before writing, `init` runs `validate` on the result and exits 1 without writing if there are errors.
+
+---
+
+## Test cases from a CSV or JSONL file
+
+Past a handful of cases, keep them in a spreadsheet instead of YAML. Point `test_cases` at the file (the path is relative to the YAML):
+
+```yaml
+test_cases:
+  file: cases/support_tickets.csv   # .csv, .tsv or .jsonl
+  evaluation: exact_match           # optional default for rows without an `evaluation`
+```
+
+```
+id,conversation,expected_output,tags
+conv_001,I cannot find my last order.,order_issue,order;easy
+conv_004,"I was charged twice, and the parcel never arrived.",billing,bill;order;edge_case
+```
+
+- **Columns** `id`, `evaluation`, `expected_output`, `criteria`, `reference`, `tags` and `human_score` are the test-case fields. Every other column is a template variable (`conversation` above fills `{{ conversation }}`); global `variables:` still apply.
+- **CSV / TSV:** the first row names the columns. `tags` are separated by `;`. An empty cell leaves a field unset, while an empty variable stays an empty string. A `weighted_match` `expected_output` is a JSON array in its cell. Files saved by Excel as "CSV UTF-8" (with a byte-order mark) work.
+- **JSONL:** one JSON object per line, with the same keys as a YAML test case; extra keys are variables too.
+- **No `id` column?** Each row is named after its line (`line_2`, `line_3`…).
+- Mistakes stop before any API call with the file and line: `Invalid test cases in bench.yaml: cases.csv:4: 3 cells but 2 columns — quote values that contain the delimiter`. A column whose name is close to a field (`expeced_output`) gets a warning, since it would otherwise silently become a variable.
+
+The file is expanded into the usual list before validation, so `validate`, `--dry-run`, the run filters and every report treat its rows exactly like YAML test cases. [`benchmarks/csv_classification.yaml`](https://github.com/alexandre-darmon/evalblink/blob/main/benchmarks/csv_classification.yaml) is a complete example.
 
 ---
 

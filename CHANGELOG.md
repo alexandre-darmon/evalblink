@@ -4,6 +4,12 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-10-30
+
+### Added
+- Test cases from a CSV, TSV or JSONL file: `test_cases: {file: cases.csv, evaluation: exact_match}`, relative to the YAML. Case-field columns keep their meaning, every other column is a template variable, and errors name the file and line. Example: `benchmarks/csv_classification.yaml`.
+- The `init` starter shows how to switch to a file.
+
 ## [0.1.2] — 2026-10-30
 
 ### Added
@@ -39,7 +45,8 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 First release: `run`, `validate`, `compare` (`--detailed`), `report`, `history`, `models`, `init` and `cache`, with exact-match, weighted-match and LLM-as-judge scoring through OpenRouter.
 
-[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alexandre-darmon/evalblink/releases/tag/v0.1.0

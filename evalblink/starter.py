@@ -55,6 +55,9 @@ prompts:
   #   template: "Sentiment ({{ labels }}) of: {{ text }}"
 
 # exact_match passes when the whole reply equals expected_output (case-insensitive).
+# Many cases? Keep them in a spreadsheet instead (path relative to this file):
+#   test_cases: {file: cases.csv, evaluation: exact_match}
+# with columns id, expected_output, tags (a;b) and one per variable (text).
 test_cases:
   - id: "tc_001"
     evaluation: "exact_match"
@@ -97,6 +100,9 @@ prompts:
   # - id: "v2"
   #   template: "TL;DR for on-call: {{ ticket }}"
 
+# Many cases? Keep them in a spreadsheet instead (path relative to this file):
+#   test_cases: {file: cases.csv, evaluation: llm_judge}
+# with columns id, criteria, tags (a;b) and one per variable (ticket).
 test_cases:
   - id: "tc_001"
     evaluation: "llm_judge"

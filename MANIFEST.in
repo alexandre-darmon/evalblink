@@ -1,4 +1,4 @@
 # The sdist carries what the test suite needs to run from it.
 include tests/conftest.py
 include PRD.md CLAUDE.md CHANGELOG.md CONTRIBUTING.md
-recursive-include benchmarks *.yaml
+recursive-include benchmarks *.yaml *.csv *.tsv *.jsonl
