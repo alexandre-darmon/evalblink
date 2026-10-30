@@ -70,6 +70,15 @@ def test_enter_at_every_question_writes_a_valid_exact_match_starter(
     assert len(config["test_cases"]) == 3
 
 
+def test_the_absolute_path_of_the_written_file_is_printed(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    assert _init(monkeypatch, ["--yes"]) == 0
+    path = tmp_path / "benchmarks" / "my-benchmark.yaml"
+    assert f"Created {path}\n" in capsys.readouterr().out
+
+
 def test_llm_judge_with_several_models(monkeypatch, tmp_path, capsys):
     out = tmp_path / "judge.yaml"
     code = _init(

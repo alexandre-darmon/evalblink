@@ -446,7 +446,10 @@ def cmd_init(args):
     except (OSError, ValueError) as exc:  # ValueError: an unencodable path or name
         sys.exit(f"Cannot write {out_path}: {getattr(exc, 'strerror', None) or exc}")
 
-    console.print(f"\n✓ Created {out_path}\n", style="green")
+    # Absolute: relative paths are under the directory init ran in, not the install.
+    console.print(
+        f"\n✓ Created {os.path.abspath(out_path)}\n", style="green", soft_wrap=True
+    )
     console.print(f"Next: open {out_path} and make it yours —")
     console.print("  the prompt is under `prompts:`, the examples under `test_cases:`.")
     console.print("Then:")
