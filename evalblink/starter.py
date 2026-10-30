@@ -26,7 +26,7 @@ _HEADER = """\
 {name}
 # CI gate: exit 1 when the best model × prompt pass rate (%) is below this.
 # quality_threshold: 80
-# concurrency: 5          # parallel API calls (1–100)
+concurrency: 2            # parallel API calls (1–100); free models rate-limit bursts
 # max_cost_usd: 0.50      # --dry-run exits 1 above this estimate
 
 # OpenRouter model IDs (`evalblink models --free` lists free ones).

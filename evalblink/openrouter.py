@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import threading
 import time
 
@@ -33,6 +34,31 @@ MODELS_TTL_SECONDS = 24 * 3600
 # transient overload from the provider it routes to, plus rate limiting.
 RETRYABLE_CODES = {408, 429, 502, 503, 504}
 MAX_RETRIES = 4
+# Free models are rate-limited per minute and upstream providers return 429 for
+# tens of seconds: back off much longer than for a flaky gateway (5s, 10s, 20s).
+RATE_LIMIT_BACKOFF = 5
+MAX_BACKOFF = 60
+RATE_LIMIT_HINT = (
+    " Rate-limited: free models allow few calls per minute. Retry later, lower"
+    " `concurrency`, or add a paid model (e.g. google/gemma-4-31b-it)."
+)
+
+
+def _backoff(attempt: int, rate_limited: bool, retry_after=None) -> float:
+    """Seconds to wait before retry ``attempt + 1``.
+
+    ``Retry-After`` (seconds) wins when the server sends it; rate limits get
+    jitter so parallel workers don't all retry at the same instant.
+    """
+    try:
+        wait = float(retry_after)
+    except (TypeError, ValueError):
+        wait = math.nan
+    if not (math.isfinite(wait) and wait >= 0):
+        if not rate_limited:
+            return 2**attempt
+        wait = RATE_LIMIT_BACKOFF * 2**attempt + random.uniform(0, 1)
+    return min(wait, MAX_BACKOFF)
 
 
 def is_number(value) -> bool:
@@ -151,8 +177,9 @@ def openrouter_request(
     headers = _auth_headers()
 
     # OpenRouter free/slow models 504 intermittently; retry transient failures so a
-    # single flaky call doesn't abort the whole benchmark run. Backoff: 1s, 2s, 4s.
-    # A transient code may arrive on the HTTP status line or in the JSON error body.
+    # single flaky call doesn't abort the whole benchmark run. Backoff: 1s, 2s, 4s,
+    # longer for rate limits (see _backoff). A transient code may arrive on the
+    # HTTP status line or in the JSON error body.
     for attempt in range(MAX_RETRIES):
         if CANCELLED.is_set():  # Ctrl-C: no new attempt, no more retries
             raise RuntimeError("cancelled")
@@ -194,12 +221,15 @@ def openrouter_request(
             isinstance(code, int) and code in RETRYABLE_CODES
         )
         failed = status >= 400 or full is None or error is not None
+        rate_limited = 429 in (status, code)
         if failed and transient and not last:
+            headers_in = getattr(response, "headers", None) or {}
+            wait = _backoff(attempt, rate_limited, headers_in.get("retry-after"))
             print(
                 f"OpenRouter {code or status} (attempt {attempt + 1}/{MAX_RETRIES});"
-                " retrying..."
+                f" retrying in {wait:.0f}s..."
             )
-            time.sleep(2**attempt)
+            time.sleep(wait)
             continue
         break
 
@@ -208,14 +238,18 @@ def openrouter_request(
         raise RuntimeError(
             f"OpenRouter error {code if code is not None else status}"
             f" (HTTP {status}): {clean_text(str(message))}"
+            + (RATE_LIMIT_HINT if rate_limited else "")
         )
     if full is None:
         raise RuntimeError(
             f"OpenRouter returned a non-JSON response (HTTP {status}):"
-            f" {response.text[:200]!r}"
+            f" {response.text[:200]!r}" + (RATE_LIMIT_HINT if rate_limited else "")
         )
     if status >= 400:
-        raise RuntimeError(f"OpenRouter HTTP {status}: {str(full)[:200]}")
+        raise RuntimeError(
+            f"OpenRouter HTTP {status}: {str(full)[:200]}"
+            + (RATE_LIMIT_HINT if rate_limited else "")
+        )
     try:
         usage = full["usage"]
         request_result = {
