@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import threading
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1174,13 +1175,43 @@ def test_dry_run_fails_on_a_model_missing_from_the_catalog(
 
 
 def _results_dir(tmp_path, *runs):
-    """Write run records: (run_id, benchmark, score, errors) each."""
+    """Write run records: (run_id, benchmark, passed, errors[, filters]) each,
+    over the same 10 cases; the run_id's first 17 characters are its timestamp."""
     (tmp_path / "results").mkdir(exist_ok=True)
-    for run_id, benchmark, score, errors in runs:
-        record = _good_record()
-        record.update(run_id=run_id, benchmark=benchmark, timestamp=run_id[:17])
-        record["results"][0].update(score=score, errors=errors)
-        (tmp_path / "results" / f"{run_id}.json").write_text(json.dumps(record))
+    for i, (run_id, benchmark, passed, errors, *filters) in enumerate(runs):
+        cases = [
+            {
+                "id": f"c{n}",
+                "match_score": None if n < errors else float(n < errors + passed),
+                "match_result": errors <= n < errors + passed,
+                "total_cost": 0.0,
+            }
+            for n in range(10)
+        ]
+        scored = 10 - errors
+        record = {
+            "run_id": run_id,
+            "benchmark": benchmark,
+            "timestamp": run_id[:17],
+            "filters": filters[0] if filters else None,
+            "results": [
+                {
+                    "model": "a/b",
+                    "prompt_id": "v1",
+                    "score": passed / scored * 100 if scored else 0.0,
+                    "success": passed,
+                    "total": 10,
+                    "errors": errors,
+                    "total_cost": 0.0,
+                    "total_prompt_tokens": 1,
+                    "total_completion_tokens": 1,
+                    "test_cases": cases,
+                }
+            ],
+        }
+        path = tmp_path / "results" / f"{run_id}.json"
+        path.write_text(json.dumps(record))
+        os.utime(path, (1_000_000 + i, 1_000_000 + i))  # written in this order
 
 
 def test_compare_without_paths_diffs_the_two_latest_runs_of_a_benchmark(
@@ -1189,64 +1220,147 @@ def test_compare_without_paths_diffs_the_two_latest_runs_of_a_benchmark(
     monkeypatch.chdir(tmp_path)
     _results_dir(
         tmp_path,
-        ("2026-01-01_000000_b", "B", 90.0, 0),
-        ("2026-01-02_000000_b", "B", 70.0, 0),
-        ("2026-01-03_000000_other", "Other", 10.0, 0),
-        ("2026-01-04_000000_b", "B", 60.0, 0),
+        ("2026-01-01_000000_b", "B", 9, 0),
+        ("2026-01-02_000000_b", "B", 8, 0),
+        ("2026-01-03_000000_other", "Other", 1, 0),
+        ("2026-01-04_000000_b", "B", 7, 0),
     )
     # Latest run is B's 01-04; it is compared with B's previous one, 01-02.
     assert _run_cli(["compare"]) == 0
     assert "2026-01-02_000000_b.json → results" in capsys.readouterr().err
-    assert _run_cli(["compare", "--fail-on-regression"]) == 1
+    assert _run_cli(["compare", "--fail-on-regression", "0"]) == 1
     assert "REGRESSION: a/b / v1 quality -10.0 points" in capsys.readouterr().out
-    assert _run_cli(["compare", "--fail-on-regression", "15"]) == 0
-    assert "No regression beyond 15 point(s)." in capsys.readouterr().out
+    assert (
+        _run_cli(["compare", "--fail-on-regression", "10"]) == 0
+    )  # not *more* than 10
+    assert "No regression beyond 10 point(s)." in capsys.readouterr().out
 
 
-def test_compare_accepts_run_id_prefixes(monkeypatch, tmp_path, capsys):
+def test_one_run_is_the_baseline_for_the_latest_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "kept").mkdir()
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 9, 0),
+        ("2026-01-02_000000_b", "B", 3, 0),
+    )
+    baseline = tmp_path / "kept" / "baseline.json"
+    (tmp_path / "results" / "2026-01-01_000000_b.json").rename(baseline)
+    assert _run_cli(["compare", str(baseline), "--fail-on-regression", "5"]) == 1
+    assert "baseline.json → results/2026-01-02_000000_b.json" in capsys.readouterr().err
+
+
+def test_a_run_that_breaks_with_new_errors_is_a_regression(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _results_dir(
         tmp_path,
-        ("2026-01-01_000000_b", "B", 50.0, 0),
-        ("2026-01-02_000000_b", "B", 90.0, 0),
-        ("2026-01-02_120000_b", "B", 90.0, 0),
+        ("2026-01-01_000000_b", "B", 5, 0),  # 5/10
+        ("2026-01-02_000000_b", "B", 5, 3),  # 5/7 scored (better), 5/10 fail-safe
+        ("2026-01-03_000000_b", "B", 2, 6),  # 2/4 scored (same), 2/10 fail-safe
     )
     assert (
-        _run_cli(["compare", "2026-01-01", "2026-01-02_12", "--fail-on-regression"])
+        _run_cli(["compare", "2026-01-01", "2026-01-02", "--fail-on-regression", "0"])
         == 0
     )
-    code = _run_cli(["compare", "2026-01-01", "2026-01-02"])
-    assert isinstance(code, str) and "matches several runs" in code
-    code = _run_cli(["compare", "2026-01-01", "nope"])
-    assert isinstance(code, str) and "not found" in code.lower()
+    assert _run_cli(["compare", "--fail-on-regression", "0"]) == 1
 
 
-def test_compare_regression_ignores_combos_whose_errors_changed(monkeypatch, tmp_path):
+def test_slices_are_only_compared_with_the_same_slice(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     _results_dir(
         tmp_path,
-        ("2026-01-01_000000_b", "B", 90.0, 0),
-        ("2026-01-02_000000_b", "B", 40.0, 3),  # dropped, but over other cases
+        ("2026-01-01_000000_b", "B", 9, 0),
+        ("2026-01-02_000000_b", "B", 2, 0, {"tag": ["hard"]}),
+        ("2026-01-03_000000_b", "B", 9, 0),
+        ("2026-01-04_000000_b", "B", 1, 0, {"tag": ["hard"]}),
     )
-    assert _run_cli(["compare", "--fail-on-regression"]) == 0
+    assert _run_cli(["compare"]) == 0  # the two "hard" slices
+    assert "2026-01-02_000000_b.json → results/2026-01-04" in capsys.readouterr().err
+    # Explicitly comparing a slice with a full run: the cases differ.
+    path = tmp_path / "results" / "2026-01-04_000000_b.json"
+    record = json.loads(path.read_text())
+    record["results"][0]["test_cases"] = record["results"][0]["test_cases"][:3]
+    path.write_text(json.dumps(record))
+    argv = ["compare", "2026-01-03", "2026-01-04", "--fail-on-regression", "0"]
+    assert _run_cli(argv) == 0
+    out = " ".join(capsys.readouterr().out.split())  # Rich wraps the verdict
+    assert "│ different test cases" in out and "they ran different test cases" in out
+
+
+def test_same_second_reruns_order_by_write_time(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 9, 0),  # written first
+        ("2026-01-01_000000_b-2", "B", 3, 0),  # same second, written later
+    )
+    assert _run_cli(["compare", "--fail-on-regression", "0"]) == 1
+    assert (
+        "000000_b.json → results/2026-01-01_000000_b-2.json" in capsys.readouterr().err
+    )
+    assert _run_cli(["report", "2026-01-01_000000_b"]) == 0  # exact id, not ambiguous
+
+
+def test_compare_accepts_run_id_prefixes(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 5, 0),
+        ("2026-01-02_000000_b", "B", 9, 0),
+        ("2026-01-02_120000_b", "B", 9, 0),
+    )
+    argv = ["compare", "2026-01-01", "2026-01-02_12", "--fail-on-regression", "0"]
+    assert _run_cli(argv) == 0
+    code = _run_cli(["compare", "2026-01-01", "2026-01-02"])
+    assert isinstance(code, str) and "matches several runs" in code
+    for missing in ("nope", "_b"):  # a prefix, not a substring
+        code = _run_cli(["compare", "2026-01-01", missing])
+        assert isinstance(code, str) and "not found" in code.lower()
+
+
+def test_fail_on_regression_compares_only_shared_combos(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(
+        tmp_path,
+        ("2026-01-01_000000_b", "B", 9, 0),
+        ("2026-01-02_000000_b", "B", 9, 0),
+    )
+    path = tmp_path / "results" / "2026-01-02_000000_b.json"
+    record = json.loads(path.read_text())
+    record["results"][0]["model"] = "c/d"  # a_only + b_only, no shared combo
+    path.write_text(json.dumps(record))
+    assert _run_cli(["compare", "--fail-on-regression", "0"]) == 0
+
+
+@pytest.mark.parametrize("points", ["nan", "inf", "-1", "two"])
+def test_fail_on_regression_needs_finite_points(points, capsys):
+    assert _run_cli(["compare", "--fail-on-regression", points]) == 2
+    assert "use 0 or more" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
     "runs, message",
     [
         ((), "No run records"),
-        ((("2026-01-01_000000_b", "B", 9.0, 0),), "Only one run of 'B'"),
+        ((("2026-01-01_000000_b", "B", 9, 0),), "No earlier run of 'B'"),
     ],
 )
 def test_compare_without_paths_explains_what_is_missing(
-    monkeypatch, tmp_path, runs, message
+    monkeypatch, tmp_path, runs, message, capsys
 ):
     monkeypatch.chdir(tmp_path)
     _results_dir(tmp_path, *runs)
     code = _run_cli(["compare"])
     assert isinstance(code, str) and message in code
-    code = _run_cli(["compare", "only-one.json"])
-    assert isinstance(code, str) and "Pass two runs" in code
+
+
+def test_a_first_run_passes_the_regression_check_with_a_note(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _results_dir(tmp_path, ("2026-01-01_000000_b", "B", 9, 0))
+    assert _run_cli(["compare", "--fail-on-regression", "0"]) == 0
+    assert "Nothing to check." in capsys.readouterr().out
 
 
 def test_report_without_a_path_uses_the_latest_run(monkeypatch, tmp_path, capsys):
@@ -1254,8 +1368,8 @@ def test_report_without_a_path_uses_the_latest_run(monkeypatch, tmp_path, capsys
     assert isinstance(_run_cli(["report"]), str)  # no results/ yet
     _results_dir(
         tmp_path,
-        ("2026-01-01_000000_b", "B", 9.0, 0),
-        ("2026-01-02_000000_b", "B", 9.0, 0),
+        ("2026-01-01_000000_b", "B", 9, 0),
+        ("2026-01-02_000000_b", "B", 9, 0),
     )
     assert _run_cli(["report"]) == 0
     assert "Using results/2026-01-02_000000_b.json" in capsys.readouterr().err
@@ -1280,3 +1394,85 @@ def test_tables_wrap_long_ids_instead_of_cutting_them(monkeypatch, capsys):
         line.split("│")[1].strip() for line in out.splitlines() if line.startswith("│")
     ]
     assert "".join(first_column) == long_id
+
+
+def test_the_gate_fails_when_its_combo_fails_although_another_passes(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    def post(self, **kwargs):  # m/a always right, m/b always wrong
+        return _ok("yes" if kwargs["json"]["model"] == "m/a" else "no")
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    for gated, code in (("m/b", 1), ("m/a", 0)):
+        path = _write_cli_config(
+            tmp_path, models=["m/a", "m/b"], quality_threshold=50, gate={"model": gated}
+        )
+        assert _run_cli(["run", str(path), "--no-cache"]) == code
+        out = capsys.readouterr().out
+        verdict = "FAIL: m/b score is below" if code else "PASS: m/a score meets"
+        assert verdict in out
+
+
+def test_a_prompt_filter_drops_a_gate_on_another_prompt(fake_http, tmp_path, capsys):
+    fake_http(_ok("yes"))
+    path = _write_cli_config(
+        tmp_path,
+        prompts=[
+            {"id": "v1", "template": "Q: {{ q }}"},
+            {"id": "v2", "template": "{{ q }}?"},
+        ],
+        quality_threshold=50,
+        gate={"prompt": "v2"},
+    )
+    assert _run_cli(["run", str(path), "-p", "v1"]) == 0
+    captured = capsys.readouterr()
+    assert "gate ignored" in captured.err
+    assert "PASS: best score meets" in captured.out
+
+
+def test_filters_never_hide_a_config_mistake(fake_http, tmp_path, capsys):
+    fake_http(_ok("yes"))
+    path = _write_cli_config(tmp_path, quality_threshold=50, gate={"model": "m/typo"})
+    assert _run_cli(["run", str(path), "-m", "m/a", "--dry-run"]) == 1
+    assert (
+        "gate.model 'm/typo' is not one of the config's models"
+        in capsys.readouterr().out
+    )
+
+
+def test_tag_filter_skips_cases_without_tags(fake_http, tmp_path):
+    calls = fake_http(_ok("yes"))
+    case = {"id": "c1", "evaluation": "exact_match", "expected_output": "yes"}
+    path = _write_cli_config(
+        tmp_path, test_cases=[{**case, "variables": {"q": "1"}, "tags": None}]
+    )
+    assert _run_cli(["run", str(path), "--tag", "x"]) == "No test case has tag 'x'."
+    assert calls == []
+
+
+def test_python_dash_m_runs_the_cli():
+    import subprocess
+
+    out = subprocess.run(
+        [sys.executable, "-m", "evalblink", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=Path(main.__file__).resolve().parent.parent,
+        check=True,
+    ).stdout
+    assert out.strip() == main.__version__
+
+
+def test_dry_run_reports_an_unknown_model_once(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    catalog = {"m/b": {"prompt": 0.0, "completion": 0.0}}
+    monkeypatch.setattr(
+        main.openrouter, "fetch_models", lambda client, use_cache=True: catalog
+    )
+    path = _write_cli_config(tmp_path, models=["m/a"])
+    assert _run_cli(["run", str(path), "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "Unknown model 'm/a'" in out and "No pricing for" not in out

@@ -575,8 +575,8 @@ evalblink run                               # the only YAML in benchmarks/, else
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
 evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
 evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
-evalblink run benchmarks/classification.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
-evalblink run benchmarks/classification.yaml --tag edge_case --limit 5     # a slice of the test cases
+evalblink run my_benchmark.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
+evalblink run my_benchmark.yaml --tag edge_case --limit 5     # a slice of the test cases
 
 # Validate a config (errors and warnings, no API calls)
 evalblink validate benchmarks/classification.yaml
@@ -584,7 +584,7 @@ evalblink validate benchmarks/classification.yaml
 # Compare two finished runs (quality + cost deltas; offline, no API calls)
 evalblink compare                                        # the two latest runs of a benchmark
 evalblink compare <run_a> <run_b> --detailed             # paths, run IDs or unique prefixes; per-case transitions
-evalblink compare --fail-on-regression 2                 # exit 1 if a combo drops by more than 2 points
+evalblink compare baseline.json --fail-on-regression 2   # CI: the latest run vs a kept baseline; exit 1 on a drop > 2 points
 
 # Regenerate Markdown report from existing JSON
 evalblink report                                         # the latest run
@@ -776,7 +776,7 @@ Data used per model:
 2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`) → exit 1 (results are still written).
 3. Otherwise the `quality_threshold` gate decides, fail-safe: for each combination the gate score is passed / total cases, so every case that could not be scored counts as a failure (`analysis.summarize` → `gate_score`). Best gate score ≥ `quality_threshold` → exit 0, below it → exit 1 (when errors are what pulled it below, the FAIL line says so). No `quality_threshold` → gate not enforced, exit 0. The record's `insights.passed` matches: `false` whenever nothing could be scored.
 
-`--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the catalog, 0 otherwise. A top-level `gate: {model, prompt}` makes the gate check those combos instead of the best one, and the PASS/FAIL line names them. Between runs, `evalblink compare --fail-on-regression [POINTS]` exits 1 when a like-for-like combo's quality drops by more than `POINTS`.
+`--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the catalog, 0 otherwise. A top-level `gate: {model, prompt}` makes the gate check those combos instead of the best one, and the PASS/FAIL line names them. Between runs, `evalblink compare <baseline> --fail-on-regression POINTS` exits 1 when a combo's fail-safe pass rate (unscored cases count as failures) drops by more than `POINTS` against the latest run of the same benchmark and `run` filters.
 
 Per-case pipeline errors never abort the run: they are counted under Errors and excluded from the displayed Score, while the gate counts them as failures (a run where 9 of 10 calls failed can't pass on the 1 that was scored); when any occurred, the run ends with a prominent warning giving their count.
 

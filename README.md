@@ -240,8 +240,8 @@ evalblink run benchmarks/classification.yaml
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
 evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
 evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
-evalblink run benchmarks/classification.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
-evalblink run benchmarks/classification.yaml --tag edge_case --limit 5     # a slice of the test cases
+evalblink run my_benchmark.yaml -m openai/gpt-4o-mini -p v2   # one model, one prompt (repeatable)
+evalblink run my_benchmark.yaml --tag edge_case --limit 5     # a slice of the test cases
 python -m evalblink run …                                 # same CLI when `evalblink` isn't on PATH
 
 # Validate a config file (errors and warnings, no API calls)
@@ -251,7 +251,7 @@ evalblink validate benchmarks/classification.yaml
 evalblink compare                                        # the two latest runs of a benchmark
 evalblink compare results/<run_a>.json results/<run_b>.json
 evalblink compare <run_a> <run_b> --detailed             # run IDs or unique prefixes; per-case transitions
-evalblink compare --fail-on-regression 2                 # exit 1 if a combo drops by more than 2 points
+evalblink compare baseline.json --fail-on-regression 2   # CI: the latest run vs a kept baseline; exit 1 on a drop > 2 points
 
 # Regenerate a Markdown report from an existing JSON result
 evalblink report                                         # the latest run
@@ -596,11 +596,14 @@ Changed combos are listed first. Scores leave out pipeline-error cases, so when 
 - **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The JSON record's `insights.passed` matches the exit code: it is `false` whenever nothing could be scored, even with `quality_threshold: 0` or none. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
 - **`gate:`** narrows the gate to one combo: `gate: {model: openai/gpt-4o-mini, prompt: v2}` makes the PASS/FAIL line read `PASS: openai/gpt-4o-mini / v2 score meets quality_threshold (80).` Either key can be left out. A `--model` / `--prompt` filter that removes the gated combo drops the gate for that run, with a note.
 - `--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the OpenRouter catalog (with a `did you mean` suggestion), 0 otherwise.
-- **Regression check between runs:** `evalblink compare --fail-on-regression [POINTS]` exits 1 when a like-for-like combo's quality drops by more than `POINTS` (default 0, i.e. any drop beyond ±0.05). Combos whose pipeline-error count changed are not like-for-like and never fail it.
+- **Regression check between runs:** `evalblink compare <baseline> --fail-on-regression POINTS` compares a kept run record with the latest run of the same benchmark (and the same `run` filters), and exits 1 when a combo's pass rate drops by more than `POINTS` (`0` = any drop beyond ±0.05). The rate counts cases that couldn't be scored as failures, like the gate, so a run that breaks with new API errors fails it. Combos that ran different test cases (a `--tag` / `--limit` slice against a full run) aren't compared. With no earlier run to compare with, it exits 0 with a note.
 
 ```yaml
+# Keep a baseline record in the repo (copy one from results/ after a good run).
 - run: evalblink run my_benchmark.yaml
-- run: evalblink compare --fail-on-regression 2   # against the previous run kept in results/
+  env:
+    OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+- run: evalblink compare benchmarks/baseline.json --fail-on-regression 2
 ```
 
 ---

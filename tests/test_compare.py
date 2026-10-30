@@ -255,3 +255,27 @@ def test_a_record_without_error_counts_compares_as_zero_errors():
     result = compare.diff(old, new)
     assert result["rows"][0]["errors_a"] == 0
     assert "left out" not in result["verdict"]
+
+
+def _gate_row(gate_delta, same_cases=True, errors=(0, 0)):
+    return {
+        "present_in": "both",
+        "same_cases": same_cases,
+        "gate_delta": gate_delta,
+        "errors_a": errors[0],
+        "errors_b": errors[1],
+    }
+
+
+def test_regressions_boundaries():
+    def hits(delta, tolerance, **kw):
+        return len(compare.regressions({"rows": [_gate_row(delta, **kw)]}, tolerance))
+
+    assert hits(-0.01, 0) == 0  # float noise is not a drop
+    assert hits(-0.1, 0) == 1
+    assert hits(-2.0, 2) == 0  # "more than POINTS"
+    assert hits(-2.1, 2) == 1
+    assert hits(-50, 0, same_cases=False) == 0  # a different slice of cases
+    assert hits(-50, 0, errors=(0, 3)) == 1  # broke with new errors: a regression
+    rows = [{"present_in": "a_only", "gate_delta": None, "same_cases": None}]
+    assert compare.regressions({"rows": rows}, 0) == []

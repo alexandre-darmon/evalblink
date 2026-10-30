@@ -217,3 +217,13 @@ def test_gate_decides_on_the_combo_it_names():
     assert summarize(results, 60, {"model": "b"})["gate_score"] == 70.0
     assert summarize(results, 60, {"model": "b", "prompt": "v1"})["passed"] is False
     assert summarize(results, 60, {"prompt": "v2"})["gate"] == {"prompt": "v2"}
+
+
+def test_a_gate_matching_no_combo_never_passes():
+    combo = {
+        **_combo("a", "v1", 100.0, 0.0, [_case([], True)]),
+        "success": 1,
+        "total": 1,
+    }
+    summary = summarize([combo], 50, {"model": "nope"})
+    assert summary["gate_score"] == 0.0 and summary["passed"] is False

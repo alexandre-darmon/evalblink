@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 
@@ -96,13 +97,11 @@ def _fetch_models(**kwargs):
 
 
 def _filtered(config, args):
-    """``config`` narrowed by ``run --model/--prompt/--tag/--limit``.
+    """A valid ``config`` narrowed by ``run --model/--prompt/--tag/--limit``.
 
-    Unknown names exit with the available ones; shapes the validator would
-    reject are left alone for it to report.
+    Unknown names exit with the available ones. The filters are recorded as
+    ``_filters`` (a key the validator leaves alone) for the run record.
     """
-    if not isinstance(config, dict):
-        return config
     config = dict(config)
 
     def keep(field, wanted, key, what):
@@ -129,9 +128,7 @@ def _filtered(config, args):
             cases = [
                 tc
                 for tc in cases
-                if isinstance(tc, dict)
-                and isinstance(tc.get("tags"), list)
-                and set(map(str, tc["tags"])) & set(args.tag)
+                if isinstance(tc, dict) and set(tc.get("tags") or []) & set(args.tag)
             ]
         cases = cases[: args.limit] if args.limit else cases
         if args.tag and not cases:
@@ -145,7 +142,18 @@ def _filtered(config, args):
     ):
         print("Note: gate ignored — its combo is filtered out.", file=sys.stderr)
         config.pop("gate")
-    if args.model or args.prompt or args.tag or args.limit:
+    filters = {
+        k: v
+        for k, v in (
+            ("model", args.model),
+            ("prompt", args.prompt),
+            ("tag", args.tag),
+            ("limit", args.limit),
+        )
+        if v
+    }
+    if filters:
+        config["_filters"] = filters
         sizes = [len(config.get(f) or []) for f in ("models", "prompts", "test_cases")]
         print(
             "Filtered: {} model(s) × {} prompt(s) × {} case(s)".format(*sizes),
@@ -156,13 +164,15 @@ def _filtered(config, args):
 
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
-    config = _filtered(load_config(_config_path(args.config)), args)
+    config = load_config(_config_path(args.config))
 
+    # The whole config first, so a filter never hides one of its mistakes.
     errors, warnings = _validate_config(config)
     console = reporter.make_console()
     _print_findings(console, errors, warnings)
     if errors:
         sys.exit(1)
+    config = _filtered(config, args)
 
     if args.dry_run:
         # Estimate cost from the pricing catalog only — no completion calls.
@@ -245,7 +255,12 @@ def _run_records():
                 found.append((path, compare.load_record(path)))
             except compare.RecordError:
                 continue
-    found.sort(key=lambda pr: (pr[1]["timestamp"], pr[0]), reverse=True)
+    # Same-second reruns share a timestamp (`<run>-2.json`): the file's
+    # modification time breaks the tie.
+    found.sort(
+        key=lambda pr: (pr[1]["timestamp"], os.path.getmtime(pr[0]), pr[0]),
+        reverse=True,
+    )
     return found
 
 
@@ -257,6 +272,8 @@ def _record_path(arg):
         names = sorted(os.listdir(RESULTS_DIR))
     except OSError:
         names = []
+    if f"{arg}.json" in names:
+        return os.path.join(RESULTS_DIR, f"{arg}.json")
     matches = [n for n in names if n.endswith(".json") and n.startswith(arg)]
     if len(matches) == 1:
         return os.path.join(RESULTS_DIR, matches[0])
@@ -277,23 +294,44 @@ def _load(path):
 
 def cmd_compare(args):
     """Print the quality/cost delta between two persisted run records."""
-    if (args.file_a is None) != (args.file_b is None):
-        sys.exit("Pass two runs to compare, or none for the two latest of a benchmark.")
-    if args.file_a is None:
-        runs = _run_records()
-        if not runs:
-            sys.exit(f"No run records in {RESULTS_DIR}/ — run a benchmark first.")
-        latest = runs[0][1]["benchmark"]
-        same = [pr for pr in runs if pr[1]["benchmark"] == latest]
-        if len(same) < 2:
-            sys.exit(
-                f"Only one run of {latest!r} in {RESULTS_DIR}/ — run it again to compare."
-            )
-        (path_b, record_b), (path_a, record_a) = same[0], same[1]
-        print(f"Comparing {path_a} → {path_b}", file=sys.stderr)
-    else:
+    if args.file_b is not None:
         record_a = _load(_record_path(args.file_a))
         record_b = _load(_record_path(args.file_b))
+    else:
+        # One run: it is the baseline for the latest run of its benchmark.
+        # None: the latest run against the previous one. Either way, only runs
+        # of the same benchmark with the same `run` filters are paired.
+        runs = _run_records()
+        if args.file_a is not None:
+            path_a = _record_path(args.file_a)
+            record_a = _load(path_a)
+            pool = [
+                pr for pr in runs if os.path.abspath(pr[0]) != os.path.abspath(path_a)
+            ]
+        else:
+            if not runs:
+                sys.exit(f"No run records in {RESULTS_DIR}/ — run a benchmark first.")
+            path_a, record_a = None, None
+            pool = runs
+        key = record_a or (pool[0][1] if pool else {})
+        same = [
+            pr
+            for pr in pool
+            if pr[1]["benchmark"] == key.get("benchmark")
+            and pr[1].get("filters") == key.get("filters")
+        ]
+        if record_a is None and len(same) >= 2:
+            (path_b, record_b), (path_a, record_a) = same[0], same[1]
+        elif record_a is not None and same:
+            path_b, record_b = same[0]
+        else:
+            what = f"{key.get('benchmark')!r}" if key else "it"
+            message = f"No earlier run of {what} in {RESULTS_DIR}/ to compare with."
+            if args.fail_on_regression is not None:
+                print(f"{message} Nothing to check.")
+                sys.exit(0)
+            sys.exit(message)
+        print(f"Comparing {path_a} → {path_b}", file=sys.stderr)
     if args.detailed:
         reporter.render_detailed(compare.detailed_diff(record_a, record_b))
     else:
@@ -415,6 +453,17 @@ def _positive_int(value) -> int:
         number = 0
     if number < 1:
         raise argparse.ArgumentTypeError(f"invalid value {value!r} — use 1 or more")
+    return number
+
+
+def _points(value) -> float:
+    """An ``argparse`` type: a finite number of points ≥ 0."""
+    try:
+        number = float(value)
+    except ValueError:
+        number = math.nan
+    if not (math.isfinite(number) and number >= 0):
+        raise argparse.ArgumentTypeError(f"invalid value {value!r} — use 0 or more")
     return number
 
 
@@ -709,8 +758,8 @@ YAML CONFIG KEYS
 EXAMPLES
   evalblink run                                  # the only YAML in benchmarks/
   evalblink run benchmarks/classification.yaml
-  evalblink run benchmarks/classification.yaml -m openai/gpt-4o-mini -p v2
-  evalblink run benchmarks/classification.yaml --tag edge_case --limit 5
+  evalblink run my_benchmark.yaml -m openai/gpt-4o-mini -p v2
+  evalblink run my_benchmark.yaml --tag edge_case --limit 5
   evalblink run benchmarks/classification.yaml -v
   evalblink run benchmarks/classification.yaml --no-cache
   evalblink run benchmarks/classification.yaml --dry-run
@@ -735,7 +784,7 @@ EXAMPLES
   evalblink compare                                   # two latest runs of a benchmark
   evalblink compare results/run_a.json results/run_b.json --detailed
   evalblink compare 2026-10-30_0814 2026-10-30_0815   # run ID prefixes
-  evalblink compare --fail-on-regression 2            # CI: exit 1 on a drop > 2 points
+  evalblink compare baseline.json --fail-on-regression 2   # CI: latest run vs a kept baseline
 """
 
 
@@ -844,8 +893,9 @@ def build_parser():
         "file_a",
         nargs="?",
         metavar="RUN_A",
-        help="baseline run: a results JSON path or a run ID (prefix)."
-        " Omit both runs to compare the two latest of a benchmark",
+        help="baseline run: a results JSON path or a run ID (prefix). Alone, it"
+        " is compared with the latest run of its benchmark; with no runs, the"
+        " two latest runs are compared",
     )
     compare_p.add_argument(
         "file_b",
@@ -855,12 +905,10 @@ def build_parser():
     )
     compare_p.add_argument(
         "--fail-on-regression",
-        nargs="?",
-        const=0.0,
-        type=float,
+        type=_points,
         metavar="POINTS",
-        help="exit 1 if a combo's quality drops by more than POINTS (default 0)"
-        " — for CI",
+        help="exit 1 if a combo's pass rate (unscored cases counted as failures)"
+        " drops by more than POINTS; 0 = any drop — for CI",
     )
     compare_p.add_argument(
         "-d",

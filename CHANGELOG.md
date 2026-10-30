@@ -2,13 +2,15 @@
 
 All notable changes to evalblink. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [0.1.2] — 2026-10-30
 
 ### Added
 - `run --model / --prompt / --tag / --limit` run part of a benchmark without editing the YAML.
 - A top-level `gate: {model, prompt}` makes the CI gate check one combo instead of the best one.
-- `compare` with no arguments diffs the two latest runs of a benchmark; `report` with none uses the latest run. Both accept a run ID or a unique prefix of one.
-- `compare --fail-on-regression [POINTS]` exits 1 when a like-for-like combo's quality drops, for CI.
+- `compare` with no arguments diffs the two latest runs of a benchmark, and with one run uses it as the baseline for the latest run; `report` with none uses the latest run. Both accept a run ID or a unique prefix of one. Only runs with the same `run` filters (now recorded in the JSON) are paired.
+- `compare --fail-on-regression POINTS` exits 1 when a combo's pass rate, with unscored cases counted as failures, drops by more than `POINTS` — for CI against a kept baseline.
 - `python -m evalblink`.
 - A bare `evalblink` prints the help with a quickstart and the environment variables; every subcommand's help ends with examples.
 - `cache clear --all` also drops the cached model catalog.
@@ -37,6 +39,7 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 First release: `run`, `validate`, `compare` (`--detailed`), `report`, `history`, `models`, `init` and `cache`, with exact-match, weighted-match and LLM-as-judge scoring through OpenRouter.
 
+[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.2...HEAD
 [0.1.2]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alexandre-darmon/evalblink/releases/tag/v0.1.0

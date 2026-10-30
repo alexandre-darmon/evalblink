@@ -71,6 +71,8 @@ def _build_data(config, results, timestamp) -> dict:
             "quality_threshold", evaluation.get("judge_threshold")
         ),
         "timestamp": timestamp,
+        # `run --model/--prompt/--tag/--limit`, so `compare` pairs like with like.
+        "filters": config.get("_filters"),
         "results": results,
     }
 
@@ -399,6 +401,8 @@ def _comparison_note_and_style(row) -> tuple[str, str | None]:
     """A ``compare`` row's Notes text and colour."""
     if row["present_in"] != "both":
         return {"a_only": "only in A", "b_only": "only in B"}[row["present_in"]], None
+    if row.get("same_cases") is False:
+        return "different test cases", "yellow"
     errors_a, errors_b = row.get("errors_a"), row.get("errors_b")
     note = f"pipeline errors {errors_a} → {errors_b}" if errors_a or errors_b else ""
     if errors_a != errors_b:

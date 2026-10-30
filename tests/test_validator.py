@@ -686,8 +686,7 @@ def test_an_unknown_key_without_a_close_match_has_no_suggestion():
     assert errors == ["unknown key 'zzzz'"]
 
 
-def test_every_documented_config_key_is_known():
-    # The keys the README/PRD tables document must not be flagged.
+def test_keys_read_outside_the_readme_table_are_known():
     from evalblink.validator import KNOWN_KEYS
 
     assert {"quality_threshold", "gate", "concurrency", "max_cost_usd"} <= KNOWN_KEYS[
@@ -719,3 +718,39 @@ def test_gate_must_name_a_model_and_prompt_of_the_config():
 def test_gate_without_a_threshold_warns():
     _, warnings = validate(_exact_match_config(gate={"prompt": "v1"}))
     assert "gate has no effect without a top-level quality_threshold" in warnings
+
+
+def test_unknown_keys_in_weighted_variables_are_warnings():
+    config = _weighted_config()
+    config["evaluation"]["variables"][0]["wieght"] = 1
+    _, warnings = validate(config)
+    assert (
+        "evaluation.variables[0]: unknown key 'wieght' — did you mean 'weight'?"
+        in warnings
+    )
+
+
+def test_every_key_in_the_readme_config_table_is_known():
+    import re
+    from pathlib import Path
+
+    from evalblink.validator import KNOWN_KEYS
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    table = readme[
+        readme.index("## Configuration Reference") : readme.index("## CLI Reference")
+    ]
+    documented = re.findall(r"^\| `([^`]+)`", table, flags=re.M)
+    assert len(documented) > 15, "the config table moved — update this test"
+    for key in documented:
+        *parents, leaf = key.replace("[]", "").split(".")
+        section = {
+            (): "",
+            ("inference",): "inference",
+            ("evaluation",): "evaluation",
+            ("evaluation", "variables"): "evaluation.variables[]",
+            ("prompts",): "prompts[]",
+            ("test_cases",): "test_cases[]",
+            ("gate",): "gate",
+        }[tuple(parents)]
+        assert leaf in KNOWN_KEYS[section], key

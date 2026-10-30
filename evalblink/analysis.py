@@ -77,7 +77,7 @@ def best_value(results) -> dict:
     return max(results, key=lambda c: c["score"] / max(c["total_cost"], _COST_FLOOR))
 
 
-def _gate_score(combo) -> float:
+def fail_safe_score(combo) -> float:
     """Pass rate (%) with unscored cases counted as failures."""
     total = combo.get("total")
     if total is None:  # a hand-built combo without counts: its score is all we have
@@ -115,7 +115,7 @@ def summarize(results, quality_threshold, gate=None) -> dict | None:
     breakdown = tag_breakdown(top)
     errors = sum(c.get("errors") or 0 for c in results)
     gated = _gated(results, gate)
-    gate_score = max((_gate_score(c) for c in gated), default=0.0)
+    gate_score = max((fail_safe_score(c) for c in gated), default=0.0)
     total = sum(c.get("total") or 0 for c in results)
     nothing_scored = bool(total) and errors >= total
     return {
