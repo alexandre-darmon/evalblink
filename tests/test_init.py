@@ -66,6 +66,7 @@ def test_enter_at_every_question_writes_a_valid_exact_match_starter(
     assert config["name"] == "My benchmark"
     assert config["models"] == [starter.DEFAULT_MODEL]
     assert config["inference"] == {"temperature": 0, "max_tokens": 1024}
+    assert config["concurrency"] == 2  # free models rate-limit parallel bursts
     assert {tc["evaluation"] for tc in config["test_cases"]} == {"exact_match"}
     assert len(config["test_cases"]) == 3
 

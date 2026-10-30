@@ -611,3 +611,87 @@ def test_a_cache_from_an_older_release_is_refetched(client_factory, _models_cach
     client = client_factory(_catalog())
     assert "a/b" in fetch_models(client) and len(client.calls) == 1
     assert "a/b" in fetch_models(client) and len(client.calls) == 1  # now cached
+
+
+def _sleeps(monkeypatch):
+    waits = []
+    monkeypatch.setattr(openrouter.time, "sleep", waits.append)
+    return waits
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        {"error": {"code": 429, "message": "slow down"}},
+        httpx.Response(429, text="<html>Too Many Requests</html>"),
+    ],
+)
+def test_rate_limits_back_off_for_longer_with_jitter(
+    client_factory, completion, monkeypatch, first
+):
+    waits = _sleeps(monkeypatch)
+    monkeypatch.setattr(openrouter.random, "uniform", lambda a, b: (a + b) / 2)
+    client = client_factory([first, first, first, completion("ok")])
+    assert openrouter_request(client, "p", "m/x", use_cache=False)["response"] == "ok"
+    assert waits == [5.5, 10.5, 20.5]
+
+
+def test_other_transient_errors_keep_the_short_backoff(
+    client_factory, completion, error_body, monkeypatch
+):
+    waits = _sleeps(monkeypatch)
+    client = client_factory([error_body(504), error_body(502), completion("ok")])
+    openrouter_request(client, "p", "m/x", use_cache=False)
+    assert waits == [1, 2]
+
+
+@pytest.mark.parametrize("header, wait", [("7", 7.0), ("0", 0.0), ("600", 60.0)])
+def test_retry_after_is_honoured_and_capped(
+    client_factory, completion, monkeypatch, header, wait
+):
+    waits = _sleeps(monkeypatch)
+    limited = httpx.Response(
+        429, headers={"Retry-After": header}, json={"error": {"code": 429}}
+    )
+    openrouter_request(
+        client_factory([limited, completion("ok")]), "p", "m/x", use_cache=False
+    )
+    assert waits == [wait]
+
+
+@pytest.mark.parametrize("header", ["soon", "-3", "nan", "inf", ""])
+def test_unusable_retry_after_falls_back_to_the_backoff(
+    client_factory, completion, monkeypatch, header
+):
+    waits = _sleeps(monkeypatch)
+    limited = httpx.Response(
+        429, headers={"Retry-After": header}, json={"error": {"code": 429}}
+    )
+    openrouter_request(
+        client_factory([limited, completion("ok")]), "p", "m/x", use_cache=False
+    )
+    assert 5 <= waits[0] < 6
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": {"code": 429, "message": "Provider returned error"}},
+        httpx.Response(429, text="<html>Too Many Requests</html>"),
+        httpx.Response(429, json={"detail": "busy"}),
+    ],
+)
+def test_exhausted_rate_limit_says_what_to_do(client_factory, monkeypatch, body):
+    _sleeps(monkeypatch)
+    with pytest.raises(RuntimeError, match="Rate-limited: free models") as exc:
+        openrouter_request(client_factory(body), "p", "m/x", use_cache=False)
+    assert "429" in str(exc.value)
+
+
+def test_other_failures_carry_no_rate_limit_hint(
+    client_factory, error_body, monkeypatch
+):
+    _sleeps(monkeypatch)
+    with pytest.raises(RuntimeError) as exc:
+        openrouter_request(client_factory(error_body(504)), "p", "m/x", use_cache=False)
+    assert "Rate-limited" not in str(exc.value)
