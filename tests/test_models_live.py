@@ -42,7 +42,11 @@ def _configs():
 
 def _referenced_models():
     # `evalblink init` writes these into every starter benchmark.
-    refs = {("starter.py", starter.DEFAULT_MODEL), ("starter.py", starter.JUDGE_MODEL)}
+    refs = {
+        ("starter.py", starter.DEFAULT_MODEL),
+        ("starter.py", starter.JUDGE_MODEL),
+        ("starter.py", starter.PAID_MODEL),
+    }
     for source, cfg in _configs():
         for model in cfg.get("models") or []:
             refs.add((source, model))

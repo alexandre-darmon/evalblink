@@ -148,7 +148,7 @@ def test_retired_default_is_replaced_by_a_free_suggestion(
     monkeypatch, tmp_path, capsys
 ):
     catalog = {
-        "a/audio-model": FREE,  # zero-priced but not a `:free` id: listed last
+        "a/audio-model": {**FREE, "text": False},  # outputs audio: never suggested
         "a/paid": CATALOG["a/b"],  # never suggested
         **{f"z/text-{i}:free": FREE for i in range(6)},
     }
@@ -158,7 +158,23 @@ def test_retired_default_is_replaced_by_a_free_suggestion(
     stdout = capsys.readouterr().out
     assert "a/paid" not in stdout
     assert "z/text-4:free" in stdout and "z/text-5:free" not in stdout  # top five
-    assert "a/audio-model" not in stdout  # sorted after the `:free` ids
+    assert "a/audio-model" not in stdout
+
+
+def test_the_small_paid_model_is_suggested_not_preselected(
+    monkeypatch, tmp_path, capsys
+):
+    catalog = {**CATALOG, starter.PAID_MODEL: {"prompt": 2e-7, "completion": 4e-7}}
+    out = tmp_path / "x.yaml"
+    assert _init(monkeypatch, [str(out)], ["X", "", ""], catalog=catalog) == 0
+    assert _load(out)["models"] == [starter.DEFAULT_MODEL]
+    stdout = " ".join(capsys.readouterr().out.split())  # Rich wraps long lines
+    assert f"{starter.PAID_MODEL} ($0.200 in / $0.400 out per 1M tokens)" in stdout
+
+
+def test_a_retired_paid_suggestion_is_not_shown(monkeypatch, tmp_path, capsys):
+    assert _init(monkeypatch, [str(tmp_path / "x.yaml")], ["X", "", ""]) == 0
+    assert starter.PAID_MODEL not in capsys.readouterr().out
 
 
 def test_no_free_model_in_the_catalog_keeps_the_shipped_default(monkeypatch, tmp_path):

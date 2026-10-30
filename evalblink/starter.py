@@ -12,6 +12,8 @@ import yaml
 # covers them through tests/test_models_live.py).
 DEFAULT_MODEL = "poolside/laguna-xs-2.1:free"
 JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+# Suggested, never preselected: no free-tier rate limits for a few cents.
+PAID_MODEL = "google/gemma-4-31b-it"
 
 MODES = ("exact_match", "llm_judge")
 

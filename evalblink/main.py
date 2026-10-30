@@ -338,15 +338,14 @@ def _model_ids(raw):
 
 
 def _free_suggestions(models_meta):
-    """Up to five free models; ``:free`` ids first, since other zero-priced
-    entries can be non-text models."""
+    """Up to five free text models (text in, text out), by ID. A model whose
+    modalities the catalog doesn't give is kept."""
     return sorted(
-        (
-            (k, v)
-            for k, v in models_meta.items()
-            if v.get("prompt") == 0 and v.get("completion") == 0
-        ),
-        key=lambda kv: (not kv[0].endswith(":free"), kv[0]),
+        (k, v)
+        for k, v in models_meta.items()
+        if v.get("prompt") == 0
+        and v.get("completion") == 0
+        and v.get("text") is not False
     )[:5]
 
 
@@ -388,7 +387,7 @@ def cmd_init(args):
             "Evaluation mode", choices=list(starter.MODES), default="exact_match"
         )
         if suggestions:
-            console.print("\nSome free OpenRouter models:")
+            console.print("\nSome free OpenRouter text models:")
             table = Table(show_header=True, header_style="bold", box=None)
             table.add_column("Model ID", style="cyan")
             table.add_column("Context", justify="right")
@@ -396,6 +395,13 @@ def cmd_init(args):
                 table.add_row(mid, _fmt_ctx(meta.get("context_length")))
             console.print(table)
             console.print("`evalblink models --free` lists them all.")
+        paid = models_meta.get(starter.PAID_MODEL)
+        if paid:
+            console.print(
+                f"Small paid option, no free-tier rate limits: {starter.PAID_MODEL}"
+                f" (${_fmt_price(paid['prompt'])} in / ${_fmt_price(paid['completion'])}"
+                " out per 1M tokens)"
+            )
         models = _ask(
             console,
             "Models to compare (comma-separated)",

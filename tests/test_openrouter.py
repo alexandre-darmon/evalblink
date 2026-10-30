@@ -77,6 +77,10 @@ def _catalog():
                 "id": "a/b",
                 "context_length": 8000,
                 "pricing": {"prompt": "0.001", "completion": "0.002"},
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"],
+                },
             },
             {"id": "free/x", "context_length": 4096, "pricing": {"prompt": "0"}},
         ]
@@ -99,6 +103,7 @@ def test_fetch_models_parses_and_caches(client_factory, _models_cache):
         "prompt": 0.001,
         "completion": 0.002,
         "context_length": 8000,
+        "text": True,
     }
     # Missing completion price defaults to 0 for free models.
     assert models["free/x"]["completion"] == 0.0
@@ -116,7 +121,12 @@ def test_fetch_models_uses_fresh_cache(client_factory, _models_cache):
     models = fetch_models(client)
     # Served from cache (normalized: absent price = free, unknown context).
     assert models == {
-        "cached/m": {"prompt": 9.0, "completion": 0.0, "context_length": None}
+        "cached/m": {
+            "prompt": 9.0,
+            "completion": 0.0,
+            "context_length": None,
+            "text": None,
+        }
     }
     assert len(client.calls) == 0  # no network
 
@@ -427,7 +437,12 @@ def test_catalog_unknown_prices_and_bad_context_are_normalized(
     models = fetch_models(client_factory(catalog))
     assert models["openrouter/auto"]["prompt"] is None
     assert models["openrouter/auto"]["completion"] is None
-    assert models["s/x"] == {"prompt": None, "completion": 0.0, "context_length": None}
+    assert models["s/x"] == {
+        "prompt": None,
+        "completion": 0.0,
+        "context_length": None,
+        "text": None,
+    }
     assert models["h/x"]["prompt"] is None and models["h/x"]["context_length"] is None
     assert models["ok/x"]["context_length"] == 8192
     assert set(models) == {"openrouter/auto", "s/x", "h/x", "ok/x"}
@@ -448,6 +463,7 @@ def test_stale_format_models_cache_is_renormalized(client_factory, _models_cache
         "prompt": None,
         "completion": None,
         "context_length": None,
+        "text": None,
     }
 
 
@@ -524,3 +540,25 @@ def test_null_content_error_is_short_and_names_finish_reason(client_factory):
     message = str(exc.value)
     assert "null content" in message and "finish_reason: length" in message
     assert "xxxx" not in message and len(message) < 200
+
+
+@pytest.mark.parametrize(
+    "architecture, text",
+    [
+        ({"input_modalities": ["text"], "output_modalities": ["text"]}, True),
+        ({"input_modalities": ["image", "text"], "output_modalities": ["text"]}, True),
+        ({"input_modalities": ["text"], "output_modalities": ["text", "audio"]}, False),
+        ({"input_modalities": ["image"], "output_modalities": ["text"]}, False),
+        ({"input_modalities": ["text"], "output_modalities": ["image"]}, False),
+        ({"input_modalities": "text", "output_modalities": ["text"]}, None),
+        ({}, None),
+        (None, None),
+        ("text->text", None),
+    ],
+)
+def test_text_modality_survives_the_cache(
+    client_factory, _models_cache, architecture, text
+):
+    entry = {"id": "m/x", "pricing": {"prompt": "0"}, "architecture": architecture}
+    assert fetch_models(client_factory({"data": [entry]}))["m/x"]["text"] is text
+    assert fetch_models(client_factory({"data": []}))["m/x"]["text"] is text  # cached
