@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import math
 import os
-import re
 import sys
 
 import httpx
-import jinja2
 import yaml
 from dotenv import find_dotenv, load_dotenv
 from rich.markup import escape
@@ -24,14 +21,12 @@ from evalblink import (
     openrouter,
     reporter,
     runner,
+    starter,
 )
 from evalblink.analysis import summarize
-from evalblink.validator import _template_vars
 from evalblink.validator import validate as _validate_config
 
 DEFAULT_CONFIG = "benchmarks/exact_match_classification.yaml"
-# init's suggested judge: free, and the one the shipped benchmarks use.
-INIT_JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 RESULTS_DIR = "results"
 
 
@@ -318,20 +313,6 @@ def cmd_cache_clear(args):
     sys.exit(0)
 
 
-def _jinja_vars(text: str) -> list[str]:
-    """Variables a Jinja2 template needs, in order of first appearance.
-
-    Detection is the validator's (so ``{{ text|upper }}`` and ``{{ user.name }}``
-    count, as ``text`` and ``user``); raises ``jinja2.TemplateSyntaxError``.
-    """
-    needed = _template_vars(text)
-    # Words inside {{ }} / {% %} only, so prose that happens to contain a
-    # variable's name ("Review: {{ review }}") doesn't reorder the questions.
-    inner = " ".join(re.findall(r"\{[{%](.*?)[}%]\}", text, flags=re.DOTALL))
-    ordered = [w for w in dict.fromkeys(re.findall(r"\w+", inner)) if w in needed]
-    return ordered + sorted(needed - set(ordered))
-
-
 def _ask(console, question, parse, hint, **kwargs):
     """``Prompt.ask`` until ``parse(answer)`` accepts it (raises ``ValueError``
     to reject), so every value ``init`` writes is one ``validate`` accepts."""
@@ -342,56 +323,36 @@ def _ask(console, question, parse, hint, **kwargs):
             console.print(hint, style="yellow")
 
 
-def _checked(ok):
-    """A ``parse`` for :func:`_ask`: return the answer if ``ok(answer)``."""
-
-    def parse(raw):
-        if not ok(raw):
-            raise ValueError(raw)
-        return raw
-
-    return parse
-
-
-def _number(convert, low=-math.inf, high=math.inf):
-    """A ``parse`` for :func:`_ask`: a finite ``convert``-ed number in [low, high]."""
-
-    def parse(raw):
-        value = convert(raw)
-        if not (openrouter.is_number(value) and low <= value <= high):
-            raise ValueError(raw)
-        return value
-
-    return parse
-
-
-def _template(raw):
-    """A non-empty template that parses as Jinja2."""
+def _name(raw):
     if not raw.strip():
         raise ValueError(raw)
-    try:
-        _jinja_vars(raw)
-    except jinja2.TemplateError as exc:
-        raise ValueError(raw) from exc
-    return raw
+    return raw.strip()
+
+
+def _model_ids(raw):
+    """Comma-separated model IDs, deduplicated in order; no blanks or spaces."""
+    ids = list(dict.fromkeys(m.strip() for m in raw.split(",") if m.strip()))
+    if not ids or any(len(m.split()) != 1 for m in ids):
+        raise ValueError(raw)
+    return ids
+
+
+def _free_suggestions(models_meta):
+    """Up to five free text models (text in, text out), by ID. A model whose
+    modalities the catalog doesn't give is kept."""
+    return sorted(
+        (k, v)
+        for k, v in models_meta.items()
+        if v.get("prompt") == 0
+        and v.get("completion") == 0
+        and v.get("text") is not False
+    )[:5]
 
 
 def cmd_init(args):
-    """Interactively scaffold a new benchmark YAML file."""
+    """Write a commented starter benchmark: three questions, then edit the file."""
     console = reporter.make_console()
-    console.print("\nevalblink init — scaffold a new benchmark\n", style="bold")
 
-    # 1. Name
-    name = _ask(console, "Benchmark name", _checked(str.strip), "A name is required.")
-
-    # 2. Evaluation mode
-    mode = Prompt.ask(
-        "Evaluation mode",
-        choices=["exact_match", "llm_judge"],
-        default="exact_match",
-    )
-
-    # 3. Models — free-model suggestions from the catalog, when it's reachable
     try:
         with httpx.Client() as client:
             models_meta = openrouter.fetch_models(client, use_cache=True)
@@ -402,200 +363,76 @@ def cmd_init(args):
             style="yellow",
         )
         models_meta = {}
+    suggestions = _free_suggestions(models_meta)
+    default_model = starter.DEFAULT_MODEL
+    if models_meta and default_model not in models_meta and suggestions:
+        default_model = suggestions[0][0]  # the shipped default was retired
 
-    # `:free` ids first: other zero-priced entries can be non-text models.
-    free_suggestions = sorted(
-        (
-            (k, v)
-            for k, v in models_meta.items()
-            if v.get("prompt") == 0 and v.get("completion") == 0
-        ),
-        key=lambda kv: (not kv[0].endswith(":free"), kv[0]),
-    )[:5]
-
-    console.print("\nModels", style="bold")
-    if free_suggestions:
-        console.print("Here are some free OpenRouter models:")
-        free_table = Table(show_header=True, header_style="bold", box=None)
-        free_table.add_column("Model ID", style="cyan")
-        free_table.add_column("Context", justify="right")
-        for mid, meta in free_suggestions:
-            free_table.add_row(mid, _fmt_ctx(meta.get("context_length")))
-        console.print(free_table)
-        console.print(
-            "Use an ID from above, or paste any OpenRouter model ID. "
-            "Tip: `evalblink models --free` shows all free options.\n"
-        )
-
-    models: list = []
-    while True:
-        label = "Model ID" if not models else "Another model (blank to finish)"
-        m = Prompt.ask(f"  {label}", default="").strip()
-        if not m:
-            if not models:
-                console.print("At least one model is required.", style="yellow")
-                continue
-            break
-        if m in models:
-            console.print(f"{m} is already listed.", style="yellow")
-            continue
-        models.append(m)
-
-    # 4. Prompt template
-    console.print(
-        "\nPrompt template — use {{ variable }} for dynamic values", style="bold"
-    )
-    if mode == "exact_match":
-        console.print(
-            "  Example: Classify this text: {{ text }}. Choose from: {{ labels }}"
-        )
+    if args.yes:
+        name, mode, models = "My benchmark", "exact_match", [default_model]
     else:
-        console.print("  Example: Write a concise summary of: {{ text }}")
-    template = _ask(
-        console, "  Template", _template, "Enter a non-empty, valid Jinja2 template."
-    )
-    system = _ask(
-        console,
-        "  System message (optional)",
-        lambda raw: raw if not raw.strip() else _template(raw),
-        "Enter a valid Jinja2 template, or leave it blank.",
-        default="",
-    )
-
-    # 5. Variable scoping
-    all_vars = list(dict.fromkeys(_jinja_vars(template) + _jinja_vars(system)))
-    global_vars: dict = {}
-    per_case_vars: list = []
-    if all_vars:
-        console.print(f"\nTemplate variables: {', '.join(all_vars)}", style="bold")
+        console.print("\nevalblink init — write a starter benchmark\n", style="bold")
+        name = _ask(
+            console,
+            "Benchmark name",
+            _name,
+            "A name is required.",
+            default="My benchmark",
+        )
         console.print(
-            "Mark each as g (global: same for all test cases) or p (per-case: varies)."
+            "exact_match: the reply must equal a label. "
+            "llm_judge: a judge model scores free text against your criteria."
         )
-        for var in all_vars:
-            choice = Prompt.ask(f"  '{var}'", choices=["g", "p"], default="p")
-            if choice == "g":
-                global_vars[var] = Prompt.ask(f"    Value for [cyan]{var}[/cyan]")
-            else:
-                per_case_vars.append(var)
-
-    # 6. Judge config (llm_judge only)
-    eval_config: dict = {}
-    if mode == "llm_judge":
-        console.print("\nJudge configuration", style="bold")
-        judge_model = _ask(
+        mode = Prompt.ask(
+            "Evaluation mode", choices=list(starter.MODES), default="exact_match"
+        )
+        if suggestions:
+            console.print("\nSome free OpenRouter text models:")
+            table = Table(show_header=True, header_style="bold", box=None)
+            table.add_column("Model ID", style="cyan")
+            table.add_column("Context", justify="right")
+            for mid, meta in suggestions:
+                table.add_row(mid, _fmt_ctx(meta.get("context_length")))
+            console.print(table)
+            console.print("`evalblink models --free` lists them all.")
+        paid = models_meta.get(starter.PAID_MODEL)
+        if paid:
+            console.print(
+                "Small paid option, no free-tier rate limits:\n"
+                f"  {starter.PAID_MODEL}"
+                f" (${_fmt_price(paid['prompt'])} in / ${_fmt_price(paid['completion'])}"
+                " out per 1M tokens)"
+            )
+        models = _ask(
             console,
-            "  Judge model",
-            _checked(str.strip),
-            "A judge model ID is required.",
-            default=INIT_JUDGE_MODEL,
+            "Models to compare (comma-separated)",
+            _model_ids,
+            "Enter one or more model IDs separated by commas, e.g. a/b, c/d",
+            default=default_model,
         )
-        judge_threshold = _ask(
-            console,
-            "  Judge threshold (0.0–1.0)",
-            _number(float, 0, 1),
-            "Enter a decimal between 0 and 1, e.g. 0.70",
-            default="0.70",
-        )
-        eval_config = {"judge_model": judge_model, "judge_threshold": judge_threshold}
 
-    # 7. Inference
-    console.print("\nInference settings", style="bold")
-    temperature = _ask(
-        console,
-        "  Temperature",
-        _number(float),
-        "Enter a number, e.g. 0 or 0.7",
-        default="0",
-    )
-    max_tokens = _ask(
-        console,
-        "  Max tokens",
-        _number(int, 1),
-        "Enter a positive whole number, e.g. 100 or 1024",
-        # Headroom: free reasoning models spend tokens before answering and
-        # return null content when the budget runs out.
-        default="1024",
-    )
-
-    # 8. Test cases
-    test_cases: list = []
-    tc_num = 1
-    console.print("\nTest cases", style="bold")
-    while True:
-        console.print(f"\n  Test case {tc_num}", style="bold")
-        taken = {tc["id"] for tc in test_cases}
-        tc_id = _ask(
-            console,
-            "    ID",
-            _checked(lambda raw, taken=taken: raw.strip() and raw not in taken),
-            "Enter a non-empty ID not used by another test case.",
-            default=f"tc_{tc_num:03d}",
-        )
-        tc: dict = {"id": tc_id, "evaluation": mode}
-
-        if per_case_vars:
-            tc["variables"] = {
-                var: Prompt.ask(f"    {{{{ {var} }}}}") for var in per_case_vars
-            }
-
-        if mode == "exact_match":
-            tc["expected_output"] = Prompt.ask("    Expected output")
-        else:
-            tc["criteria"] = _ask(
-                console,
-                "    Evaluation criteria",
-                _checked(str.strip),
-                "Criteria are required for llm_judge.",
+    written = models + ([starter.JUDGE_MODEL] if mode == "llm_judge" else [])
+    for m in written if models_meta else []:
+        if m not in models_meta:
+            console.print(
+                f"⚠  {m} is not in the OpenRouter catalog — check the ID.",
+                style="yellow",
             )
 
-        tags_str = Prompt.ask("    Tags (comma-separated, optional)", default="")
-        if tags_str.strip():
-            tc["tags"] = [t.strip() for t in tags_str.split(",") if t.strip()]
+    out_path = args.path or f"benchmarks/{reporter._slugify(name)}.yaml"
+    if os.path.isdir(out_path):
+        sys.exit(f"{out_path} is a directory — pass a file path.")
+    if os.path.exists(out_path):
+        if args.yes:
+            sys.exit(f"{out_path} already exists — pass another path.")
+        if not Confirm.ask(
+            f"{escape(out_path)} already exists — overwrite?", default=False
+        ):
+            sys.exit(0)
 
-        test_cases.append(tc)
-        tc_num += 1
-
-        if not Confirm.ask("\n  Add another test case?", default=False):
-            break
-
-    # 9. CI/CD gate
-    console.print("\nCI/CD quality gate", style="bold")
-    quality_threshold = _ask(
-        console,
-        "  Quality threshold 0–100 (Enter to skip)",
-        lambda raw: _number(int, 0, 100)(raw) if raw.strip() else None,
-        "Enter a whole number 0–100, or press Enter to skip",
-        default="",
-    )
-
-    # 10. Output path
-    default_path = f"benchmarks/{reporter._slugify(name)}.yaml"
-    out_path = Prompt.ask("\nOutput file", default=default_path)
-
-    if os.path.exists(out_path) and not Confirm.ask(
-        f"  {escape(out_path)} already exists — overwrite?", default=False
-    ):
-        sys.exit(0)
-
-    # 11-12. Build config and write
-    config: dict = {"name": name}
-    if quality_threshold is not None:
-        config["quality_threshold"] = quality_threshold
-    config["models"] = models
-    config["inference"] = {"temperature": temperature, "max_tokens": max_tokens}
-    if eval_config:
-        config["evaluation"] = eval_config
-    if global_vars:
-        config["variables"] = global_vars
-    prompt_entry: dict = {"id": "v1", "template": template}
-    if system:
-        prompt_entry["system"] = system
-    config["prompts"] = [prompt_entry]
-    config["test_cases"] = test_cases
-
-    # Last line of defence: never write a file `validate` would reject (e.g. a
-    # template that only fails when rendered with the given values).
-    errors, warnings = _validate_config(config)
+    text = starter.render(name, models, mode)
+    # Last line of defence: never write a file `validate` would reject.
+    errors, warnings = _validate_config(yaml.safe_load(text))
     _print_findings(console, errors, warnings)
     if errors:
         sys.exit(1)
@@ -605,18 +442,20 @@ def cmd_init(args):
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-            )
-    except (OSError, ValueError) as exc:  # ValueError: an unencodable path
+            f.write(text)
+    except (OSError, ValueError) as exc:  # ValueError: an unencodable path or name
         sys.exit(f"Cannot write {out_path}: {getattr(exc, 'strerror', None) or exc}")
 
-    # 13. Success
-    console.print(f"\n✓ Created {out_path}\n", style="green")
-    console.print("Next steps:")
-    console.print(f"  evalblink run {out_path}      run the benchmark")
-    console.print(f"  evalblink run {out_path} -v   verbose output")
-    console.print("  evalblink -h                   full CLI help")
+    # Absolute: relative paths are under the directory init ran in, not the install.
+    console.print(
+        f"\n✓ Created {os.path.abspath(out_path)}\n", style="green", soft_wrap=True
+    )
+    console.print(f"Next: open {out_path} and make it yours —")
+    console.print("  the prompt is under `prompts:`, the examples under `test_cases:`.")
+    console.print("Then:")
+    console.print(f"  evalblink validate {out_path}")
+    console.print(f"  evalblink run {out_path} --dry-run")
+    console.print(f"  evalblink run {out_path}")
     sys.exit(0)
 
 
@@ -793,7 +632,21 @@ def build_parser():
     # --- init ---
     init_p = subparsers.add_parser(
         "init",
-        help="interactively scaffold a new benchmark YAML",
+        help="write a commented starter benchmark YAML (3 questions)",
+        description="Ask a name, an evaluation mode and the models, then write a "
+        "complete, commented benchmark that validates and runs as-is. Edit its "
+        "example test cases in your editor.",
+    )
+    init_p.add_argument(
+        "path",
+        nargs="?",
+        help="output file (default: benchmarks/<name>.yaml)",
+    )
+    init_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="no questions: write the exact_match starter with the default model",
     )
     init_p.set_defaults(func=cmd_init)
 

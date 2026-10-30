@@ -57,7 +57,7 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 - Generate a versioned Markdown report and JSON record per run
 - Store results history locally and compare runs with `evalblink compare` (quality + cost deltas; per-case transitions with `--detailed`)
 - Browse live OpenRouter model catalog with pricing and context length via `evalblink models`
-- Scaffold a new benchmark YAML interactively via `evalblink init`
+- Write a commented starter benchmark from three questions via `evalblink init`
 
 ### `[V1.1 — planned]`
 
@@ -591,8 +591,9 @@ evalblink models --free
 evalblink models --min-context 100k
 evalblink models --no-cache          # refetch instead of using the 24h catalog cache
 
-# Scaffold a new benchmark YAML interactively
+# Write a commented starter benchmark (3 questions; --yes for none)
 evalblink init
+evalblink init my-eval.yaml --yes
 
 # Cache management
 evalblink cache stats
@@ -870,15 +871,15 @@ Four practitioner guides covering the full evaluation workflow. **Planned for V1
 
 ## 23. `[V1 — shipped]` Interactive Scaffolding — `evalblink init` (`[V1.1 — planned]` extension)
 
-> **Status:** `evalblink init` shipped in V1 as a basic interactive YAML scaffolder. V1.1 will extend it to generate pre-structured test case distributions (50/30/20 easy/medium/edge_case) with inline references to the `/docs/skills/` guides.
+> **Status:** `evalblink init` shipped in V1. It asks three questions and writes a commented starter instead of collecting every field at the prompt. V1.1 will extend the starter with pre-structured test case distributions (50/30/20 easy/medium/edge_case) and inline references to the `/docs/skills/` guides.
 
 Shipped behavior:
-- Asks again on an invalid answer: empty name, duplicate model or test-case id, empty or invalid Jinja2 template, a temperature that isn't a finite number, a `max_tokens` that isn't a positive whole number, a `judge_threshold` outside 0–1, empty `criteria`, a `quality_threshold` outside 0–100.
-- Defaults: `max_tokens` 1024 (free reasoning models need the headroom) and the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`.
-- Finds template variables the way `validate` does (`{{ text|upper }}` and `{{ user.name }}` give `text` and `user`), in order of first appearance, and asks whether each is global or per-case.
-- Suggests up to five free models from the catalog; if the catalog can't be fetched it warns and continues without suggestions.
-- Default output path `benchmarks/<slug>.yaml`, using the results-file slug (`benchmarks/benchmark.yaml` for a name with no letters or digits).
-- Runs `validate` on the generated config and exits 1 without writing if there are errors; writes with `yaml.safe_dump`, and a write failure exits with a clear message.
+- Three questions, each with a default (Enter accepts it): the benchmark name (`My benchmark`), the evaluation mode (`exact_match` or `llm_judge`), and the models to compare, comma-separated (trimmed and deduplicated; an empty list or an ID with spaces is asked again). The default model is the free `poolside/laguna-xs-2.1:free`, or the first free catalog model if OpenRouter has retired it. A model absent from the catalog gets a warning.
+- Shows up to five free text models from the catalog, sorted by ID: text in, text-only out, judged from the catalog's `architecture` modalities (a model the catalog gives no modalities for is kept). Below them, a small paid option without free-tier rate limits, `google/gemma-4-31b-it`, with its catalog price, shown only while the catalog lists it and never preselected. If the catalog can't be fetched, `init` warns and continues without suggestions.
+- Writes a complete, commented starter (`evalblink/starter.py`): an example prompt, example test cases with tags, `temperature: 0`, `max_tokens: 1024` and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free` with `judge_threshold: 0.70`. Optional keys (`quality_threshold`, `concurrency`, `max_cost_usd`, `system`, a second prompt, `judge_max_tokens`) are present as comments. The file validates and runs as-is; the user replaces the example test cases in an editor.
+- Output path: the optional positional argument, or `benchmarks/<slug>.yaml`, relative to the current directory (never the install directory); the absolute path is printed after writing using the results-file slug (`benchmarks/benchmark.yaml` for a name with no letters or digits). An existing file is overwritten only after confirmation.
+- `--yes` / `-y` asks nothing: the `exact_match` starter, named `My benchmark`, with the default model; it exits 1 rather than overwrite an existing file.
+- Runs `validate` on the generated config and exits 1 without writing if there are errors; a write failure exits with a clear message.
 
 ---
 

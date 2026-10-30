@@ -255,21 +255,32 @@ def _price(value) -> float | None:
 
 
 def _normalize(meta: dict) -> dict:
-    """``{prompt, completion, context_length}`` with unknown values as ``None``."""
+    """``{prompt, completion, context_length, text}`` with unknown values as ``None``."""
     try:
         context = int(meta.get("context_length"))
     except (TypeError, ValueError, OverflowError):
         context = None
+    text = meta.get("text")
     return {
         # An absent key reads as free (OpenRouter omits zero prices); None is unknown.
         "prompt": _price(meta.get("prompt", "")),
         "completion": _price(meta.get("completion", "")),
         "context_length": context,
+        "text": text if isinstance(text, bool) else None,
     }
 
 
+def _is_text(architecture) -> bool | None:
+    """Text in, text only out; ``None`` when the catalog doesn't say."""
+    arch = architecture if isinstance(architecture, dict) else {}
+    ins, outs = arch.get("input_modalities"), arch.get("output_modalities")
+    if not (isinstance(ins, list) and isinstance(outs, list)):
+        return None
+    return "text" in ins and outs == ["text"]
+
+
 def _parse_models(data: list) -> dict:
-    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length}}``.
+    """Reduce the raw ``/models`` payload to ``{id: {prompt, completion, context_length, text}}``.
 
     Prices are per-token USD floats (``0`` for free models) or ``None`` when the
     catalog's value is unusable; a malformed entry never sinks the whole catalog.
@@ -281,13 +292,17 @@ def _parse_models(data: list) -> dict:
         pricing = entry.get("pricing")
         pricing = pricing if isinstance(pricing, dict) else {}
         models[entry["id"]] = _normalize(
-            {**pricing, "context_length": entry.get("context_length")}
+            {
+                **pricing,
+                "context_length": entry.get("context_length"),
+                "text": _is_text(entry.get("architecture")),
+            }
         )
     return models
 
 
 def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
-    """Return ``{model_id: {prompt, completion, context_length}}`` from OpenRouter.
+    """Return ``{model_id: {prompt, completion, context_length, text}}`` from OpenRouter.
 
     The catalog is cached on disk for ``MODELS_TTL_SECONDS`` (24h); a fresh cache
     is served without a network call. Prices are per-token USD floats, or
