@@ -145,9 +145,10 @@ def _filtered(config, args):
     filters = {
         k: v
         for k, v in (
-            ("model", args.model),
-            ("prompt", args.prompt),
-            ("tag", args.tag),
+            # Sorted: `--tag a --tag b` and `--tag b --tag a` are the same slice.
+            ("model", sorted(args.model or [])),
+            ("prompt", sorted(args.prompt or [])),
+            ("tag", sorted(args.tag or [])),
             ("limit", args.limit),
         )
         if v
@@ -255,10 +256,22 @@ def _run_records():
                 found.append((path, compare.load_record(path)))
             except compare.RecordError:
                 continue
-    # Same-second reruns share a timestamp (`<run>-2.json`): the file's
-    # modification time breaks the tie.
+
+    # Same-second reruns share a timestamp; the reporter numbers them
+    # `<timestamp>_<slug>-2`, `-3`… (see reporter.write), which orders them
+    # however the files were copied. The file's mtime is the last resort.
+    def rerun(record):
+        base = f"{record['timestamp']}_{reporter._slugify(record['benchmark'])}"
+        suffix = str(record.get("run_id") or "").removeprefix(base)
+        return int(suffix[1:]) if suffix[:1] == "-" and suffix[1:].isdigit() else 1
+
     found.sort(
-        key=lambda pr: (pr[1]["timestamp"], os.path.getmtime(pr[0]), pr[0]),
+        key=lambda pr: (
+            pr[1]["timestamp"],
+            rerun(pr[1]),
+            os.path.getmtime(pr[0]),
+            pr[0],
+        ),
         reverse=True,
     )
     return found
@@ -305,8 +318,12 @@ def cmd_compare(args):
         if args.file_a is not None:
             path_a = _record_path(args.file_a)
             record_a = _load(path_a)
+            # Not the baseline itself, even when it is a copy of a results file.
             pool = [
-                pr for pr in runs if os.path.abspath(pr[0]) != os.path.abspath(path_a)
+                pr
+                for pr in runs
+                if os.path.abspath(pr[0]) != os.path.abspath(path_a)
+                and pr[1].get("run_id") != record_a.get("run_id")
             ]
         else:
             if not runs:
@@ -326,7 +343,7 @@ def cmd_compare(args):
             path_b, record_b = same[0]
         else:
             what = f"{key.get('benchmark')!r}" if key else "it"
-            message = f"No earlier run of {what} in {RESULTS_DIR}/ to compare with."
+            message = f"No other run of {what} in {RESULTS_DIR}/ to compare with."
             if args.fail_on_regression is not None:
                 print(f"{message} Nothing to check.")
                 sys.exit(0)
@@ -338,13 +355,20 @@ def cmd_compare(args):
         reporter.render_comparison(compare.diff(record_a, record_b))
     if args.fail_on_regression is None:
         sys.exit(0)
-    dropped = compare.regressions(
-        compare.diff(record_a, record_b), args.fail_on_regression
-    )
+    result = compare.diff(record_a, record_b)
+    if not compare.compared(result):
+        # Fail closed: a renamed model or an edited test set must not turn the
+        # CI check into a silent pass.
+        print(
+            "FAIL: nothing to compare — the runs share no model × prompt combo"
+            " with the same test cases. Refresh the baseline."
+        )
+        sys.exit(1)
+    dropped = compare.regressions(result, args.fail_on_regression)
     for row in dropped:
         print(
-            f"REGRESSION: {row['model']} / {row['prompt_id']} quality"
-            f" {row['score_delta']:+.1f} points"
+            f"REGRESSION: {row['model']} / {row['prompt_id']} pass rate"
+            f" {row['gate_delta']:+.1f} points (unscored cases count as failures)"
         )
     if dropped:
         sys.exit(1)
@@ -772,7 +796,13 @@ OUTPUT COLUMNS
   Model / Prompt  the combo being compared
   Quality Δ       pass-rate change B − A: ↑ / ↓, or stable within ±0.05 pp
   Cost Δ          total cost change per combo (models + judge)
-  Notes           "only in A" / "only in B" when a combo is missing from one run
+  Notes           "only in A" / "only in B" when a combo is missing from one run;
+                  "pipeline errors 2 → 0" when its error count changed (yellow);
+                  "different test cases" when the runs ran other cases (yellow)
+
+--fail-on-regression POINTS (for CI) exits 1 when a shared combo's pass rate —
+unscored cases counted as failures — drops by more than POINTS, or when no
+combo could be compared at all (refresh the baseline).
 
 --detailed also shows per-combo case transitions and a global summary:
   regressed   pass → fail

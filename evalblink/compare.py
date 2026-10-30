@@ -250,6 +250,14 @@ def regressions(diff_result, tolerance=0.0) -> list:
     ]
 
 
+def compared(diff_result) -> int:
+    """How many shared combos ``regressions`` actually checks."""
+    return sum(
+        r["present_in"] == "both" and r["same_cases"] is not False
+        for r in diff_result["rows"]
+    )
+
+
 def _is_stable(row) -> bool:
     """Whether a both-sides row's quality is unchanged (for sort ordering)."""
     delta = row["score_delta"]
