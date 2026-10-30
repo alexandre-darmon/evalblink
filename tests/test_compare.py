@@ -212,10 +212,8 @@ def test_diff_flags_combos_whose_pipeline_errors_changed():
     rows = {r["model"]: r for r in result["rows"]}
     assert (rows["m/x"]["errors_a"], rows["m/x"]["errors_b"]) == (0, 3)
     assert (rows["m/y"]["errors_a"], rows["m/y"]["errors_b"]) == (None, 2)
-    assert (
-        "1 shared combo(s) had a different number of pipeline errors"
-        in (result["verdict"])
-    )
+    assert result["verdict"].startswith("No like-for-like shared combos.")
+    assert "1 shared combo(s) left out" in result["verdict"]
 
 
 def test_diff_without_error_changes_adds_no_note():
@@ -224,3 +222,36 @@ def test_diff_without_error_changes_adds_no_note():
     assert "pipeline errors" not in compare.diff(a, b)["verdict"]
     old = _record("old", [_combo("m/x", "v1", 50.0, 0.1)])  # no errors key
     assert "pipeline errors" not in compare.diff(old, old)["verdict"]
+
+
+def test_uneven_combos_are_not_counted_as_improved_and_sort_first():
+    a = _record(
+        "a",
+        [
+            {**_combo("m/x", "v1", 50.0, 0.1), "errors": 0},
+            {**_combo("m/y", "v1", 50.0, 0.1), "errors": 0},
+            {**_combo("m/a", "v1", 50.0, 0.1), "errors": 0},
+            {**_combo("m/z", "v1", 50.0, 0.1), "errors": 0},
+        ],
+    )
+    b = _record(
+        "b",
+        [
+            {**_combo("m/x", "v1", 100.0, 0.1), "errors": 2},  # "better" via errors
+            {**_combo("m/y", "v1", 60.0, 0.1), "errors": 0},  # real improvement
+            {**_combo("m/a", "v1", 50.0, 0.1), "errors": 0},  # stable
+            {**_combo("m/z", "v1", 50.0, 0.1), "errors": 1},  # same score, uneven
+        ],
+    )
+    result = compare.diff(a, b)
+    assert result["verdict"].startswith("Run B improves quality on 1/2 shared")
+    assert "2 shared combo(s) left out" in result["verdict"]
+    assert result["rows"][-1]["model"] == "m/a"  # only the stable row sorts last
+
+
+def test_a_record_without_error_counts_compares_as_zero_errors():
+    old = _record("old", [_combo("m/x", "v1", 50.0, 0.1)])  # pre-0.1.1: no errors
+    new = _record("new", [{**_combo("m/x", "v1", 60.0, 0.1), "errors": 0}])
+    result = compare.diff(old, new)
+    assert result["rows"][0]["errors_a"] == 0
+    assert "left out" not in result["verdict"]

@@ -185,7 +185,7 @@ def test_budgets_are_capped_at_the_models_output_limit():
     )
     meta = {
         "m/x": {**_meta(completion=1.0), "max_output": 2048},
-        "j/x": {**_meta(completion=1.0), "max_output": 1000},
+        "j/x": {**_meta(prompt=1.0, completion=1.0), "max_output": 1000},
     }
     est = estimate.estimate(config, meta)
     assert est["rows"][0]["est_completion_tokens"] == 2 * 2048
@@ -203,6 +203,16 @@ def test_budgets_are_capped_at_the_models_output_limit():
             "limit": 1000,
         },
     ]
-    assert est["judge_cost"] == 2 * 1000  # prompts are free: capped completions only
-    within = estimate.estimate(config, {"m/x": _meta(), "j/x": _meta()})
-    assert within["over_output_limit"] == []
+    assert est["rows"][0]["est_cost"] == 2 * 2048  # candidate prompts are free
+    # The judge reads the prompt, the criteria and the capped candidate reply.
+    judge_in = 2 * (_est_tokens("a") + _est_tokens("x") + 2048)
+    assert est["judge_cost"] == judge_in + 2 * 1000
+    at_limit = estimate.estimate(
+        config,
+        {
+            "m/x": {**_meta(), "max_output": 5000},
+            "j/x": {**_meta(), "max_output": JUDGE_MAX_TOKENS},
+        },
+    )
+    assert at_limit["over_output_limit"] == []
+    assert at_limit["rows"][0]["est_completion_tokens"] == 2 * 5000

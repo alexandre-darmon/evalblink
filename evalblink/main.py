@@ -57,6 +57,7 @@ def _default_config():
             f
             for f in os.listdir("benchmarks")
             if f.endswith((".yaml", ".yml"))
+            and not f.startswith(".")  # editor/OS junk such as macOS ._x.yaml
             and os.path.isfile(os.path.join("benchmarks", f))
         )
     except OSError:

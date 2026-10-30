@@ -214,3 +214,27 @@ def test_comparison_notes_pipeline_error_counts():
         {"run_a": "a", "run_b": "b", "rows": [row], "verdict": "v"},
     )
     assert "pipeline errors 0 → 3" in out
+
+
+@pytest.mark.parametrize(
+    "row, note, style",
+    [
+        (
+            {"errors_a": 0, "errors_b": 3, "score_delta": 50.0},
+            "pipeline errors 0 → 3",
+            "yellow",
+        ),
+        (
+            {"errors_a": 2, "errors_b": 2, "score_delta": 50.0},
+            "pipeline errors 2 → 2",
+            "green",
+        ),
+        ({"errors_a": 0, "errors_b": 0, "score_delta": -9.0}, "", "red"),
+        ({"errors_a": 0, "errors_b": 0, "score_delta": 0.0}, "", None),
+        ({"present_in": "a_only", "errors_a": 2, "errors_b": None}, "only in A", None),
+        ({"present_in": "b_only", "errors_a": None, "errors_b": 1}, "only in B", None),
+    ],
+)
+def test_comparison_row_note_and_style(row, note, style):
+    row = {"present_in": "both", "score_delta": None, **row}
+    assert reporter._comparison_note_and_style(row) == (note, style)

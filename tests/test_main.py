@@ -1011,6 +1011,7 @@ def test_no_path_uses_the_only_yaml_in_benchmarks(
     _bench_dir(tmp_path, "mine.yaml")
     (tmp_path / "benchmarks" / "notes.txt").write_text("not a config")
     (tmp_path / "benchmarks" / "dir.yaml").mkdir()  # not a file
+    (tmp_path / "benchmarks" / "._mine.yaml").write_text("")  # macOS junk
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _run_cli([command])  # run stops at the missing key, after loading the config
     captured = capsys.readouterr()

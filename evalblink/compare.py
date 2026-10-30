@@ -147,11 +147,14 @@ def diff(record_a, record_b) -> dict:
             present_in = "both"
             score_delta = b["score"] - a["score"]
             cost_delta = b["total_cost"] - a["total_cost"]
-            comparable += 1
-            if score_delta > _SCORE_EPS:
-                improved += 1
+            # Scores exclude pipeline errors: a combo whose error count changed
+            # was scored over different cases, so it isn't counted either way.
             if (a.get("errors") or 0) != (b.get("errors") or 0):
                 uneven += 1
+            else:
+                comparable += 1
+                if score_delta > _SCORE_EPS:
+                    improved += 1
         elif b:
             present_in = "b_only"
             score_delta = cost_delta = None
@@ -176,7 +179,7 @@ def diff(record_a, record_b) -> dict:
 
     rows.sort(
         key=lambda r: (
-            r["present_in"] == "both" and _is_stable(r),
+            r["present_in"] == "both" and _is_stable(r) and not _uneven(r),
             r["model"],
             r["prompt_id"],
         )
@@ -198,7 +201,7 @@ def diff(record_a, record_b) -> dict:
         "schema_b": schema_b,
         "version_note": version_note,
         "rows": rows,
-        "verdict": _verdict(improved, comparable, rows) + _uneven_note(uneven),
+        "verdict": _verdict(improved, comparable, uneven, rows),
     }
 
 
@@ -208,21 +211,24 @@ def _is_stable(row) -> bool:
     return delta is not None and abs(delta) <= _SCORE_EPS
 
 
-def _uneven_note(uneven) -> str:
-    if not uneven:
-        return ""
-    return (
-        f" {uneven} shared combo(s) had a different number of pipeline errors"
-        " (excluded from scores), so their quality Δ is not like-for-like —"
-        " see `compare --detailed`."
-    )
+def _uneven(row) -> bool:
+    """A shared combo whose pipeline-error count changed between the runs."""
+    return row["present_in"] == "both" and row["errors_a"] != row["errors_b"]
 
 
-def _verdict(improved, comparable, rows) -> str:
-    """One-line summary of B versus A."""
+def _verdict(improved, comparable, uneven, rows) -> str:
+    """One-line summary of B versus A over like-for-like shared combos."""
     only = [r for r in rows if r["present_in"] != "both"]
     only_note = f" {len(only)} combo(s) present in only one run." if only else ""
+    if uneven:
+        only_note += (
+            f" {uneven} shared combo(s) left out: their number of pipeline errors"
+            " (excluded from scores) changed, so their quality Δ is not"
+            " like-for-like."
+        )
     if not comparable:
+        if uneven:
+            return "No like-for-like shared combos." + only_note
         return "No combos in common between the two runs." + only_note
     if improved == comparable:
         return f"Run B improves quality on all {comparable} shared combo(s).{only_note}"

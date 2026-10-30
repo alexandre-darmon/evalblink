@@ -474,7 +474,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 ```
 
 - Prompt tokens estimated as `len(rendered_text) / 4`
-- Completion tokens use the configured `max_tokens` as a ceiling — per combo, `max_tokens` × the number of test cases
+- Completion tokens use the configured `max_tokens` as a ceiling, or the model's output limit if lower — per combo, that × the number of test cases
 - Judge tokens estimated separately per `llm_judge` case (prompt + criteria + `max_tokens` worth of response in, `evaluation.judge_max_tokens` out, default 4096); each row's `Est cost` includes its judge share, and the `Judge cost (llm_judge cases)` line is printed only when the estimated judge cost is non-zero (not with a free judge model)
 - Models missing from the pricing catalog, or priced there with a negative or non-numeric value (OpenRouter quotes `-1` for its `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`)
 - Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
@@ -731,7 +731,7 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 Verdict: Run B improves quality on 2/3 shared combo(s).
 ```
 
-Changed (or one-sided) combos are listed first, then stable ones; combos present in only one run are flagged in Notes and mentioned in the verdict. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict says how many such combos there are. Use `--detailed` to see which cases changed.
+Changed (or one-sided) combos are listed first, then stable ones; combos present in only one run are flagged in Notes and mentioned in the verdict. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict leaves it out of the improved count and says how many were left out. Use `--detailed` to see which cases changed.
 
 `--detailed` adds a per-combo test-case transition table (regressed / improved / new_error / recovered) and a global summary (change counts, worst-regressed cases, per-tag net).
 

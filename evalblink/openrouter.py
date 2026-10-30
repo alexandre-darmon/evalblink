@@ -25,6 +25,8 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Live model catalog (pricing + context) is cached on disk for a day so a
 # dry-run estimate doesn't refetch it on every invocation (PRD §15).
 MODELS_CACHE_PATH = os.path.join(cache.CACHE_DIR, "models.json")
+# Bumped when the cached fields change; an older cache file is refetched.
+MODELS_CACHE_FORMAT = 2
 MODELS_TTL_SECONDS = 24 * 3600
 
 # OpenRouter / upstream errors that are worth retrying: gateway timeouts and
@@ -327,7 +329,8 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
         try:
             with open(MODELS_CACHE_PATH) as f:
                 cached = json.load(f)
-            if time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS:
+            fresh = time.time() - cached.get("fetched_at", 0) < MODELS_TTL_SECONDS
+            if fresh and cached.get("format") == MODELS_CACHE_FORMAT:
                 return {k: _normalize(v) for k, v in cached["models"].items()}
         except (
             OSError,
@@ -356,7 +359,15 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
     try:
         os.makedirs(cache.CACHE_DIR, exist_ok=True)
         with open(MODELS_CACHE_PATH, "w") as f:
-            json.dump({"fetched_at": time.time(), "models": models}, f, indent=4)
+            json.dump(
+                {
+                    "format": MODELS_CACHE_FORMAT,
+                    "fetched_at": time.time(),
+                    "models": models,
+                },
+                f,
+                indent=4,
+            )
     except OSError as exc:
         print(f"⚠️  Could not cache the model catalog ({exc}); continuing.")
     return models
