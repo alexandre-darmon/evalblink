@@ -398,7 +398,8 @@ def cmd_init(args):
         paid = models_meta.get(starter.PAID_MODEL)
         if paid:
             console.print(
-                f"Small paid option, no free-tier rate limits: {starter.PAID_MODEL}"
+                "Small paid option, no free-tier rate limits:\n"
+                f"  {starter.PAID_MODEL}"
                 f" (${_fmt_price(paid['prompt'])} in / ${_fmt_price(paid['completion'])}"
                 " out per 1M tokens)"
             )
@@ -446,7 +447,9 @@ def cmd_init(args):
         sys.exit(f"Cannot write {out_path}: {getattr(exc, 'strerror', None) or exc}")
 
     console.print(f"\n✓ Created {out_path}\n", style="green")
-    console.print("Next: replace the example test cases with your own, then")
+    console.print(f"Next: open {out_path} and make it yours —")
+    console.print("  the prompt is under `prompts:`, the examples under `test_cases:`.")
+    console.print("Then:")
     console.print(f"  evalblink validate {out_path}")
     console.print(f"  evalblink run {out_path} --dry-run")
     console.print(f"  evalblink run {out_path}")

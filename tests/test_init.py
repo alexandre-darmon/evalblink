@@ -168,8 +168,8 @@ def test_the_small_paid_model_is_suggested_not_preselected(
     out = tmp_path / "x.yaml"
     assert _init(monkeypatch, [str(out)], ["X", "", ""], catalog=catalog) == 0
     assert _load(out)["models"] == [starter.DEFAULT_MODEL]
-    stdout = " ".join(capsys.readouterr().out.split())  # Rich wraps long lines
-    assert f"{starter.PAID_MODEL} ($0.200 in / $0.400 out per 1M tokens)" in stdout
+    stdout = capsys.readouterr().out
+    assert f"rate limits:\n  {starter.PAID_MODEL} ($0.200 in / $0.400 out" in stdout
 
 
 def test_a_retired_paid_suggestion_is_not_shown(monkeypatch, tmp_path, capsys):
