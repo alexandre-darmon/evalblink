@@ -1,0 +1,7 @@
+id,conversation,expected_output,tags
+conv_001,I cannot find my last order.,order_issue,order;easy
+conv_002,I cannot see my bill.,billing,bill;easy
+conv_003,What is the status of my product?,product_question,product;easy
+conv_004,"I was charged twice, and the parcel never arrived.",billing,bill;order;edge_case
+conv_005,Do you ship to Canada?,other,other;medium
+conv_006,"My order shows delivered, but nothing is here.",order_issue,order;medium

@@ -210,6 +210,7 @@ test_cases:
 | `prompts[].template` | ✅ | Jinja2 template — use `{{ variable }}` (double braces) |
 | `prompts[].system` | — | Optional system message (also a Jinja2 template) |
 | `variables` | — | Global key/value pairs injected into all templates |
+| `test_cases` | ✅ | The list of test cases below, or `{file: cases.csv, evaluation?}` to load them from a CSV, TSV or JSONL file next to the YAML. Fields `id`, `evaluation`, `expected_output`, `criteria`, `reference`, `tags` (`;`-separated in CSV) and `human_score` keep their meaning; every other column is a template variable; rows without an `id` are named `line_<n>`. Errors name the file and line; a column close to a field name gets a warning. |
 | `test_cases[].id` | ✅ | Unique identifier |
 | `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
 | `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth — string for `exact_match`, JSON array for `weighted_match` |

@@ -1,0 +1,27 @@
+# benchmarks/csv_classification.yaml — test cases loaded from a CSV file.
+# Each row is a test case; `id`, `expected_output` and `tags` (separated by ;)
+# are case fields, and every other column (`conversation`) is a template variable.
+name: "Customer Support Classification (CSV)"
+concurrency: 2  # free models rate-limit parallel bursts
+
+inference:
+  temperature: 0
+  max_tokens: 2048  # the edge case makes reasoning models think longer
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this conversation.
+      Return only a valid label from the list. No JSON. No explanation. No punctuation.
+      Choose from: {{ labels }}.
+      Conversation: {{ conversation }}
+
+models:
+  - "poolside/laguna-xs-2.1:free"
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+test_cases:
+  file: cases/support_tickets.csv   # relative to this YAML; .csv, .tsv or .jsonl
+  evaluation: exact_match           # for rows without an `evaluation` column

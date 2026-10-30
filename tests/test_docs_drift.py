@@ -42,7 +42,8 @@ def _complete_configs():
 
 @pytest.mark.parametrize("path", BENCHMARKS, ids=lambda p: p.name)
 def test_shipped_benchmarks_validate(path):
-    errors, _ = validate(yaml.safe_load(path.read_text()))
+    # load_config: a benchmark may load its test cases from a file.
+    errors, _ = validate(main.load_config(str(path)))
     assert errors == []
 
 

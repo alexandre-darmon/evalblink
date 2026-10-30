@@ -18,6 +18,7 @@ from evalblink import (
     __version__,
     cache,
     compare,
+    dataset,
     estimate,
     openrouter,
     reporter,
@@ -32,7 +33,19 @@ RESULTS_DIR = "results"
 
 
 def load_config(filepath):
-    """Load a benchmark YAML, exiting with a clear message on failure."""
+    """Load a benchmark YAML — with ``test_cases: {file: …}`` expanded from its
+    CSV/TSV/JSONL file — exiting with a clear message on failure."""
+    config = _read_yaml(filepath)
+    try:
+        config, warnings = dataset.expand(config, os.path.dirname(filepath))
+    except dataset.DatasetError as exc:
+        sys.exit(f"Invalid test cases in {filepath}: {exc}")
+    for warning in warnings:
+        print(f"⚠  {warning}", file=sys.stderr)
+    return config
+
+
+def _read_yaml(filepath):
     try:
         # Binary: YAML detects UTF-8/16 itself and reports bad bytes as a YAMLError.
         with open(filepath, "rb") as stream:
@@ -770,6 +783,9 @@ YAML CONFIG KEYS
   evaluation.judge_max_tokens   judge output budget (default: 4096)
   evaluation.quality_threshold  per-case pass threshold 0–1, required for weighted_match
   evaluation.variables          use_case/percent/order weights, required for weighted_match
+  test_cases                    list of cases, or {file: cases.csv|.tsv|.jsonl,
+                                evaluation: <default>} — columns are fields
+                                or template variables
   test_cases[].id               required
   test_cases[].evaluation       exact_match | llm_judge | weighted_match  (required)
   test_cases[].expected_output  required for exact_match and weighted_match
