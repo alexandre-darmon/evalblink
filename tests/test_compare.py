@@ -197,3 +197,30 @@ def test_detailed_diff_only_includes_shared_combos():
     result = compare.detailed_diff(a, b)
     keys = {(c["model"], c["prompt_id"]) for c in result["case_combos"]}
     assert keys == {("m/x", "v1")}  # m/y is b_only, gets no case diff
+
+
+def test_diff_flags_combos_whose_pipeline_errors_changed():
+    a = _record("a", [{**_combo("m/x", "v1", 50.0, 0.1), "errors": 0}])
+    b = _record(
+        "b",
+        [
+            {**_combo("m/x", "v1", 100.0, 0.1), "errors": 3},
+            {**_combo("m/y", "v1", 90.0, 0.1), "errors": 2},
+        ],
+    )
+    result = compare.diff(a, b)
+    rows = {r["model"]: r for r in result["rows"]}
+    assert (rows["m/x"]["errors_a"], rows["m/x"]["errors_b"]) == (0, 3)
+    assert (rows["m/y"]["errors_a"], rows["m/y"]["errors_b"]) == (None, 2)
+    assert (
+        "1 shared combo(s) had a different number of pipeline errors"
+        in (result["verdict"])
+    )
+
+
+def test_diff_without_error_changes_adds_no_note():
+    a = _record("a", [{**_combo("m/x", "v1", 50.0, 0.1), "errors": 1}])
+    b = _record("b", [{**_combo("m/x", "v1", 60.0, 0.1), "errors": 1}])
+    assert "pipeline errors" not in compare.diff(a, b)["verdict"]
+    old = _record("old", [_combo("m/x", "v1", 50.0, 0.1)])  # no errors key
+    assert "pipeline errors" not in compare.diff(old, old)["verdict"]

@@ -194,3 +194,13 @@ def test_gate_counts_unscored_cases_as_failures():
     assert summary["gate_score"] == 10.0 and summary["passed"] is False
     assert summarize([combo], 10)["passed"] is True
     assert summarize([combo], None)["passed"] is True  # no gate configured
+
+
+def test_nothing_scored_never_passes_even_with_a_zero_threshold():
+    combo = {**_combo("m", "p", 0.0, 0.0, [_error_case([])]), "total": 1}
+    combo.update(success=0, errors=1)
+    assert summarize([combo], 0)["passed"] is False
+    assert summarize([combo], None)["passed"] is False
+    scored = {**combo, "success": 0, "errors": 0}
+    assert summarize([scored], 0)["passed"] is True
+    assert summarize([scored], None)["passed"] is True

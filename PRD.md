@@ -477,6 +477,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 - Completion tokens use the configured `max_tokens` as a ceiling — per combo, `max_tokens` × the number of test cases
 - Judge tokens estimated separately per `llm_judge` case (prompt + criteria + `max_tokens` worth of response in, `evaluation.judge_max_tokens` out, default 4096); each row's `Est cost` includes its judge share, and the `Judge cost (llm_judge cases)` line is printed only when the estimated judge cost is non-zero (not with a free judge model)
 - Models missing from the pricing catalog, or priced there with a negative or non-numeric value (OpenRouter quotes `-1` for its `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`)
+- Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
 - Exits 1 if the estimate exceeds `max_cost_usd`; exits 0 otherwise
 
 Pricing data is fetched from OpenRouter's public model catalog at most once per day and cached locally at `.evalblink_cache/models.json`. No completion calls are made, and no API key is needed.
@@ -566,7 +567,7 @@ Both `stats` and `clear` count every `.json` file in `.evalblink_cache/`, includ
 ```bash
 # Run a benchmark
 evalblink run benchmarks/classification.yaml
-evalblink run                               # defaults to benchmarks/exact_match_classification.yaml
+evalblink run                               # the only YAML in benchmarks/, else benchmarks/exact_match_classification.yaml
 evalblink run benchmarks/classification.yaml -v          # verbose: per-case detail
 evalblink run benchmarks/classification.yaml --no-cache  # bypass the response cache (candidate and judge calls)
 evalblink run benchmarks/classification.yaml --dry-run   # estimate cost, no completion calls, no API key needed
@@ -588,6 +589,7 @@ evalblink history
 evalblink models
 evalblink models --provider anthropic
 evalblink models --free
+evalblink models --free --text     # text in, text-only out (drops audio/image generators)
 evalblink models --min-context 100k
 evalblink models --no-cache          # refetch instead of using the 24h catalog cache
 
@@ -729,7 +731,7 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 Verdict: Run B improves quality on 2/3 shared combo(s).
 ```
 
-Changed (or one-sided) combos are listed first, then stable ones; combos present in only one run are flagged in Notes and mentioned in the verdict.
+Changed (or one-sided) combos are listed first, then stable ones; combos present in only one run are flagged in Notes and mentioned in the verdict. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict says how many such combos there are. Use `--detailed` to see which cases changed.
 
 `--detailed` adds a per-combo test-case transition table (regressed / improved / new_error / recovered) and a global summary (change counts, worst-regressed cases, per-tag net).
 
@@ -764,7 +766,7 @@ Data used per model:
 
 1. Invalid config (validation errors) or a missing, empty or whitespace-only `OPENROUTER_API_KEY` → exit 1 before any API call. `--dry-run` needs no API key.
 2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`) → exit 1 (results are still written).
-3. Otherwise the `quality_threshold` gate decides, fail-safe: for each combination the gate score is passed / total cases, so every case that could not be scored counts as a failure (`analysis.summarize` → `gate_score`). Best gate score ≥ `quality_threshold` → exit 0, below it → exit 1 (when errors are what pulled it below, the FAIL line says so). No `quality_threshold` → gate not enforced, exit 0.
+3. Otherwise the `quality_threshold` gate decides, fail-safe: for each combination the gate score is passed / total cases, so every case that could not be scored counts as a failure (`analysis.summarize` → `gate_score`). Best gate score ≥ `quality_threshold` → exit 0, below it → exit 1 (when errors are what pulled it below, the FAIL line says so). No `quality_threshold` → gate not enforced, exit 0. The record's `insights.passed` matches: `false` whenever nothing could be scored.
 
 `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
 

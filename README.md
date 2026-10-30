@@ -182,7 +182,7 @@ Want a $0 first run? The configs in [`benchmarks/`](https://github.com/alexandre
 
 ```bash
 git clone https://github.com/alexandre-darmon/evalblink && cd evalblink
-evalblink run benchmarks/exact_match_classification.yaml   # also the default when you pass no path
+evalblink run benchmarks/exact_match_classification.yaml
 ```
 
 ---
@@ -256,6 +256,7 @@ evalblink history
 evalblink models
 evalblink models --provider anthropic
 evalblink models --free
+evalblink models --free --text     # text in, text-only out (drops audio/image generators)
 evalblink models --min-context 100k
 evalblink models --no-cache          # refetch instead of using the 24h catalog cache
 
@@ -268,7 +269,7 @@ evalblink cache stats
 evalblink cache clear --yes                              # without --yes it only prints the entry count
 ```
 
-`evalblink run` with no path defaults to `benchmarks/exact_match_classification.yaml`.
+`evalblink run` and `evalblink validate` with no path use the only YAML in `benchmarks/` (what `init` writes) and print `Using <path>` to stderr. With several YAMLs there, they use `benchmarks/exact_match_classification.yaml` when it exists (as in this repo) and otherwise exit with the list to pick from; with none, they suggest `evalblink init`.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
 - `init` asks three questions: a name, the evaluation mode (`exact_match` or `llm_judge`) and the models to compare, comma-separated. Press Enter at each for the defaults. It then writes a complete, commented starter: an example prompt and example test cases, `temperature: 0`, `max_tokens: 1024` (headroom for free reasoning models) and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`. The file validates and runs as-is; replace the example test cases with your own in your editor. The default model is the free `poolside/laguna-xs-2.1:free` (or the first free catalog model if OpenRouter has retired it). While you choose, it lists up to five free text models from the catalog (text in, text-only out; audio and image generators are left out) and a small paid option without free-tier rate limits, `google/gemma-4-31b-it`, with its price. That option is never preselected. Models absent from the catalog get a warning, and an empty name or model list is asked again. `init` carries on without suggestions when the catalog can't be fetched. The output file is the optional path argument, or `benchmarks/<slug>.yaml`, relative to the directory you run `init` in (never the install directory); `init` prints its absolute path when done (`benchmarks/benchmark.yaml` for a name with no letters or digits); an existing file is only overwritten after you confirm. `init --yes` asks nothing and writes the `exact_match` starter with the default model, refusing to overwrite an existing file. Before writing, `init` runs `validate` on the result and exits 1 without writing if there are errors.
@@ -466,7 +467,7 @@ Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4
 ✓ Within budget: estimate $0.089304 ≤ max_cost_usd $10.000000.
 ```
 
-Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog, or priced there with a negative or non-numeric value (such as the `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`).
+Per combo, **Est completion tok** is `max_tokens` × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. Models missing from the catalog, or priced there with a negative or non-numeric value (such as the `openrouter/*` routers), have unknown pricing: they are excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`). Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
 
 Set `max_cost_usd` in the YAML to enforce a budget: `--dry-run` exits 1 if the estimate exceeds it, which makes it safe to gate in CI before committing to a full run.
 
@@ -564,7 +565,7 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 Verdict: Run B improves quality on 2/3 shared combo(s).
 ```
 
-Changed combos are listed first. `--detailed` adds per-combo test-case transitions (regressed / improved / new error / recovered) and a global summary.
+Changed combos are listed first. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict says how many such combos there are. Use `--detailed` to see which cases changed. `--detailed` adds per-combo test-case transitions (regressed / improved / new error / recovered) and a global summary.
 
 `report` and `compare` exit with a one-line message when a results file is missing, unreadable, not JSON, or not shaped like a run record (it needs string `benchmark` and `timestamp` fields and a well-formed `results` list). `history` lists every readable run and prints `⚠  Skipping <reason>` for each file it can't use. `report` and `history` recompute the insights from `results`, so the `pipeline error(s) excluded from scoring` line and the history **Errors** column show the run total, matching the warning at the end of the run.
 
@@ -583,7 +584,7 @@ Changed combos are listed first. `--detailed` adds per-combo test-case transitio
 
 - **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `--dry-run` needs no API key.
 - **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`). The results are still written.
-- **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
+- **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The JSON record's `insights.passed` matches the exit code: it is `false` whenever nothing could be scored, even with `quality_threshold: 0` or none. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
 - `--dry-run` exits 1 when the estimate exceeds `max_cost_usd`, 0 otherwise.
 
 ---

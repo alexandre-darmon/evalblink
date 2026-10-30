@@ -168,3 +168,49 @@ def test_unserializable_record_leaves_no_truncated_json(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         write({"name": "L"}, results, "ts")
     assert list(tmp_path.iterdir()) == []
+
+
+def _rendered(render, data):
+    from rich.console import Console
+
+    console = Console(record=True, width=200, markup=False, emoji=False)
+    render(data, console=console)
+    return console.export_text()
+
+
+def test_estimate_warns_about_a_budget_above_the_output_limit():
+    est = {
+        "rows": [],
+        "total_cost": 0.0,
+        "judge_cost": 0.0,
+        "missing_pricing": [],
+        "max_cost_usd": None,
+        "over_budget": False,
+        "over_output_limit": [
+            {
+                "model": "j/x",
+                "setting": "evaluation.judge_max_tokens",
+                "budget": 4096,
+                "limit": 2048,
+            }
+        ],
+    }
+    out = _rendered(reporter.render_estimate, est)
+    assert "evaluation.judge_max_tokens (4096) is above j/x's output limit (2048" in out
+
+
+def test_comparison_notes_pipeline_error_counts():
+    row = {
+        "model": "m/x",
+        "prompt_id": "v1",
+        "score_delta": 50.0,
+        "cost_delta": 0.0,
+        "present_in": "both",
+        "errors_a": 0,
+        "errors_b": 3,
+    }
+    out = _rendered(
+        reporter.render_comparison,
+        {"run_a": "a", "run_b": "b", "rows": [row], "verdict": "v"},
+    )
+    assert "pipeline errors 0 → 3" in out

@@ -257,3 +257,13 @@ def test_starter_round_trips_any_name_and_validates_clean(name, mode):
     assert config["name"] == name
     assert config["models"] == models
     assert validate(config) == ([], [])
+
+
+def test_the_default_model_is_listed_first(monkeypatch, tmp_path, capsys):
+    catalog = {"a/first-by-id:free": FREE, **CATALOG}
+    assert (
+        _init(monkeypatch, [str(tmp_path / "x.yaml")], ["X", "", ""], catalog=catalog)
+        == 0
+    )
+    stdout = capsys.readouterr().out
+    assert stdout.index(starter.DEFAULT_MODEL) < stdout.index("a/first-by-id:free")

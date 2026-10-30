@@ -49,6 +49,42 @@ def load_config(filepath):
         sys.exit(f"Cannot read config {filepath}: {exc.strerror or exc}")
 
 
+def _default_config():
+    """The config ``run``/``validate`` use without a path: the only YAML in
+    ``benchmarks/`` (what ``init`` writes), else the repo's example config."""
+    try:
+        found = sorted(
+            f
+            for f in os.listdir("benchmarks")
+            if f.endswith((".yaml", ".yml"))
+            and os.path.isfile(os.path.join("benchmarks", f))
+        )
+    except OSError:
+        found = []
+    if len(found) == 1:
+        return os.path.join("benchmarks", found[0])
+    if found and not os.path.exists(DEFAULT_CONFIG):
+        sys.exit(
+            "Several configs in benchmarks/ — pass the one to use:\n"
+            + "\n".join(f"  benchmarks/{f}" for f in found)
+        )
+    return DEFAULT_CONFIG  # if missing, load_config suggests `evalblink init`
+
+
+def _config_path(path):
+    """``path``, or the default config announced on stderr."""
+    if path:
+        return path
+    path = _default_config()
+    print(f"Using {path}", file=sys.stderr)
+    return path
+
+
+def _is_text_model(meta) -> bool:
+    """Text in, text-only out; kept when the catalog doesn't say."""
+    return meta.get("text") is not False
+
+
 def _fetch_models(**kwargs):
     """The OpenRouter pricing catalog, exiting cleanly if it can't be fetched."""
     try:
@@ -60,7 +96,7 @@ def _fetch_models(**kwargs):
 
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
-    config = load_config(args.config)
+    config = load_config(_config_path(args.config))
 
     errors, warnings = _validate_config(config)
     console = reporter.make_console()
@@ -259,6 +295,9 @@ def cmd_models(args):
     if args.free:
         rows = [(k, v) for k, v in rows if v["prompt"] == 0 and v["completion"] == 0]
 
+    if args.text:
+        rows = [(k, v) for k, v in rows if _is_text_model(v)]
+
     if args.min_context:
         rows = [
             (k, v)
@@ -337,15 +376,15 @@ def _model_ids(raw):
     return ids
 
 
-def _free_suggestions(models_meta):
-    """Up to five free text models (text in, text out), by ID. A model whose
-    modalities the catalog doesn't give is kept."""
+def _free_suggestions(models_meta, first=None):
+    """Up to five free text models, by ID with ``first`` (the default) on top."""
     return sorted(
-        (k, v)
-        for k, v in models_meta.items()
-        if v.get("prompt") == 0
-        and v.get("completion") == 0
-        and v.get("text") is not False
+        (
+            (k, v)
+            for k, v in models_meta.items()
+            if v.get("prompt") == 0 and v.get("completion") == 0 and _is_text_model(v)
+        ),
+        key=lambda kv: (kv[0] != first, kv[0]),
     )[:5]
 
 
@@ -363,8 +402,8 @@ def cmd_init(args):
             style="yellow",
         )
         models_meta = {}
-    suggestions = _free_suggestions(models_meta)
     default_model = starter.DEFAULT_MODEL
+    suggestions = _free_suggestions(models_meta, first=default_model)
     if models_meta and default_model not in models_meta and suggestions:
         default_model = suggestions[0][0]  # the shipped default was retired
 
@@ -473,7 +512,7 @@ def _print_findings(console, errors, warnings) -> None:
 
 def cmd_validate(args):
     """Lint a benchmark YAML — errors and warnings, no API calls."""
-    config = load_config(args.benchmark)
+    config = load_config(_config_path(args.benchmark))
     errors, warnings = _validate_config(config)
     console = reporter.make_console()
     _print_findings(console, errors, warnings)
@@ -560,8 +599,8 @@ def build_parser():
     run_p.add_argument(
         "config",
         nargs="?",
-        default=DEFAULT_CONFIG,
-        help=(f"path to a benchmark YAML (default: {DEFAULT_CONFIG})"),
+        help="path to a benchmark YAML (default: the only YAML in benchmarks/,"
+        f" else {DEFAULT_CONFIG})",
     )
     run_p.add_argument(
         "-v",
@@ -666,6 +705,11 @@ def build_parser():
         help="show only free (zero-cost) models",
     )
     models_p.add_argument(
+        "--text",
+        action="store_true",
+        help="show only text models (text in, text-only out)",
+    )
+    models_p.add_argument(
         "--min-context",
         metavar="N",
         type=_parse_context,
@@ -686,9 +730,9 @@ def build_parser():
     validate_p.add_argument(
         "benchmark",
         nargs="?",
-        default=DEFAULT_CONFIG,
         metavar="FILE",
-        help=f"path to a benchmark YAML (default: {DEFAULT_CONFIG})",
+        help="path to a benchmark YAML (default: the only YAML in benchmarks/,"
+        f" else {DEFAULT_CONFIG})",
     )
     validate_p.set_defaults(func=cmd_validate)
 

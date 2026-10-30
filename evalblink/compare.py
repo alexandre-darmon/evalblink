@@ -125,9 +125,11 @@ def diff(record_a, record_b) -> dict:
     """Per-combo deltas from run A to run B over the union of their combos.
 
     Each row is ``{model, prompt_id, score_a, score_b, score_delta, cost_a,
-    cost_b, cost_delta, present_in}`` where ``present_in`` is
-    ``"both" | "a_only" | "b_only"``. Combos missing from one side carry ``None``
-    for that side's score/cost and a ``None`` delta. Rows are sorted with
+    cost_b, cost_delta, errors_a, errors_b, present_in}`` where ``present_in``
+    is ``"both" | "a_only" | "b_only"``. Combos missing from one side carry
+    ``None`` for that side's score/cost/errors and a ``None`` delta. Scores
+    exclude pipeline-error cases, so a shared combo whose error count differs
+    is not like-for-like; the verdict says how many there are. Rows are sorted with
     changed-or-missing combos first, then by model/prompt name.
     """
     index_a = _index(record_a)
@@ -137,6 +139,7 @@ def diff(record_a, record_b) -> dict:
     rows = []
     improved = 0
     comparable = 0
+    uneven = 0
     for key in keys:
         a = index_a.get(key)
         b = index_b.get(key)
@@ -147,6 +150,8 @@ def diff(record_a, record_b) -> dict:
             comparable += 1
             if score_delta > _SCORE_EPS:
                 improved += 1
+            if (a.get("errors") or 0) != (b.get("errors") or 0):
+                uneven += 1
         elif b:
             present_in = "b_only"
             score_delta = cost_delta = None
@@ -163,6 +168,8 @@ def diff(record_a, record_b) -> dict:
                 "cost_a": a["total_cost"] if a else None,
                 "cost_b": b["total_cost"] if b else None,
                 "cost_delta": cost_delta,
+                "errors_a": (a.get("errors") or 0) if a else None,
+                "errors_b": (b.get("errors") or 0) if b else None,
                 "present_in": present_in,
             }
         )
@@ -191,7 +198,7 @@ def diff(record_a, record_b) -> dict:
         "schema_b": schema_b,
         "version_note": version_note,
         "rows": rows,
-        "verdict": _verdict(improved, comparable, rows),
+        "verdict": _verdict(improved, comparable, rows) + _uneven_note(uneven),
     }
 
 
@@ -199,6 +206,16 @@ def _is_stable(row) -> bool:
     """Whether a both-sides row's quality is unchanged (for sort ordering)."""
     delta = row["score_delta"]
     return delta is not None and abs(delta) <= _SCORE_EPS
+
+
+def _uneven_note(uneven) -> str:
+    if not uneven:
+        return ""
+    return (
+        f" {uneven} shared combo(s) had a different number of pipeline errors"
+        " (excluded from scores), so their quality Δ is not like-for-like —"
+        " see `compare --detailed`."
+    )
 
 
 def _verdict(improved, comparable, rows) -> str:

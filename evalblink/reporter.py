@@ -326,6 +326,14 @@ def render_estimate(est, console: Console | None = None) -> None:
         style="dim",
     )
 
+    for over in est.get("over_output_limit", []):
+        console.print(
+            f"⚠️  {over['setting']} ({over['budget']}) is above {over['model']}'s"
+            f" output limit ({over['limit']} tokens) — lower it to {over['limit']}"
+            " or less.",
+            style="yellow",
+        )
+
     for model in est["missing_pricing"]:
         console.print(
             f"⚠️  No pricing for '{model}' — excluded from the estimate.",
@@ -388,7 +396,13 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
     for row in diff_result["rows"]:
         delta = row["score_delta"]
         style = None
-        if delta is not None:
+        note = note_for[row["present_in"]]
+        errors_a, errors_b = row.get("errors_a"), row.get("errors_b")
+        if row["present_in"] == "both" and (errors_a or errors_b):
+            note = f"pipeline errors {errors_a} → {errors_b}"
+        if row["present_in"] == "both" and errors_a != errors_b:
+            style = "yellow"  # scored over different cases: not like-for-like
+        elif delta is not None:
             if delta > 0.05:
                 style = "green"
             elif delta < -0.05:
@@ -398,7 +412,7 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
             row["prompt_id"],
             _fmt_score_delta(delta),
             _fmt_cost_delta(row["cost_delta"]),
-            note_for[row["present_in"]],
+            note,
             style=style,
         )
     console.print(table)
