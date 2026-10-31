@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 import sys
+import tempfile
 
 import httpx
 import yaml
@@ -702,27 +703,34 @@ def cmd_init(args):
 
     out_path = args.path or f"benchmarks/{reporter._slugify(name)}.yaml"
     # --csv: the test cases go next to the YAML, as <name>.csv.
-    csv_path = os.path.splitext(out_path)[0] + ".csv" if args.csv else None
-    if csv_path == out_path:
+    stem, ext = os.path.splitext(out_path)
+    if not os.path.basename(stem):  # `dir/`
+        sys.exit(f"{out_path} has no file name — pass a file path.")
+    csv_path = stem + ".csv" if args.csv else None
+    # Any case: on macOS `b.CSV` and `b.csv` are the same file.
+    if csv_path and ext.lower() == ".csv":
         sys.exit(
             f"{out_path} would be both the benchmark and its CSV — pass a .yaml path."
         )
     for path in filter(None, (out_path, csv_path)):
         _check_writable(path, args.yes)
 
-    # Last line of defence: never write a file `validate` would reject. The
-    # --csv starter differs only in loading these same cases from the file.
     text = starter.render(name, models, mode)
-    errors, warnings = _validate_config(yaml.safe_load(text))
-    _print_findings(console, errors, warnings)
-    if errors:
-        sys.exit(1)
     files = [(out_path, text)]
     if csv_path:
         files = [
             (csv_path, starter.cases_csv(mode)),
             (out_path, starter.render(name, models, mode, os.path.basename(csv_path))),
         ]
+    # Last line of defence: never write files `validate` would reject.
+    try:
+        config = _starter_config(files)
+    except (OSError, ValueError) as exc:  # an unwritable name, a DatasetError
+        sys.exit(f"Cannot write {files[0][0]}: {getattr(exc, 'strerror', None) or exc}")
+    errors, warnings = _validate_config(config)
+    _print_findings(console, errors, warnings)
+    if errors:
+        sys.exit(1)
 
     for path, content in files:
         try:
@@ -761,11 +769,32 @@ def cmd_init(args):
     sys.exit(0)
 
 
+def _starter_config(files):
+    """The config ``files`` (``[(path, text)]``, YAML last) would load to.
+
+    A CSV is expanded from a scratch copy, exactly as ``load_config`` will
+    read it once written.
+    """
+    config = yaml.safe_load(files[-1][1])
+    if len(files) == 1:
+        return config
+    csv_path, csv_text = files[0]
+    with tempfile.TemporaryDirectory() as scratch:
+        with open(
+            os.path.join(scratch, os.path.basename(csv_path)), "w", encoding="utf-8"
+        ) as f:
+            f.write(csv_text)
+        config, _ = dataset.expand(config, scratch)
+    return config
+
+
 def _check_writable(path, yes) -> None:
     """Exit unless ``path`` may be written: not a directory, and new or confirmed."""
     if os.path.isdir(path):
         sys.exit(f"{path} is a directory — pass a file path.")
     if os.path.exists(path):
+        if not os.access(path, os.W_OK):
+            sys.exit(f"{path} exists and is read-only — pass another path.")
         if yes:
             sys.exit(f"{path} already exists — pass another path.")
         if not Confirm.ask(
@@ -1059,8 +1088,8 @@ def build_parser():
     init_p.add_argument(
         "--csv",
         action="store_true",
-        help="put the test cases in a CSV file next to the YAML (<path>.csv),"
-        " to edit in a spreadsheet",
+        help="put the test cases in a CSV file next to the YAML, to edit in a"
+        " spreadsheet (support.yaml → support.csv)",
     )
     init_p.set_defaults(func=cmd_init)
 

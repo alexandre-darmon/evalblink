@@ -144,7 +144,10 @@ test_cases:
 
 def _dump(key: str, value) -> str:
     """One top-level ``key: value`` YAML block that round-trips exactly."""
-    return yaml.safe_dump({key: value}, allow_unicode=True, sort_keys=False).rstrip()
+    # Unbounded width: a long value is never folded onto a second line.
+    return yaml.safe_dump(
+        {key: value}, allow_unicode=True, sort_keys=False, width=float("inf")
+    ).rstrip()
 
 
 _SPREADSHEET = "# Many cases? Keep them in a spreadsheet."
@@ -184,12 +187,12 @@ def render(name: str, models: list[str], mode: str, csv_file: str | None = None)
         columns = cases_csv(mode).splitlines()[0].split(",")
         fills = ", ".join(f"`{c}` fills {{{{ {c} }}}}" for c in columns[1:-2])
         body = body[: body.index(_SPREADSHEET)] + (
-            f"# Test cases: one row per case in {csv_file}, next to this file\n"
-            f"# (columns {', '.join(columns)}). {fills}; tags are\n"
+            "# Test cases: one row per case in the CSV file below, next to this\n"
+            f"# file (columns {', '.join(columns)}). {fills}; tags are\n"
             "# separated by ; and a cell holding a comma is quoted. Add a column\n"
             "# for each new {{ variable }} in the prompt.\n"
             "test_cases:\n"
-            f"  file: {_dump('file', csv_file).removeprefix('file: ')}\n"
+            f"  {_dump('file', csv_file)}\n"
             f"  evaluation: {mode}   # for rows without an `evaluation` column\n"
         )
     # format() never rescans what it substitutes; the bodies hold Jinja braces.

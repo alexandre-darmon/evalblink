@@ -347,3 +347,46 @@ def test_the_inline_starter_comment_and_csv_come_from_the_same_cases():
         text = starter.render("Demo", ["a/b"], mode)
         for row in starter.cases_csv(mode).splitlines():
             assert f"#   {row}\n" in text
+
+
+@pytest.mark.parametrize("name", ["b.CSV", "b.Csv", "b.csv"])
+def test_csv_refuses_a_csv_path_in_any_case(monkeypatch, tmp_path, name):
+    # On macOS b.CSV and b.csv are one file: the YAML would overwrite the CSV.
+    code = _init(monkeypatch, [str(tmp_path / name), "--csv", "--yes"])
+    assert isinstance(code, str) and "pass a .yaml path" in code
+    assert not list(tmp_path.iterdir())
+
+
+def test_csv_never_overwrites_an_existing_yaml(monkeypatch, tmp_path):
+    out = tmp_path / "b.yaml"
+    out.write_text("mine")
+    code = _init(monkeypatch, [str(out), "--csv", "--yes"])
+    assert isinstance(code, str) and "b.yaml already exists" in code
+    assert out.read_text() == "mine" and not (tmp_path / "b.csv").exists()
+
+
+def test_csv_with_a_long_spaced_name_loads_back(monkeypatch, tmp_path):
+    stem = " ".join(["word"] * 17)  # past PyYAML's default 80-column fold
+    out = tmp_path / f"{stem}.yaml"
+    assert _init(monkeypatch, [str(out), "--csv", "--yes"]) == 0
+    config = main.load_config(str(out))
+    assert validate(config) == ([], [])
+    assert len(config["test_cases"]) == 3
+
+
+def test_csv_refuses_a_path_without_a_file_name(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = _init(monkeypatch, ["newdir/", "--csv", "--yes"])
+    assert isinstance(code, str) and "has no file name" in code
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_read_only_file_is_refused_before_anything_is_written(monkeypatch, tmp_path):
+    out = tmp_path / "b.yaml"
+    out.write_text("mine")
+    out.chmod(0o444)
+    (tmp_path / "b.csv").write_text("my rows")
+    # Not even asked to overwrite b.yaml: it can't be written.
+    code = _init(monkeypatch, [str(out), "--csv"], ["X", "", ""])
+    assert isinstance(code, str) and "read-only" in code
+    assert (tmp_path / "b.csv").read_text() == "my rows"
