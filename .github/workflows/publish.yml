@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]" build twine
+      - run: pip install -e ".[dev]"
       # Never publish an artifact that fails the CI gates.
       - run: ruff check .
       - run: ruff format --check .
@@ -42,12 +42,11 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match evalblink.__version__ ($version)"
             exit 1
           fi
-      - run: python -m build
-      - run: twine check --strict dist/*
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
+
+  build:
+    # Shared with CI, which installs this artifact on every push.
+    needs: checks
+    uses: ./.github/workflows/build.yml
 
   publish-testpypi:
     if: github.event_name == 'workflow_dispatch'

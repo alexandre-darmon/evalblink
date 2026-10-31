@@ -37,17 +37,36 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  build:
+    # The same build and artifact upload as a release (publish.yml).
+    uses: ./.github/workflows/build.yml
+
   package:
-    # The wheel users get from PyPI, installed outside the repo.
+    # The wheel users get from PyPI, downloaded like publish.yml does and
+    # installed outside the repo.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check --strict dist/*
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Check the artifact holds this version's wheel and sdist only
+        run: |
+          want=$(python -c 'import evalblink; print(evalblink.__version__)')
+          ls -l dist/
+          test "$(ls dist | sort | tr '\n' ' ')" = "evalblink-$want-py3-none-any.whl evalblink-$want.tar.gz "
+      - name: Install the sdist in a clean venv and run its test suite
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-venv"
+          tar xzf dist/*.tar.gz -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"/evalblink-*/
+          "$RUNNER_TEMP/sdist-venv/bin/pip" install ".[dev]"
+          "$RUNNER_TEMP/sdist-venv/bin/python" -m pytest -q
       - name: Install wheel in a clean venv and smoke-test
         run: |
           python -m venv /tmp/venv

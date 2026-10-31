@@ -1,0 +1,26 @@
+name: Build
+
+# The release build, shared: CI calls it on every push so the exact
+# artifact publish.yml uploads to PyPI is downloaded and installed first.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
