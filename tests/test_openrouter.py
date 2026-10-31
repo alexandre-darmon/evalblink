@@ -169,10 +169,14 @@ def test_fetch_models_bypass_cache(client_factory, _models_cache):
 HTML_502 = "<html><body><h1>502 Bad Gateway</h1></body></html>"
 
 
-def test_retryable_http_status_with_html_body_is_retried(client_factory, completion):
+def test_retryable_http_status_with_html_body_is_retried(
+    client_factory, completion, capsys
+):
     client = client_factory([httpx.Response(502, text=HTML_502), completion("ok")])
     assert openrouter_request(client, "p", "m", use_cache=False)["response"] == "ok"
     assert len(client.calls) == 2
+    out, err = capsys.readouterr()
+    assert "OpenRouter 502 for m (attempt 1/" in err and out == ""  # a diagnostic
 
 
 def test_persistent_html_502_raises_with_status(client_factory):
@@ -401,8 +405,8 @@ def test_cache_write_failure_warns_and_continues(
     client = client_factory(completion("ok"))
     assert openrouter_request(client, "p", "m")["response"] == "ok"
     assert openrouter_request(client, "p2", "m")["response"] == "ok"
-    out = capsys.readouterr().out
-    assert out.count("Could not write the response cache") == 1  # warned once
+    err = capsys.readouterr().err
+    assert err.count("Could not write the response cache") == 1  # warned once
 
 
 @pytest.mark.parametrize(
@@ -492,7 +496,7 @@ def test_models_cache_write_failure_still_returns_catalog(
     monkeypatch.setattr(openrouter.cache, "CACHE_DIR", str(blocker))
     monkeypatch.setattr(openrouter, "MODELS_CACHE_PATH", str(blocker / "models.json"))
     assert "a/b" in fetch_models(client_factory(_catalog()))
-    assert "Could not cache the model catalog" in capsys.readouterr().out
+    assert "Could not cache the model catalog" in capsys.readouterr().err
 
 
 def test_cancelled_run_stops_retrying(client_factory, error_body, monkeypatch):

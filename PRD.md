@@ -307,7 +307,7 @@ Then return ONLY valid JSON, no markdown:
 {"reasoning": "<your analysis>", "score": <integer 1-5>}
 ```
 
-**Score normalization:** `(score - 1) / 4` → 0.0–1.0. A case passes if `normalized_score >= judge_threshold` (default 0.70, meaning a raw score of 4 or 5 — the judge's score is truncated to an integer). The judge call uses `temperature: 0` and its own budget, `evaluation.judge_max_tokens` (default 4096): reasoning judges spend thousands of tokens before the JSON and return null content on a small budget. A judge API failure keeps its reason in the case's `error` field and prints a one-line `Judge API error on …` warning (a null reply's hint names `evaluation.judge_max_tokens`); a reply with no usable score does the same with `Judge error on …`, giving the completion-token count.
+**Score normalization:** `(score - 1) / 4` → 0.0–1.0. A case passes if `normalized_score >= judge_threshold` (default 0.70, meaning a raw score of 4 or 5 — the judge's score is truncated to an integer). The judge call uses `temperature: 0` and its own budget, `evaluation.judge_max_tokens` (default 4096): reasoning judges spend thousands of tokens before the JSON and return null content on a small budget. A judge API failure keeps its reason in the case's `error` field and shows it on the case's progress line as `⚠ judge API error: …` (a null reply's hint names `evaluation.judge_max_tokens`); a reply with no usable score does the same with `⚠ judge error: …`, giving the completion-token count.
 
 **Judge failures** (API error, malformed JSON) return `score=None` and a `status` flag — a pipeline failure is never conflated with a real score of 0.
 
@@ -529,7 +529,7 @@ Retries on: a code in `RETRYABLE_CODES` — whether it comes from the HTTP statu
 
 `openrouter_request` is the single choke point, so **any** failure of a call surfaces as `RuntimeError` with a clear message (including the HTTP status when known): an HTTP error status, a non-JSON body (e.g. an HTML 502 page), JSON without `choices`, with empty `choices` or without a `message`, null or empty content, or missing usage. Non-transient errors (bad key, unknown model, null content) raise immediately; transient ones raise once the retries are exhausted.
 
-**A failed call never aborts the run.** Both callers catch `RuntimeError` / `httpx.HTTPError`. For a candidate call, the runner records that test case with `status: "api_error"`, `match_score: None`, `match_result: False`, `response: ""`, the error message in `error`, and 0 tokens / $0 cost, prints a one-line warning, and moves on; a judge call failure becomes a judge error (`judge_api_error` / `judge_error`). Either is a pipeline error, not a score of 0: it counts in the **Errors** column and is excluded from the score (Pass/Scored). The results JSON and Markdown report are still written; there is no separate "API Errors" section — errored cases appear in the per-combo tables with their status in place of a score. When any pipeline errors occurred, the run ends with a prominent warning giving their count and stating that they are excluded from scores; if nothing at all could be scored, `evalblink run` exits 1 (§18).
+**A failed call never aborts the run.** Both callers catch `RuntimeError` / `httpx.HTTPError`. For a candidate call, the runner records that test case with `status: "api_error"`, `match_score: None`, `match_result: False`, `response: ""`, the error message in `error`, and 0 tokens / $0 cost, shows the error on the case's progress line, and moves on; a judge call failure becomes a judge error (`judge_api_error` / `judge_error`). Either is a pipeline error, not a score of 0: it counts in the **Errors** column and is excluded from the score (Pass/Scored). The results JSON and Markdown report are still written; there is no separate "API Errors" section — errored cases appear in the per-combo tables with their status in place of a score. When any pipeline errors occurred, the run ends with a prominent warning giving their count and stating that they are excluded from scores; if nothing at all could be scored, `evalblink run` exits 1 (§18).
 
 No single test case can crash a run: `runner._run_case` wraps each case, so any unexpected exception while rendering or scoring one (e.g. a template using `random` that failed on this render) records it as `status: "internal_error"` with `match_score: None` and the exception in `error`. Ctrl-C sets `openrouter.CANCELLED` (no new attempt or retry starts), drops every queued call (`shutdown(wait=False, cancel_futures=True)`), prints `Interrupted — no results written.` and exits 130 via `os._exit` without joining workers still blocked in an HTTP read. `cmd_run` checks that `results/` can be created and written before the first call and exits 1 if not.
 
@@ -624,8 +624,11 @@ evalblink cache clear --yes                 # without --yes it only prints the e
 ### Terminal output
 
 ```
+Running 300 cases (3 models × 2 prompts × 50 test cases), 5 at a time
+[  1/300] openai/gpt-4o-mini / v1 / conv_001  pass
+[  2/300] openai/gpt-4o-mini / v1 / conv_002  fail
 …
-⚠️  API error on openai/gpt-4o-mini / v1 / conv_048: OpenRouter request timed out after 4 attempt(s)
+[ 48/300] openai/gpt-4o-mini / v1 / conv_048  ⚠ API error: OpenRouter request timed out after 4 attempt(s)
 …
                Customer Support Classification — 2026-06-10_143205_customer-support-classification
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
@@ -664,7 +667,7 @@ Markdown report saved to results/2026-06-10_143205_customer-support-classificati
 PASS: best score meets quality_threshold (85).
 ```
 
-Sample from a 50-case run with `quality_threshold: 85` in which three calls timed out; the lines before the table (`Test case: <id>` progress lines, per-call warnings, per-combo totals) are trimmed. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the CI gate (§18).
+Sample from a 50-case run with `quality_threshold: 85` in which three calls timed out; most of the per-case progress lines (`[i/N] model / prompt / case  pass | fail (score) | ⚠ <error>`, on stderr; the results go to stdout) are trimmed. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the CI gate (§18).
 
 **Columns tracked:** Model, Prompt, Score (%), Pass/Scored, Errors (pipeline errors), Prompt tokens, Completion tokens, Cost. **Latency is not tracked.** Rows follow the config's model × prompt order. Score and Pass/Scored cover scored cases only — API errors (`api_error`) and judge errors (`judge_api_error` / `judge_error`) are counted under Errors and excluded. The tag table lists warning rows first, then the rest alphabetically. Best value is score per dollar, with cost floored at $0.0001 so free models fall back to the highest score.
 

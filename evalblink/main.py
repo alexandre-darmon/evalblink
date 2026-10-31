@@ -224,7 +224,7 @@ def cmd_run(args):
     errors = sum(r["errors"] for r in results)
     total = sum(r["total"] for r in results)
     if errors:
-        console.print(
+        reporter.make_console(stderr=True).print(
             f"\n⚠  {errors} of {total} case(s) hit a pipeline error"
             " (API / judge failure) and are excluded from scores.",
             style="bold red",

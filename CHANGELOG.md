@@ -5,6 +5,10 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 ## [Unreleased]
 
 ### Changed
+- `run` shows one progress line per finished case, `[3/12] model / prompt / case  pass`, with the 0–1 score for `llm_judge` and `weighted_match` and the reason for a pipeline error (`⚠ API error: …`), after a `Running 12 cases (2 models × 2 prompts × 3 test cases), 5 at a time` line. It replaces the `Test case: <id>` lines and the separate per-error warnings.
+- Progress and warnings (retry notices, which now name the model, cache warnings, the judge self-preference warning, the pipeline-error count) go to stderr; the results table, saved paths and PASS/FAIL stay on stdout, so `run … > results.txt` keeps only the results.
+- The per-combo totals printed before the table (a second copy of it) are gone.
+- The `init` starter's comment now holds a ready-to-save `cases.csv` with its own test cases, and the one line to switch to it.
 - CI builds the release artifact with the same workflow as a release (`.github/workflows/build.yml`), downloads it the way `publish.yml` does, checks it holds exactly this version's wheel and sdist, installs both and runs the test suite from the sdist. A broken artifact hand-off now fails on a pull request instead of mid-release.
 - GitHub Actions upgraded to Node 24: `checkout` v7, `setup-python` v7, `upload-artifact` v7, `download-artifact` v8.
 

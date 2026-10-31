@@ -2,14 +2,17 @@
 
 One job: own the ``httpx.Client`` and the model × prompt × test-case loop, call
 OpenRouter for each candidate, route the response to the right evaluator, and
-accumulate per-prompt results and token/cost totals. It makes no output
-decisions — that's the reporter's job.
+accumulate per-prompt results and token/cost totals. Its only output is
+diagnostics on stderr (one progress line per finished case, warnings); the
+results table is the reporter's job.
 """
 
 from __future__ import annotations
 
 import datetime
 import functools
+import sys
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,7 +26,7 @@ from .evaluator import (
     weighted_match,
 )
 from .openrouter import CANCELLED, openrouter_request
-from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, ERROR_LABELS
 
 # Templates come from user-supplied YAML: parse (validator) and render them in a
 # sandbox so a template can't reach Python internals via attribute access.
@@ -65,9 +68,6 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
         )
     except Exception as exc:  # noqa: BLE001 — the point: one case never kills a run
         error = f"{type(exc).__name__}: {exc}"
-        print(
-            f"⚠️  Internal error on {model} / {prompt['id']} / {test_case['id']}: {error}"
-        )
         return {
             "model": model,
             "prompt_id": prompt["id"],
@@ -99,7 +99,8 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
     Returned dict has ``"model"``, ``"prompt_id"``, and ``"test_case"`` keys.
     The caller collects these and re-groups them after all futures complete.
     """
-    print(f"Test case: {test_case['id']}")
+    if verbose:
+        print(f"Test case: {model} / {prompt['id']} / {test_case['id']}")
     rendered, rendered_system = render_template(
         prompt, config.get("variables"), test_case
     )
@@ -122,10 +123,6 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         # Candidate API failed after retries — a pipeline failure, not a real
         # score of 0. Record it and keep the run going (mirrors the judge).
         error = str(exc) or type(exc).__name__
-        if not CANCELLED.is_set():
-            print(
-                f"⚠️  API error on {model} / {prompt['id']} / {test_case['id']}: {error}"
-            )
         response = {
             "response": "",
             "prompt_tokens": 0,
@@ -182,11 +179,6 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         judge_cost = judge_result["judge_cost"]
         if judge_result.get("error"):
             error = judge_result["error"]
-            kind = "Judge API error" if status == "judge_api_error" else "Judge error"
-            if not CANCELLED.is_set():
-                print(
-                    f"⚠️  {kind} on {model} / {prompt['id']} / {test_case['id']}: {error}"
-                )
         if verbose:
             print(
                 f"Judge status: {judge_result['status']} "
@@ -239,9 +231,9 @@ def run(config, verbose=False, use_cache=True):
     ``ThreadPoolExecutor`` worker count. Transient API failures (429/5xx) are
     handled by the retry/backoff in ``openrouter_request`` rather than a fixed
     per-call sleep; a candidate call that still fails is recorded as an
-    ``api_error`` case (``match_score=None``) and the run continues. ``verbose``
-    enables per-test-case detail; by default only per-combo summaries are
-    printed after all cases complete.
+    ``api_error`` case (``match_score=None``) and the run continues. Each
+    finished case prints one progress line to stderr (:func:`_progress_line`);
+    ``verbose`` adds per-case detail on stdout.
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     # A bare `concurrency:` (None) means the default. Clamp to a sane minimum —
@@ -253,7 +245,7 @@ def run(config, verbose=False, use_cache=True):
         (config.get("evaluation") or {}).get("judge_model"), config["models"]
     )
     if warning:
-        print(f"{warning}\n")
+        _diag(warning)
 
     # Build the full task list in config order so futures preserve that order.
     tasks = [
@@ -262,6 +254,29 @@ def run(config, verbose=False, use_cache=True):
         for prompt in config["prompts"]
         for test_case in config["test_cases"]
     ]
+    shape = [
+        _plural(len(config[key]), noun)
+        for key, noun in (
+            ("models", "model"),
+            ("prompts", "prompt"),
+            ("test_cases", "test case"),
+        )
+    ]
+    _diag(
+        f"Running {_plural(len(tasks), 'case')} ({' × '.join(shape)}), {concurrency} at a time"
+    )
+
+    lock = threading.Lock()
+    finished = 0
+
+    def report(future):
+        # Runs in the worker thread that finished the case.
+        nonlocal finished
+        if future.cancelled() or future.exception() is not None or CANCELLED.is_set():
+            return
+        with lock:
+            finished += 1
+            _diag(_progress_line(finished, len(tasks), future.result()))
 
     CANCELLED.clear()
     # Not a `with`: its exit would wait for in-flight calls, even after Ctrl-C.
@@ -280,6 +295,8 @@ def run(config, verbose=False, use_cache=True):
             )
             for model, prompt, test_case in tasks
         ]
+        for future in futures:
+            future.add_done_callback(report)
         try:
             # .result() blocks until each future completes; submission order is preserved.
             case_results = [f.result() for f in futures]
@@ -299,7 +316,6 @@ def run(config, verbose=False, use_cache=True):
 
     results = []
     for model in config["models"]:
-        print(f"Model: {model}\n")
         for prompt in config["prompts"]:
             test_case_results = groups[(model, prompt["id"])]
             success = sum(1 for tc in test_case_results if tc["match_result"])
@@ -328,11 +344,28 @@ def run(config, verbose=False, use_cache=True):
                     "test_cases": test_case_results,
                 }
             )
-            print(f"Prompt: {prompt['id']}")
-            err_note = f", {errors} error(s)" if errors else ""
-            print(f"Quality score: {success}/{scored} scored ({score:.1f}%){err_note}")
-            print(f"Total prompt tokens: {total_prompt_tokens}")
-            print(f"Total completion tokens: {total_completion_tokens}")
-            print(f"Total cost: ${total_cost:.6f}")
 
     return results, timestamp
+
+
+def _diag(line):
+    """Progress and warnings go to stderr, so stdout carries only the results."""
+    print(line, file=sys.stderr, flush=True)
+
+
+def _plural(n, noun):
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _progress_line(done, total, case_result):
+    """``[ 3/12] model / prompt / case  pass (0.85)`` for one finished case."""
+    tc = case_result["test_case"]
+    if tc["match_score"] is None:
+        label = ERROR_LABELS.get(tc["status"], "error")
+        outcome = f"⚠ {label}: {tc.get('error', '')}"
+    else:
+        outcome = "pass" if tc["match_result"] else "fail"
+        if tc["evaluation"] != "exact_match":
+            outcome += f" ({tc['match_score']:.2f})"
+    where = f"{case_result['model']} / {case_result['prompt_id']} / {tc['id']}"
+    return f"[{done:>{len(str(total))}}/{total}] {where}  {outcome}"

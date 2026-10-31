@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import sys
 import threading
 import time
 
@@ -113,7 +114,10 @@ def _cache_set(key: str, value: dict) -> None:
     except OSError as exc:
         if not _cache_write_warned:
             _cache_write_warned = True
-            print(f"⚠️  Could not write the response cache ({exc}); continuing.")
+            print(
+                f"⚠️  Could not write the response cache ({exc}); continuing.",
+                file=sys.stderr,
+            )
 
 
 def _auth_headers() -> dict:
@@ -226,8 +230,10 @@ def openrouter_request(
             headers_in = getattr(response, "headers", None) or {}
             wait = _backoff(attempt, rate_limited, headers_in.get("retry-after"))
             print(
-                f"OpenRouter {code or status} (attempt {attempt + 1}/{MAX_RETRIES});"
-                f" retrying in {wait:.0f}s..."
+                f"OpenRouter {code or status} for {model} (attempt {attempt + 1}/{MAX_RETRIES});"
+                f" retrying in {wait:.0f}s...",
+                file=sys.stderr,
+                flush=True,
             )
             time.sleep(wait)
             continue
@@ -403,5 +409,8 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
                 indent=4,
             )
     except OSError as exc:
-        print(f"⚠️  Could not cache the model catalog ({exc}); continuing.")
+        print(
+            f"⚠️  Could not cache the model catalog ({exc}); continuing.",
+            file=sys.stderr,
+        )
     return models

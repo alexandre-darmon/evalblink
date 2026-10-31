@@ -523,6 +523,21 @@ def _run_cli(argv):
     return exc.value.code
 
 
+def test_run_prints_results_on_stdout_and_progress_on_stderr(
+    fake_http, tmp_path, capsys
+):
+    fake_http(_ok("yes"), _ok("no"))
+    cfg = _write_cli_config(tmp_path, quality_threshold=40)
+    assert _run_cli(["run", str(cfg), "--no-cache"]) == 0
+    out, err = capsys.readouterr()
+    assert "[1/2] m/a / v1 / c1  pass" in err and "[2/2] m/a / v1 / c2  fail" in err
+    # stdout: the table once, the saved files and the verdict — no diagnostics,
+    # and no second per-combo summary.
+    assert "[1/2]" not in out and "Running 2 cases" not in out
+    assert "Quality score" not in out and "Total cost" not in out
+    assert "PASS: best score meets quality_threshold (40)." in out
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -537,8 +552,8 @@ def test_run_where_nothing_could_be_scored_exits_1(
 ):
     fake_http(failure)
     assert _run_cli(["run", str(_write_cli_config(tmp_path))]) == 1
-    out = capsys.readouterr().out
-    assert "2 of 2 case(s) hit a pipeline error" in out
+    out, err = capsys.readouterr()
+    assert "2 of 2 case(s) hit a pipeline error" in err
     assert "no case could be scored" in out
     # The run still completed and wrote its records.
     [md] = (tmp_path / "results").glob("*.md")
@@ -551,8 +566,8 @@ def test_run_with_some_pipeline_errors_warns_and_uses_the_gate(
     fake_http(_ok("yes"), httpx.Response(400, text="<html>bad</html>"))
     path = _write_cli_config(tmp_path)
     assert _run_cli(["run", str(path), "--no-cache"]) == 0  # no gate set
-    out = capsys.readouterr().out
-    assert "1 of 2 case(s) hit a pipeline error" in out
+    out, err = capsys.readouterr()
+    assert "1 of 2 case(s) hit a pipeline error" in err
     assert "no case could be scored" not in out
 
     # The scored case passes (100% of scored), but the gate is fail-safe: the
@@ -681,8 +696,8 @@ def _run_two_prompts_one_failing(fake_http, tmp_path):
 
 def test_insights_errors_report_the_run_total(fake_http, tmp_path, capsys):
     assert _run_two_prompts_one_failing(fake_http, tmp_path) == 0
-    out = capsys.readouterr().out
-    assert "2 of 4 case(s) hit a pipeline error" in out
+    out, err = capsys.readouterr()
+    assert "2 of 4 case(s) hit a pipeline error" in err
     assert "2 pipeline error(s) excluded from scoring." in out  # not 0 (best combo)
     [md] = (tmp_path / "results").glob("*.md")
     assert "**2 pipeline error(s)** excluded" in md.read_text()
@@ -1014,7 +1029,7 @@ def test_judge_api_error_is_warned_and_recorded(fake_http, tmp_path, capsys):
         httpx.Response(404, json={"error": {"code": 404, "message": "no judge"}}),
     )
     assert _run_cli(["run", str(cfg), "--no-cache"]) == 1  # nothing scored
-    assert "Judge API error on m/a / v1 / c1" in capsys.readouterr().out
+    assert "[1/1] m/a / v1 / c1  ⚠ judge API error: " in capsys.readouterr().err
     [record] = (tmp_path / "results").glob("*.json")
     case = json.loads(record.read_text())["results"][0]["test_cases"][0]
     assert case["status"] == "judge_api_error" and "no judge" in case["error"]

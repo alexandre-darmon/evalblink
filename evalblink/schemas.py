@@ -13,6 +13,15 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+# How a pipeline-error case (match_score is None) reads in run progress and
+# the Markdown table.
+ERROR_LABELS = {
+    "api_error": "API error",
+    "judge_api_error": "judge API error",
+    "judge_error": "judge error",
+    "internal_error": "internal error",
+}
+
 # Bumped whenever the persisted run-record shape changes incompatibly. Written
 # into every record by ``reporter._build_data`` and read by ``compare`` so it can
 # degrade gracefully across versions instead of hard-blocking. Legacy records
