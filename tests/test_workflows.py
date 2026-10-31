@@ -2,7 +2,8 @@
 
 publish.yml only runs on a tag, so a broken artifact hand-off would first
 show up mid-release. CI calls the same build workflow and downloads its
-artifact the same way; these checks keep it that way.
+artifact the same way; these checks keep it that way, and keep every
+publish behind the release gates.
 """
 
 from pathlib import Path
@@ -12,6 +13,7 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 BUILD = "./.github/workflows/build.yml"
+PUBLISH = "pypa/gh-action-pypi-publish"
 
 # The sdist ships the tests but not .github/.
 pytestmark = pytest.mark.skipif(
@@ -21,6 +23,10 @@ pytestmark = pytest.mark.skipif(
 
 def _load(name):
     return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+
+
+def _all():
+    return {f.name: _load(f.name) for f in sorted(WORKFLOWS.glob("*.y*ml"))}
 
 
 def _steps(workflow, action):
@@ -33,6 +39,11 @@ def _steps(workflow, action):
     ]
 
 
+def _needs(job):
+    needs = job.get("needs", [])
+    return {needs} if isinstance(needs, str) else set(needs)
+
+
 def _uploaded():
     uploads = _steps(_load("build.yml"), "actions/upload-artifact")
     assert len(uploads) == 1, "build.yml must upload exactly one artifact"
@@ -43,19 +54,22 @@ def _uploaded():
 
 def test_build_workflow_is_reusable_and_builds_both_dists():
     build = _load("build.yml")
-    # PyYAML reads the bare `on:` key as True.
-    assert set(build[True]) == {"workflow_call"}
-    runs = [s.get("run", "") for j in build["jobs"].values() for s in j["steps"]]
+    # PyYAML reads a bare `on:` key as True; a quoted "on" stays a string.
+    on = build.get(True, build.get("on"))
+    assert ({on} if isinstance(on, str) else set(on)) == {"workflow_call"}
+    runs = [
+        s.get("run", "") for j in build["jobs"].values() for s in j.get("steps", [])
+    ]
     assert "python -m build" in runs  # wheel and sdist
     assert any(r.startswith("twine check --strict") for r in runs)
 
 
-def test_ci_and_publish_both_build_with_the_shared_workflow():
+def test_only_the_shared_workflow_builds_and_both_callers_use_it():
+    for name, workflow in _all().items():
+        if name != "build.yml":
+            assert not _steps(workflow, "actions/upload-artifact"), name
     for name in ("ci.yml", "publish.yml"):
-        jobs = _load(name)["jobs"]
-        assert jobs["build"].get("uses") == BUILD, name
-        # Only the shared workflow builds or uploads a dist.
-        assert not _steps(_load(name), "actions/upload-artifact"), name
+        assert _load(name)["jobs"]["build"].get("uses") == BUILD, name
 
 
 def test_every_download_matches_the_uploaded_artifact():
@@ -74,15 +88,42 @@ def test_every_download_matches_the_uploaded_artifact():
         jobs = _load(workflow)["jobs"]
         for job_id, step in steps:
             assert step["with"] == {"name": name, "path": path}, (workflow, job_id)
-            needs = jobs[job_id]["needs"]
-            assert "build" in ([needs] if isinstance(needs, str) else needs)
+            assert "build" in _needs(jobs[job_id]), (workflow, job_id)
+
+
+def test_every_publish_waits_for_the_release_gates():
+    """A release only uploads the shared build, after lint, tests and tag checks."""
+    publishers = [
+        (name, job_id)
+        for name, workflow in _all().items()
+        for job_id, _ in _steps(workflow, PUBLISH)
+    ]
+    assert sorted(publishers) == [
+        ("publish.yml", "publish-pypi"),
+        ("publish.yml", "publish-testpypi"),
+    ]
+    jobs = _load("publish.yml")["jobs"]
+    assert "checks" in _needs(jobs["build"])
+    runs = [s.get("run", "") for s in jobs["checks"]["steps"]]
+    for gate in ("ruff check .", "ruff format --check .", "pytest -q"):
+        assert gate in runs, gate
+    gates = " ".join(runs)
+    assert "merge-base --is-ancestor" in gates  # the tag is on main
+    assert "__version__" in gates  # the tag matches the package version
+    # PyPI on a v* tag push only; TestPyPI on a manual run only.
+    assert jobs["publish-pypi"]["environment"] == "pypi"
+    assert jobs["publish-pypi"]["if"] == (
+        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+    )
+    assert jobs["publish-testpypi"]["environment"] == "testpypi"
+    assert jobs["publish-testpypi"]["if"] == "github.event_name == 'workflow_dispatch'"
 
 
 def test_each_action_has_one_version_across_workflows():
     """CI must run the same action versions the release does."""
     versions: dict = {}
-    for f in WORKFLOWS.glob("*.yml"):
-        for job in yaml.safe_load(f.read_text(encoding="utf-8"))["jobs"].values():
+    for workflow in _all().values():
+        for job in workflow["jobs"].values():
             for step in job.get("steps", []):
                 action, _, ref = step.get("uses", "").partition("@")
                 if ref:
