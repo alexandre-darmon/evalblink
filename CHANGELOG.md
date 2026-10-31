@@ -4,6 +4,8 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-10-31
+
 ### Changed
 - `run` shows one progress line per finished case, `[3/12] model / prompt / case  pass`, with the 0–1 score for `llm_judge` and `weighted_match` and the reason for a pipeline error (`⚠ API error: …`), after a `Running 12 cases (2 models × 2 prompts × 3 test cases), 5 at a time` line. It replaces the `Test case: <id>` lines and the separate per-error warnings.
 - Progress and warnings (retry notices, which now name the model, cache warnings, the judge self-preference warning, the pipeline-error count) go to stderr; the results table, saved paths and PASS/FAIL stay on stdout, so `run … > results.txt` keeps only the results.
@@ -56,7 +58,8 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 First release: `run`, `validate`, `compare` (`--detailed`), `report`, `history`, `models`, `init` and `cache`, with exact-match, weighted-match and LLM-as-judge scoring through OpenRouter.
 
-[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.0...v0.1.1
