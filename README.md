@@ -10,6 +10,8 @@ evalblink init                # 3 questions (Enter = defaults) → a starter ben
 evalblink run benchmarks/my-benchmark.yaml
 ```
 
+Rather keep your test cases in a spreadsheet? `evalblink init --csv` writes them as `benchmarks/my-benchmark.csv`, next to the YAML.
+
 ---
 
 ## Why evalblink
@@ -275,6 +277,7 @@ evalblink models --no-cache          # refetch instead of using the 24h catalog 
 # Write a commented starter benchmark (3 questions; --yes for none)
 evalblink init
 evalblink init my-eval.yaml --yes
+evalblink init --csv                 # its test cases in a CSV next to it (my-benchmark.csv)
 
 # Cache management
 evalblink cache stats
@@ -290,7 +293,16 @@ evalblink cache clear --yes                              # without --yes it only
 
 ## Test cases from a CSV or JSONL file
 
-Past a handful of cases, keep them in a spreadsheet instead of YAML. Point `test_cases` at the file (the path is relative to the YAML):
+Past a handful of cases, keep them in a spreadsheet instead of YAML. The quickest start is `evalblink init --csv`: it writes the starter benchmark and its test cases as a CSV next to it (`benchmarks/my-benchmark.yaml` + `benchmarks/my-benchmark.csv`), ready to open in any spreadsheet app:
+
+```
+id,text,expected_output,tags
+tc_001,Arrived a day early and works perfectly.,positive,easy
+tc_002,Stopped charging after a week. Support never answered.,negative,easy
+tc_003,"It does what the box says. Nothing more, nothing less.",neutral,edge_case
+```
+
+Add a row per case and a column per template variable. To use your own file, point `test_cases` at it (the path is relative to the YAML):
 
 ```yaml
 test_cases:

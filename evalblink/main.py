@@ -701,43 +701,77 @@ def cmd_init(args):
             )
 
     out_path = args.path or f"benchmarks/{reporter._slugify(name)}.yaml"
-    if os.path.isdir(out_path):
-        sys.exit(f"{out_path} is a directory — pass a file path.")
-    if os.path.exists(out_path):
-        if args.yes:
-            sys.exit(f"{out_path} already exists — pass another path.")
-        if not Confirm.ask(
-            f"{escape(out_path)} already exists — overwrite?", default=False
-        ):
-            sys.exit(0)
+    # --csv: the test cases go next to the YAML, as <name>.csv.
+    csv_path = os.path.splitext(out_path)[0] + ".csv" if args.csv else None
+    if csv_path == out_path:
+        sys.exit(
+            f"{out_path} would be both the benchmark and its CSV — pass a .yaml path."
+        )
+    for path in filter(None, (out_path, csv_path)):
+        _check_writable(path, args.yes)
 
+    # Last line of defence: never write a file `validate` would reject. The
+    # --csv starter differs only in loading these same cases from the file.
     text = starter.render(name, models, mode)
-    # Last line of defence: never write a file `validate` would reject.
     errors, warnings = _validate_config(yaml.safe_load(text))
     _print_findings(console, errors, warnings)
     if errors:
         sys.exit(1)
+    files = [(out_path, text)]
+    if csv_path:
+        files = [
+            (csv_path, starter.cases_csv(mode)),
+            (out_path, starter.render(name, models, mode, os.path.basename(csv_path))),
+        ]
 
-    try:
-        parent = os.path.dirname(out_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(text)
-    except (OSError, ValueError) as exc:  # ValueError: an unencodable path or name
-        sys.exit(f"Cannot write {out_path}: {getattr(exc, 'strerror', None) or exc}")
+    for path, content in files:
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except (OSError, ValueError) as exc:  # ValueError: an unencodable path or name
+            sys.exit(f"Cannot write {path}: {getattr(exc, 'strerror', None) or exc}")
 
     # Absolute: relative paths are under the directory init ran in, not the install.
-    console.print(
-        f"\n✓ Created {os.path.abspath(out_path)}\n", style="green", soft_wrap=True
-    )
-    console.print(f"Next: open {out_path} and make it yours —")
-    console.print("  the prompt is under `prompts:`, the examples under `test_cases:`.")
+    console.print()
+    for path, _ in files:
+        console.print(
+            f"✓ Created {os.path.abspath(path)}", style="green", soft_wrap=True
+        )
+    console.print()
+    if csv_path:
+        console.print(
+            f"Next: put your test cases in {csv_path}, one row per case.",
+            soft_wrap=True,
+        )
+        console.print(
+            f"  The prompt is in {out_path}, under `prompts:`.", soft_wrap=True
+        )
+    else:
+        console.print(f"Next: open {out_path} and make it yours —")
+        console.print(
+            "  the prompt is under `prompts:`, the examples under `test_cases:`."
+        )
     console.print("Then:")
     console.print(f"  evalblink validate {out_path}")
     console.print(f"  evalblink run {out_path} --dry-run")
     console.print(f"  evalblink run {out_path}")
     sys.exit(0)
+
+
+def _check_writable(path, yes) -> None:
+    """Exit unless ``path`` may be written: not a directory, and new or confirmed."""
+    if os.path.isdir(path):
+        sys.exit(f"{path} is a directory — pass a file path.")
+    if os.path.exists(path):
+        if yes:
+            sys.exit(f"{path} already exists — pass another path.")
+        if not Confirm.ask(
+            f"{escape(path)} already exists — overwrite?", default=False
+        ):
+            sys.exit(0)
 
 
 def _print_findings(console, errors, warnings) -> None:
@@ -840,12 +874,14 @@ EXAMPLES
   evalblink init                         # 3 questions, Enter = defaults
   evalblink init evals/support.yaml      # choose the file
   evalblink init --yes                   # no questions
+  evalblink init --csv                   # test cases in a spreadsheet, next to the YAML
 """
 
 
 _ROOT_EPILOG = """\
 QUICKSTART
   evalblink init              write a starter benchmark (3 questions, Enter = defaults)
+                              --csv: with its test cases in a CSV file next to it
   evalblink run --dry-run     estimate its cost (no API key needed)
   evalblink run               run it, then open results/<run>.md
 
@@ -1019,6 +1055,12 @@ def build_parser():
         "--yes",
         action="store_true",
         help="no questions: write the exact_match starter with the default model",
+    )
+    init_p.add_argument(
+        "--csv",
+        action="store_true",
+        help="put the test cases in a CSV file next to the YAML (<path>.csv),"
+        " to edit in a spreadsheet",
     )
     init_p.set_defaults(func=cmd_init)
 
