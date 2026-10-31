@@ -293,3 +293,100 @@ def test_the_csv_in_the_comment_is_the_starter_cases(mode, tmp_path):
     assert validate(from_csv) == ([], [])
     inline = yaml.safe_load(text)["test_cases"]
     assert from_csv["test_cases"] == inline
+
+
+# ── init --csv ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("mode", starter.MODES)
+def test_csv_writes_the_cases_as_a_spreadsheet_next_to_the_yaml(
+    monkeypatch, tmp_path, capsys, mode
+):
+    out = tmp_path / "evals" / "support.yaml"
+    assert _init(monkeypatch, [str(out), "--csv"], prompts=["Support", mode, ""]) == 0
+    csv_file = tmp_path / "evals" / "support.csv"
+    assert csv_file.read_text(encoding="utf-8") == starter.cases_csv(mode)
+    raw = yaml.safe_load(out.read_text(encoding="utf-8"))
+    assert raw["test_cases"] == {"file": "support.csv", "evaluation": mode}
+    # Loaded the way `run` loads it: the same cases as the inline starter.
+    config = main.load_config(str(out))
+    assert validate(config) == ([], [])
+    inline = yaml.safe_load(starter.render("Support", [starter.DEFAULT_MODEL], mode))
+    assert config["test_cases"] == inline["test_cases"]
+    stdout = capsys.readouterr().out
+    assert f"Created {csv_file}\n" in stdout and f"Created {out}\n" in stdout
+    assert "put your test cases in" in stdout
+
+
+def test_csv_with_yes_never_overwrites_the_spreadsheet(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    csv_file = tmp_path / "benchmarks" / "my-benchmark.csv"
+    csv_file.parent.mkdir()
+    csv_file.write_text("mine")
+    code = _init(monkeypatch, ["--yes", "--csv"])
+    assert isinstance(code, str) and "my-benchmark.csv already exists" in code
+    assert csv_file.read_text() == "mine"
+    assert not (tmp_path / "benchmarks" / "my-benchmark.yaml").exists()
+
+
+def test_csv_declined_overwrite_writes_nothing(monkeypatch, tmp_path):
+    out = tmp_path / "x.yaml"
+    (tmp_path / "x.csv").write_text("mine")
+    assert _init(monkeypatch, [str(out), "--csv"], ["X", "", ""], confirms=[""]) == 0
+    assert (tmp_path / "x.csv").read_text() == "mine" and not out.exists()
+
+
+def test_csv_refuses_a_csv_path_for_the_benchmark(monkeypatch, tmp_path):
+    code = _init(monkeypatch, [str(tmp_path / "cases.csv"), "--csv", "--yes"])
+    assert isinstance(code, str) and "pass a .yaml path" in code
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_inline_starter_comment_and_csv_come_from_the_same_cases():
+    for mode in starter.MODES:
+        text = starter.render("Demo", ["a/b"], mode)
+        for row in starter.cases_csv(mode).splitlines():
+            assert f"#   {row}\n" in text
+
+
+@pytest.mark.parametrize("name", ["b.CSV", "b.Csv", "b.csv"])
+def test_csv_refuses_a_csv_path_in_any_case(monkeypatch, tmp_path, name):
+    # On macOS b.CSV and b.csv are one file: the YAML would overwrite the CSV.
+    code = _init(monkeypatch, [str(tmp_path / name), "--csv", "--yes"])
+    assert isinstance(code, str) and "pass a .yaml path" in code
+    assert not list(tmp_path.iterdir())
+
+
+def test_csv_never_overwrites_an_existing_yaml(monkeypatch, tmp_path):
+    out = tmp_path / "b.yaml"
+    out.write_text("mine")
+    code = _init(monkeypatch, [str(out), "--csv", "--yes"])
+    assert isinstance(code, str) and "b.yaml already exists" in code
+    assert out.read_text() == "mine" and not (tmp_path / "b.csv").exists()
+
+
+def test_csv_with_a_long_spaced_name_loads_back(monkeypatch, tmp_path):
+    stem = " ".join(["word"] * 17)  # past PyYAML's default 80-column fold
+    out = tmp_path / f"{stem}.yaml"
+    assert _init(monkeypatch, [str(out), "--csv", "--yes"]) == 0
+    config = main.load_config(str(out))
+    assert validate(config) == ([], [])
+    assert len(config["test_cases"]) == 3
+
+
+def test_csv_refuses_a_path_without_a_file_name(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = _init(monkeypatch, ["newdir/", "--csv", "--yes"])
+    assert isinstance(code, str) and "has no file name" in code
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_read_only_file_is_refused_before_anything_is_written(monkeypatch, tmp_path):
+    out = tmp_path / "b.yaml"
+    out.write_text("mine")
+    out.chmod(0o444)
+    (tmp_path / "b.csv").write_text("my rows")
+    # Not even asked to overwrite b.yaml: it can't be written.
+    code = _init(monkeypatch, [str(out), "--csv"], ["X", "", ""])
+    assert isinstance(code, str) and "read-only" in code
+    assert (tmp_path / "b.csv").read_text() == "my rows"

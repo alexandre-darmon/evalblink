@@ -12,6 +12,9 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 - CI builds the release artifact with the same workflow as a release (`.github/workflows/build.yml`), downloads it the way `publish.yml` does, checks it holds exactly this version's wheel and sdist, installs both and runs the test suite from the sdist. A broken artifact hand-off now fails on a pull request instead of mid-release.
 - GitHub Actions upgraded to Node 24: `checkout` v7, `setup-python` v7, `upload-artifact` v7, `download-artifact` v8.
 
+### Added
+- `evalblink init --csv` writes the starter with its test cases in a spreadsheet next to it (`benchmarks/my-benchmark.yaml` + `benchmarks/my-benchmark.csv`), ready to edit in any spreadsheet app. Shown in `evalblink --help`, `init --help` and the README Quickstart.
+
 ## [0.1.3] — 2026-10-30
 
 ### Added

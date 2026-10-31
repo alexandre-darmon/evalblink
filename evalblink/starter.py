@@ -6,6 +6,9 @@ example test cases in their editor instead of typing them at a prompt.
 
 from __future__ import annotations
 
+import csv
+import io
+
 import yaml
 
 # Free defaults, also used by the shipped benchmarks (the weekly models check
@@ -60,10 +63,7 @@ prompts:
 # to this file (copy the lines without their leading "#   "; `text` fills
 # {{ text }}; tags are separated by ;):
 #
-#   id,text,expected_output,tags
-#   tc_001,Arrived a day early and works perfectly.,positive,easy
-#   tc_002,Stopped charging after a week. Support never answered.,negative,easy
-#   tc_003,"It does what the box says. Nothing more, nothing less.",neutral,edge_case
+__CSV__
 #
 # then replace the whole test_cases list below with this line, unindented:
 #   test_cases: {file: cases.csv, evaluation: exact_match}
@@ -113,9 +113,7 @@ prompts:
 # to this file (copy the lines without their leading "#   "; `ticket` fills
 # {{ ticket }}; quote cells that hold a comma):
 #
-#   id,ticket,criteria,tags
-#   tc_001,"Since Monday's release, CSV export returns an empty file for any report with more than 10,000 rows. Smaller reports export fine.","One sentence. States that CSV export produces empty files for reports over 10,000 rows and that it started with Monday's release. No greeting.",easy
-#   tc_002,"Customer says the app is ""slow"". No version, no steps, no screenshot. They are on the free plan and in Brazil.",One sentence. Says the report is vague and lacks version and reproduction steps; does not invent a cause.,edge_case
+__CSV__
 #
 # then replace the whole test_cases list below with this line, unindented:
 #   test_cases: {file: cases.csv, evaluation: llm_judge}
@@ -146,12 +144,57 @@ test_cases:
 
 def _dump(key: str, value) -> str:
     """One top-level ``key: value`` YAML block that round-trips exactly."""
-    return yaml.safe_dump({key: value}, allow_unicode=True, sort_keys=False).rstrip()
+    # Unbounded width: a long value is never folded onto a second line.
+    return yaml.safe_dump(
+        {key: value}, allow_unicode=True, sort_keys=False, width=float("inf")
+    ).rstrip()
 
 
-def render(name: str, models: list[str], mode: str) -> str:
-    """The starter config text for ``mode`` (one of :data:`MODES`)."""
+_SPREADSHEET = "# Many cases? Keep them in a spreadsheet."
+
+
+def _body(mode: str) -> str:
     body = _EXACT_MATCH if mode == "exact_match" else _LLM_JUDGE
+    return body.replace("__JUDGE__", JUDGE_MODEL)
+
+
+def cases_csv(mode: str) -> str:
+    """The starter's own test cases as a CSV file, one row per case."""
+    cases = yaml.safe_load(_body(mode).replace("__CSV__", ""))["test_cases"]
+    answer = "expected_output" if mode == "exact_match" else "criteria"
+    columns = ["id", *cases[0]["variables"], answer, "tags"]
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(columns)
+    for case in cases:
+        row = {**case["variables"], **case, "tags": ";".join(case["tags"])}
+        writer.writerow([row[c] for c in columns])
+    return out.getvalue()
+
+
+def render(name: str, models: list[str], mode: str, csv_file: str | None = None) -> str:
+    """The starter config text for ``mode`` (one of :data:`MODES`).
+
+    With ``csv_file``, ``test_cases`` points at that file (relative to the
+    YAML), which should hold :func:`cases_csv`; otherwise the cases are
+    inline, and a comment shows them as a CSV.
+    """
+    body = _body(mode)
+    if csv_file is None:
+        rows = cases_csv(mode).splitlines()
+        body = body.replace("__CSV__", "\n".join(f"#   {row}" for row in rows))
+    else:
+        columns = cases_csv(mode).splitlines()[0].split(",")
+        fills = ", ".join(f"`{c}` fills {{{{ {c} }}}}" for c in columns[1:-2])
+        body = body[: body.index(_SPREADSHEET)] + (
+            "# Test cases: one row per case in the CSV file below, next to this\n"
+            f"# file (columns {', '.join(columns)}). {fills}; tags are\n"
+            "# separated by ; and a cell holding a comma is quoted. Add a column\n"
+            "# for each new {{ variable }} in the prompt.\n"
+            "test_cases:\n"
+            f"  {_dump('file', csv_file)}\n"
+            f"  evaluation: {mode}   # for rows without an `evaluation` column\n"
+        )
     # format() never rescans what it substitutes; the bodies hold Jinja braces.
     header = _HEADER.format(name=_dump("name", name), models=_dump("models", models))
-    return header + body.replace("__JUDGE__", JUDGE_MODEL)
+    return header + body
