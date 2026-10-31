@@ -15,20 +15,17 @@ from rich.table import Table
 
 from . import analysis
 from .compare import CHANGED_TRANSITIONS
-from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, SCHEMA_VERSION
+from .schemas import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
+    ERROR_LABELS,
+    SCHEMA_VERSION,
+)
 
 RESULTS_DIR = "results"
 
-# How a pipeline-error case (match_score is None) reads in the Markdown table.
-_ERROR_LABELS = {
-    "api_error": "API error",
-    "judge_api_error": "judge API error",
-    "judge_error": "judge error",
-    "internal_error": "internal error",
-}
 
-
-def make_console() -> Console:
+def make_console(stderr: bool = False) -> Console:
     """The console for all terminal output.
 
     Markup and emoji codes are off: nearly everything printed (benchmark name,
@@ -36,7 +33,7 @@ def make_console() -> Console:
     or model-supplied, and Rich would otherwise crash on a stray ``[/x]`` or
     silently swallow ``[bold]``. Style whole lines with ``style=`` instead.
     """
-    return Console(markup=False, emoji=False)
+    return Console(markup=False, emoji=False, stderr=stderr)
 
 
 def _combo_label(combo) -> str:
@@ -130,7 +127,7 @@ def _write_markdown(data) -> str:
         ]
         for tc in run["test_cases"]:
             if tc["match_score"] is None:
-                score = _ERROR_LABELS.get(tc.get("status"), "error")
+                score = ERROR_LABELS.get(tc.get("status"), "error")
             else:
                 score = f"{tc['match_score']:.4f}"
             lines.append(

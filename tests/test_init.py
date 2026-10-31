@@ -268,3 +268,28 @@ def test_the_default_model_is_listed_first(monkeypatch, tmp_path, capsys):
     )
     stdout = capsys.readouterr().out
     assert stdout.index(starter.DEFAULT_MODEL) < stdout.index("a/first-by-id:free")
+
+
+@pytest.mark.parametrize("mode", starter.MODES)
+def test_the_csv_in_the_comment_is_the_starter_cases(mode, tmp_path):
+    """Doing what the starter comment says gives the same test cases."""
+    text = starter.render("Demo", [starter.DEFAULT_MODEL], mode)
+    lines = text.splitlines()
+    head = next(i for i, line in enumerate(lines) if line.startswith("#   id,"))
+    csv_rows = []
+    for line in lines[head:]:
+        if line == "#":
+            break
+        csv_rows.append(line.removeprefix("#   "))
+    (tmp_path / "cases.csv").write_text("\n".join(csv_rows) + "\n", encoding="utf-8")
+
+    swap = f"test_cases: {{file: cases.csv, evaluation: {mode}}}"
+    assert f"#   {swap}" in text
+    start = text.index("\ntest_cases:\n")
+    yaml_path = tmp_path / "bench.yaml"
+    yaml_path.write_text(text[:start] + "\n" + swap + "\n", encoding="utf-8")
+
+    from_csv = main.load_config(str(yaml_path))
+    assert validate(from_csv) == ([], [])
+    inline = yaml.safe_load(text)["test_cases"]
+    assert from_csv["test_cases"] == inline

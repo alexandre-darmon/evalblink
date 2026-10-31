@@ -277,7 +277,7 @@ def test_candidate_api_error_is_recorded_and_run_continues(
 
     monkeypatch.setattr(runner, "openrouter_request", fake_candidate)
     results, ts = runner.run(config)
-    assert f"API error on m/x / v1 / c1: {exc}" in capsys.readouterr().out
+    assert f"m/x / v1 / c1  ⚠ API error: {exc}" in capsys.readouterr().err
     [combo] = results
     assert (combo["success"], combo["scored"], combo["errors"]) == (2, 2, 1)
     assert combo["score"] == 100.0  # the error is excluded, not a real fail
@@ -500,3 +500,46 @@ def test_no_cache_also_bypasses_the_judge_cache(monkeypatch):
     )
     runner.run(config, use_cache=False)
     assert seen == [False, False]  # candidate and judge
+
+
+# ── run output ────────────────────────────────────────────────────────────────
+
+
+def test_each_finished_case_prints_one_progress_line_on_stderr(monkeypatch, capsys):
+    cases = [
+        {
+            "id": f"c{i}",
+            "variables": {"q": str(i)},
+            "expected_output": "ok",
+            "evaluation": "exact_match",
+        }
+        for i in range(2)
+    ]
+    config = {**_config(cases), "models": ["m/a", "m/b"], "concurrency": 1}
+    _run(monkeypatch, config, [_resp("ok"), _resp("no")] * 2)
+    out, err = capsys.readouterr()
+    assert out == ""  # stdout is left to the results table
+    assert err.splitlines() == [
+        "Running 4 cases (2 models × 1 prompt × 2 test cases), 1 at a time",
+        "[1/4] m/a / v1 / c0  pass",
+        "[2/4] m/a / v1 / c1  fail",
+        "[3/4] m/b / v1 / c0  pass",
+        "[4/4] m/b / v1 / c1  fail",
+    ]
+
+
+def test_progress_shows_the_score_and_the_pipeline_error():
+    def line(**tc):
+        case = {"id": "c", "evaluation": "llm_judge", "status": "scored", **tc}
+        return runner._progress_line(
+            3, 12, {"model": "m", "prompt_id": "p", "test_case": case}
+        )
+
+    assert line(match_score=0.75, match_result=True) == "[ 3/12] m / p / c  pass (0.75)"
+    assert line(match_score=0.0, match_result=False) == "[ 3/12] m / p / c  fail (0.00)"
+    assert (
+        line(
+            match_score=None, match_result=False, status="judge_error", error="bad JSON"
+        )
+        == "[ 3/12] m / p / c  ⚠ judge error: bad JSON"
+    )
