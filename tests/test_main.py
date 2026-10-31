@@ -114,7 +114,7 @@ def test_run_without_api_key_exits_1_before_any_call(monkeypatch, capsys, key):
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 1
-    assert "OPENROUTER_API_KEY is not set" in capsys.readouterr().out
+    assert "OPENROUTER_API_KEY is not set" in capsys.readouterr().err
 
 
 def test_no_subcommand_prints_help_and_the_quickstart(monkeypatch, capsys):
@@ -453,7 +453,9 @@ def test_empty_or_non_mapping_yaml_is_a_clean_error(
     with pytest.raises(SystemExit) as exc:
         main.main()
     assert exc.value.code == 1
-    assert message in capsys.readouterr().out
+    out, err = capsys.readouterr()
+    # validate's findings are its result; for run they are diagnostics.
+    assert message in (out if command == "validate" else err)
 
 
 # ── CLI-level runs through the real pipeline, fake HTTP (round 2 contract) ────
@@ -536,6 +538,16 @@ def test_run_prints_results_on_stdout_and_progress_on_stderr(
     assert "[1/2]" not in out and "Running 2 cases" not in out
     assert "Quality score" not in out and "Total cost" not in out
     assert "PASS: best score meets quality_threshold (40)." in out
+
+
+def test_run_prints_validation_warnings_on_stderr(fake_http, tmp_path, capsys):
+    fake_http(_ok("yes"))
+    cfg = _write_cli_config(
+        tmp_path, prompts=[{"id": "v1", "template": "Q: {q} {{ q }}"}]
+    )
+    assert _run_cli(["run", str(cfg), "--no-cache"]) == 0
+    out, err = capsys.readouterr()
+    assert "single-brace" in err and "single-brace" not in out
 
 
 @pytest.mark.parametrize(
@@ -1478,7 +1490,7 @@ def test_filters_never_hide_a_config_mistake(fake_http, tmp_path, capsys):
     assert _run_cli(["run", str(path), "-m", "m/a", "--dry-run"]) == 1
     assert (
         "gate.model 'm/typo' is not one of the config's models"
-        in capsys.readouterr().out
+        in capsys.readouterr().err
     )
 
 

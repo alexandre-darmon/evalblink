@@ -182,7 +182,8 @@ def cmd_run(args):
 
     # The whole config first, so a filter never hides one of its mistakes.
     errors, warnings = _validate_config(config)
-    console = reporter.make_console()
+    # Diagnostics go to stderr, so stdout carries only the results.
+    console = reporter.make_console(stderr=True)
     _print_findings(console, errors, warnings)
     if errors:
         sys.exit(1)
@@ -224,7 +225,7 @@ def cmd_run(args):
     errors = sum(r["errors"] for r in results)
     total = sum(r["total"] for r in results)
     if errors:
-        reporter.make_console(stderr=True).print(
+        console.print(
             f"\n⚠  {errors} of {total} case(s) hit a pipeline error"
             " (API / judge failure) and are excluded from scores.",
             style="bold red",

@@ -57,14 +57,15 @@ prompts:
 # exact_match passes when the whole reply equals expected_output (case-insensitive).
 #
 # Many cases? Keep them in a spreadsheet. These three, as a cases.csv saved next
-# to this file (`text` fills {{ text }}; tags are separated by ;):
+# to this file (copy the lines without their leading "#   "; `text` fills
+# {{ text }}; tags are separated by ;):
 #
 #   id,text,expected_output,tags
 #   tc_001,Arrived a day early and works perfectly.,positive,easy
 #   tc_002,Stopped charging after a week. Support never answered.,negative,easy
 #   tc_003,"It does what the box says. Nothing more, nothing less.",neutral,edge_case
 #
-# then replace the whole test_cases list below with:
+# then replace the whole test_cases list below with this line, unindented:
 #   test_cases: {file: cases.csv, evaluation: exact_match}
 test_cases:
   - id: "tc_001"
@@ -109,13 +110,14 @@ prompts:
   #   template: "TL;DR for on-call: {{ ticket }}"
 
 # Many cases? Keep them in a spreadsheet. These two, as a cases.csv saved next
-# to this file (`ticket` fills {{ ticket }}; quote cells that hold a comma):
+# to this file (copy the lines without their leading "#   "; `ticket` fills
+# {{ ticket }}; quote cells that hold a comma):
 #
 #   id,ticket,criteria,tags
 #   tc_001,"Since Monday's release, CSV export returns an empty file for any report with more than 10,000 rows. Smaller reports export fine.","One sentence. States that CSV export produces empty files for reports over 10,000 rows and that it started with Monday's release. No greeting.",easy
 #   tc_002,"Customer says the app is ""slow"". No version, no steps, no screenshot. They are on the free plan and in Brazil.",One sentence. Says the report is vague and lacks version and reproduction steps; does not invent a cause.,edge_case
 #
-# then replace the whole test_cases list below with:
+# then replace the whole test_cases list below with this line, unindented:
 #   test_cases: {file: cases.csv, evaluation: llm_judge}
 test_cases:
   - id: "tc_001"
