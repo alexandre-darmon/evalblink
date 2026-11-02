@@ -287,7 +287,7 @@ evalblink cache clear --yes                              # without --yes it only
 `evalblink run` and `evalblink validate` with no path use the only YAML in `benchmarks/` (what `init` writes) and print `Using <path>` to stderr. With several YAMLs there, they use `benchmarks/exact_match_classification.yaml` when it exists (as in this repo) and otherwise exit with the list to pick from; with none, they suggest `evalblink init`.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric (OpenRouter quotes `-1` for its `openrouter/*` routers) is unknown: `models` shows it as `?` and `--free` leaves it out.
-- `init` asks three questions: a name, the evaluation mode (`exact_match` or `llm_judge`) and the models to compare, comma-separated. Press Enter at each for the defaults. It then writes a complete, commented starter: an example prompt and example test cases, `temperature: 0`, `max_tokens: 1024` (headroom for free reasoning models), `concurrency: 2` (free models rate-limit bursts) and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`. The file validates and runs as-is; replace the example test cases with your own in your editor. The default model is the free `poolside/laguna-xs-2.1:free` (or the first free catalog model if OpenRouter has retired it). While you choose, it lists up to five free text models from the catalog (text in, text-only out; audio and image generators are left out) and a small paid option without free-tier rate limits, `google/gemma-4-31b-it`, with its price. That option is never preselected. Models absent from the catalog get a warning, and an empty name or model list is asked again. `init` carries on without suggestions when the catalog can't be fetched. The output file is the optional path argument, or `benchmarks/<slug>.yaml`, relative to the directory you run `init` in (never the install directory); `init` prints its absolute path when done (`benchmarks/benchmark.yaml` for a name with no letters or digits); an existing file is only overwritten after you confirm. `init --yes` asks nothing and writes the `exact_match` starter with the default model, refusing to overwrite an existing file. Before writing, `init` runs `validate` on the result and exits 1 without writing if there are errors.
+- `init` asks three questions: a name, the evaluation mode (`exact_match` or `llm_judge`) and the models to compare, comma-separated. Press Enter at each for the defaults. It then writes a complete, commented starter: an example prompt and example test cases, `temperature: 0`, `max_tokens: 1024` (headroom for free reasoning models), `concurrency: 2` (free models rate-limit bursts) and, for `llm_judge`, the free judge `nvidia/nemotron-3-ultra-550b-a55b:free`. The file validates and runs as-is; replace the example test cases with your own in your editor. The default model is the free `cohere/north-mini-code:free` (or the first free catalog model if OpenRouter has retired it). While you choose, it lists up to five free text models from the catalog (text in, text-only out; audio and image generators are left out) and a small paid option without free-tier rate limits, `openai/gpt-oss-20b`, with its price. That option is never preselected. Models absent from the catalog get a warning, and an empty name or model list is asked again. `init` carries on without suggestions when the catalog can't be fetched. The output file is the optional path argument, or `benchmarks/<slug>.yaml`, relative to the directory you run `init` in (never the install directory); `init` prints its absolute path when done (`benchmarks/benchmark.yaml` for a name with no letters or digits); an existing file is only overwritten after you confirm. `init --yes` asks nothing and writes the `exact_match` starter with the default model, refusing to overwrite an existing file. Before writing, `init` runs `validate` on the result and exits 1 without writing if there are errors.
 
 ---
 
@@ -426,7 +426,7 @@ prompts:
     template: "Customer message: {{ customer_message }}"
 
 models:
-  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 test_cases:
   # Edge case — emotional frustration before resolution
@@ -487,7 +487,7 @@ prompts:
        Conversation: {{ conversation }}
 
 models:
-  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 variables:
   use_cases: "Translate content, Analyze content, Summarize content, Generate new ideas, Write content, Generate simple code, Other"

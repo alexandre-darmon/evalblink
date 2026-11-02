@@ -3,7 +3,7 @@ name: "Customer Support Classification"
 
 inference:
   temperature: 0
-  max_tokens: 1024  # reasoning models (e.g. poolside/laguna) need headroom beyond the label itself
+  max_tokens: 1024  # reasoning models need headroom beyond the label itself
 
 evaluation:
   judge_model: "nvidia/nemotron-3-ultra-550b-a55b:free"  # different vendor from every candidate
@@ -26,8 +26,8 @@ prompts:
       Conversation: {{ conversation }}
 
 models:
-  - "poolside/laguna-xs-2.1:free"
   - "cohere/north-mini-code:free"
+  - "dots-studio/dots-3-note-preview:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"

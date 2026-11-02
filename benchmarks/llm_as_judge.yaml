@@ -41,7 +41,7 @@ prompts:
     template: "Customer message: {{ customer_message }}"
 
 models:
-  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 test_cases:
   # Edge case — emotional frustration before resolution
