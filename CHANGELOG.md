@@ -5,7 +5,7 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 ## [Unreleased]
 
 ### Changed
-- `poolside/laguna-xs-2.1:free` was retired by OpenRouter, so every shipped example failed with a 404. The new default (`init` and the example benchmarks) is the free `cohere/north-mini-code:free`, picked by running the examples on every free text model plus the cheapest paid ones: it tied the best (34/38 cases over two rounds) with no errors, and isn't from the judge's vendor. The suggested paid option is now `openai/gpt-oss-20b` (about 7× cheaper than `google/gemma-4-31b-it`, and as accurate here).
+- `poolside/laguna-xs-2.1:free` was retired by OpenRouter, so every shipped example failed with a 404. The new default (`init` and the example benchmarks) is the free `cohere/north-mini-code:free`, picked by running the examples on every free text model plus the cheapest paid ones: it tied the best (34/38 cases over two rounds) with no errors, and isn't from the judge's vendor. The suggested paid option is now `openai/gpt-oss-20b`: as accurate here, and cheaper than `google/gemma-4-31b-it` ($0.03 / $0.13 per 1M tokens in / out, against $0.20 / $0.40).
 
 ### Added
 - Three free, deterministic scorers for free-text replies, using `expected_output`: `contains` (every text appears, ignoring case; one string or a list), `not_contains` (none appears) and `regex` (Python `re.search`; `(?i)` to ignore case). `contains` / `not_contains` compare text as a reader sees it: Unicode spaces, line breaks and dashes count as ` ` and `-`, and invisible characters are ignored. `regex` sees the reply as written (surrounding whitespace ignored). `validate` rejects a missing or empty text and a pattern that doesn't compile. Example: `benchmarks/text_checks.yaml`.

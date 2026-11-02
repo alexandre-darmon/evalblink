@@ -174,12 +174,12 @@ def test_retired_default_is_replaced_by_a_free_suggestion(
 def test_the_small_paid_model_is_suggested_not_preselected(
     monkeypatch, tmp_path, capsys
 ):
-    catalog = {**CATALOG, starter.PAID_MODEL: {"prompt": 2e-7, "completion": 4e-7}}
+    catalog = {**CATALOG, starter.PAID_MODEL: {"prompt": 3e-8, "completion": 1.3e-7}}
     out = tmp_path / "x.yaml"
     assert _init(monkeypatch, [str(out)], ["X", "", ""], catalog=catalog) == 0
     assert _load(out)["models"] == [starter.DEFAULT_MODEL]
     stdout = capsys.readouterr().out
-    assert f"rate limits:\n  {starter.PAID_MODEL} ($0.200 in / $0.400 out" in stdout
+    assert f"rate limits:\n  {starter.PAID_MODEL} ($0.030 in / $0.130 out" in stdout
 
 
 def test_a_retired_paid_suggestion_is_not_shown(monkeypatch, tmp_path, capsys):
