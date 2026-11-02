@@ -46,33 +46,40 @@ def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
 
 
-_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"), "-")
+_PUNCTUATION = {
+    **dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"), "-"),
+    ord("\u2044"): "/",  # NFKC writes ½ as 1⁄2
+}
 
 
-def _plain(text):
-    """Text as a reader sees it: models write "30\u202fdays" and "30\u2011day".
+def plain_text(text):
+    """Text as a reader sees it, for ``contains`` / ``not_contains``.
 
-    NFKC turns no-break, narrow and other Unicode spaces into " " (and
-    fullwidth letters into ASCII); every Unicode dash becomes "-".
+    Models write "30\u202fdays", "30\u2011day" and "STAFF\u00ad50". NFKC turns
+    Unicode spaces into " " (and fullwidth letters into ASCII), every dash
+    becomes "-", invisible format characters (soft hyphen, zero-width space)
+    are dropped, runs of whitespace become one space, and case is folded.
     """
-    return unicodedata.normalize("NFKC", text).translate(_DASHES)
+    text = unicodedata.normalize("NFKC", text).translate(_PUNCTUATION)
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return " ".join(text.split()).casefold()
 
 
 def _snippets(expected):
-    """``expected_output`` as a list of plain, casefolded texts."""
+    """``expected_output`` as a list of plain texts."""
     texts = [expected] if isinstance(expected, str) else expected
-    return [_plain(s).casefold() for s in texts]
+    return [plain_text(s) for s in texts]
 
 
 def contains(response, expected):
-    """Every expected snippet appears in the reply (case-insensitive)."""
-    text = _plain(response).casefold()
+    """Every expected snippet appears in the reply (see :func:`plain_text`)."""
+    text = plain_text(response)
     return all(s in text for s in _snippets(expected))
 
 
 def not_contains(response, expected):
-    """No expected snippet appears in the reply (case-insensitive)."""
-    text = _plain(response).casefold()
+    """No expected snippet appears in the reply (see :func:`plain_text`)."""
+    text = plain_text(response)
     return not any(s in text for s in _snippets(expected))
 
 
@@ -80,9 +87,10 @@ def regex(response, pattern):
     """The pattern matches somewhere in the reply (``re.search``; ``(?i)`` for
     case-insensitive, ``^…$`` for the whole reply). Like ``exact_match``, the
     reply's surrounding whitespace is ignored, so ``^…$`` survives a stray
-    leading or trailing newline. The reply is made plain first (:func:`_plain`);
-    the pattern is used as written."""
-    return re.search(pattern, _plain(response).strip()) is not None
+    leading or trailing newline. Otherwise the reply is matched as written, so
+    a pattern can look for (or ban) a "—" or count characters; ``\\s`` already
+    matches no-break spaces and ``\\W`` any space or dash."""
+    return re.search(pattern, response.strip()) is not None
 
 
 # Pass/fail checks of the reply against expected_output: scored 1.0 or 0.0.

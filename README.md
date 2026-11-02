@@ -380,14 +380,14 @@ test_cases:
     expected_output: ["STAFF50"]
   - id: "refund_window"
     evaluation: "regex"             # the pattern matches somewhere in the reply
-    expected_output: '(?i)\b30[- ]days?\b'   # "30 days" or "30-day"
+    expected_output: '(?i)\b30\W?days?\b'   # "30 days", "30-day", any space or dash
 ```
 
 - **`contains`** passes when the reply includes `expected_output`, ignoring case. A list means *all* of them.
 - **`not_contains`** passes when the reply includes none of them, ignoring case.
 - **`regex`** passes when Python's [`re.search`](https://docs.python.org/3/library/re.html) finds the pattern anywhere in the reply. It is case-sensitive: start the pattern with `(?i)` to ignore case. Wrap it in `^…$` to match the whole reply; as with `exact_match`, whitespace around the reply is ignored. Write it in single quotes in YAML so backslashes stay as they are. `evalblink validate` rejects a pattern that doesn't compile. Avoid nested repeats such as `(a+)+`: on a long reply they can take practically forever, and Ctrl-C can't interrupt them.
 
-Before matching, the reply is made plain: models often write `30 days` with a no-break or narrow space, or `30‑day` with a non-breaking hyphen, so Unicode spaces become a normal space (NFKC, which also turns fullwidth letters into ASCII) and every Unicode dash becomes `-`. The `contains` / `not_contains` texts get the same treatment; a `regex` pattern is used as written.
+Models often write `30 days` with a no-break or narrow space, `30‑day` with a non-breaking hyphen, or hide a soft hyphen inside a word. So `contains` and `not_contains` compare the text as a reader sees it, on both sides: Unicode spaces and line breaks count as one space, every dash as `-`, invisible characters are ignored, and fullwidth letters read as ASCII (Unicode NFKC). `regex` sees the reply as written, so a pattern can look for, or ban, a `—` or count characters: use `\s` for any space (it covers no-break spaces) and `\W` for any space or dash.
 
 They match text, not meaning. "I can't guarantee a date" still contains "guarantee", and `contains: "30 days"` fails a reply that says "30-day" (the regex above accepts both). So check what must, or must never, appear verbatim (a code, an ID, a number, a banned phrase), keep each text short, and use `llm_judge` when the wording can vary.
 

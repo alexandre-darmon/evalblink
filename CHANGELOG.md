@@ -5,7 +5,7 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 ## [Unreleased]
 
 ### Added
-- Three free, deterministic scorers for free-text replies, using `expected_output`: `contains` (every text appears, ignoring case; one string or a list), `not_contains` (none appears) and `regex` (Python `re.search`; `(?i)` to ignore case). The reply is matched as a reader sees it: Unicode no-break / narrow spaces and dashes count as ` ` and `-`, and surrounding whitespace is ignored. `validate` rejects a missing or empty text and a pattern that doesn't compile. Example: `benchmarks/text_checks.yaml`.
+- Three free, deterministic scorers for free-text replies, using `expected_output`: `contains` (every text appears, ignoring case; one string or a list), `not_contains` (none appears) and `regex` (Python `re.search`; `(?i)` to ignore case). `contains` / `not_contains` compare text as a reader sees it: Unicode spaces, line breaks and dashes count as ` ` and `-`, and invisible characters are ignored. `regex` sees the reply as written (surrounding whitespace ignored). `validate` rejects a missing or empty text and a pattern that doesn't compile. Example: `benchmarks/text_checks.yaml`.
 
 ## [0.1.4] — 2026-10-31
 

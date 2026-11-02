@@ -9,7 +9,7 @@ import re
 import jinja2
 import jinja2.meta
 
-from .evaluator import TEXT_CHECKS
+from .evaluator import TEXT_CHECKS, plain_text
 from .openrouter import is_number as _is_number
 from .runner import JINJA_ENV, render_template
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
@@ -323,7 +323,7 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                 )
             elif snippets and isinstance(expected, list):
                 if not expected or not all(
-                    isinstance(s, str) and s.strip() for s in expected
+                    isinstance(s, str) and plain_text(s) for s in expected
                 ):
                     errors.append(
                         f"test_cases[{label}]: {eval_type} expected_output must be"
@@ -336,7 +336,9 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                     f" string (got {expected!r}) — quote it in the YAML; unquoted"
                     " yes/no/true/false and numbers are not parsed as text"
                 )
-            elif eval_type != "exact_match" and not expected.strip():
+            elif eval_type != "exact_match" and not (
+                plain_text(expected) if snippets else expected.strip()
+            ):
                 errors.append(
                     f"test_cases[{label}]: {eval_type} expected_output is empty —"
                     " it would match every reply"

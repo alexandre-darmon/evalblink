@@ -794,6 +794,8 @@ def test_text_checks_accept_their_expected_output(evaluation, expected):
         ("regex", "", "it would match every reply"),
         ("contains", "   ", "it would match every reply"),
         ("contains", ["ok", "  "], "non-empty list of non-empty strings"),
+        ("not_contains", "\u200b\u00ad", "it would match every reply"),  # invisible
+        ("contains", ["ok", "\u200b"], "non-empty list of non-empty strings"),
         ("regex", "a{4294967296}", "not a valid regular expression"),  # Overflow
         ("regex", "(" * 2000 + ")" * 2000, "not a valid regular expression"),
         ("exact_match", ["a"], "exact_match expected_output must be a string"),

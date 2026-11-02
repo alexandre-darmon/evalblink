@@ -34,7 +34,7 @@ test_cases:
     evaluation: "regex"
     variables:
       message: "Can I still return the shoes I got last week?"
-    expected_output: '(?i)\b30[- ]days?\b'  # "30 days" or "30-day", not "$30 … today"
+    expected_output: '(?i)\b30\W?days?\b'  # "30 days", "30-day", any space or dash
     tags: ["policy"]
 
   - id: "no_staff_code"

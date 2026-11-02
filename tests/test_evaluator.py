@@ -356,18 +356,27 @@ def test_regex_searches_the_reply(reply, pattern, want):
 
 
 @pytest.mark.parametrize(
-    "check, reply, expected",
+    "reply, expected",
     [
         # Seen live: a narrow no-break space and a non-breaking hyphen.
-        (evaluator.contains, "within 30\u202fdays of delivery", "30 days"),
-        (evaluator.contains, "our 30\u2011day window", "30-day"),
-        (evaluator.contains, "within 30 days", "30\u00a0days"),  # in the text too
-        (evaluator.regex, "within 30\u202fdays", r"\b30[- ]days?\b"),
-        (evaluator.regex, "our 30\u2013day window", r"30-day"),
-        (evaluator.contains, "Code: ＳＴＡＦＦ５０", "STAFF50"),  # fullwidth
+        ("within 30\u202fdays of delivery", "30 days"),
+        ("our 30\u2011day window", "30-day"),
+        ("within 30 days", "30\u00a0days"),  # in the text too
+        ("Refund within 30\n  days", "30 days"),  # a wrapped line, a double space
+        ("Code: ＳＴＡＦＦ５０", "STAFF50"),  # fullwidth
+        ("use STAFF\u00ad50 or STAFF\u200b50", "STAFF50"),  # soft hyphen, zero-width
+        ("Add ½ cup", "1/2 cup"),
     ],
 )
-def test_text_checks_see_unicode_spaces_and_dashes_as_plain(check, reply, expected):
-    assert check(reply, expected)
-    if check is evaluator.contains:
-        assert not evaluator.not_contains(reply, expected)
+def test_contains_reads_the_reply_as_a_reader_sees_it(reply, expected):
+    assert evaluator.contains(reply, expected)
+    assert not evaluator.not_contains(reply, expected)  # a leak is still caught
+
+
+def test_regex_sees_the_reply_as_written():
+    # \s and \W cover Unicode spaces and dashes; the reply is not rewritten,
+    # so a pattern can ban a character or count them.
+    assert evaluator.regex("within 30\u202fdays", r"\b30\W?days?\b")
+    assert evaluator.regex("our 30\u2011day window", r"\b30\W?days?\b")
+    assert not evaluator.regex("Short answer \u2014 really", r"^(?!.*\u2014)")
+    assert evaluator.regex("Wait\u2026ok\u2026!", r"^.{1,10}$")  # 9 characters
