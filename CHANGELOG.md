@@ -4,6 +4,8 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-11-02
+
 ### Changed
 - `poolside/laguna-xs-2.1:free` was retired by OpenRouter, so every shipped example failed with a 404. The new default (`init` and the example benchmarks) is the free `cohere/north-mini-code:free`, picked by running the examples on every free text model plus the cheapest paid ones: it tied the best (34/38 cases over two rounds) with no errors, and isn't from the judge's vendor. The suggested paid option is now `openai/gpt-oss-20b`: as accurate here, and cheaper than `google/gemma-4-31b-it` ($0.03 / $0.13 per 1M tokens in / out, against $0.20 / $0.40).
 
@@ -64,7 +66,8 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 First release: `run`, `validate`, `compare` (`--detailed`), `report`, `history`, `models`, `init` and `cache`, with exact-match, weighted-match and LLM-as-judge scoring through OpenRouter.
 
-[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alexandre-darmon/evalblink/compare/v0.1.1...v0.1.2
