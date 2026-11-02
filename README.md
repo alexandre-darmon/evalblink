@@ -372,24 +372,26 @@ For free-text replies with a checkable fact in them — "mentions the 30-day ref
 ```yaml
 # Excerpt of benchmarks/text_checks.yaml
 test_cases:
-  - id: "refund_window"
+  - id: "order_id_echoed"
     evaluation: "contains"          # every text in expected_output appears in the reply
-    expected_output: ["30", "day"]  # matches "30 days" and "30-day"
+    expected_output: "ORD-48213"
   - id: "no_staff_code"
     evaluation: "not_contains"      # none of them appears
     expected_output: ["STAFF50"]
-  - id: "order_id_echoed"
+  - id: "refund_window"
     evaluation: "regex"             # the pattern matches somewhere in the reply
-    expected_output: 'ORD-\d{5}'
+    expected_output: '(?i)\b30[- ]days?\b'   # "30 days" or "30-day"
 ```
 
 - **`contains`** passes when the reply includes `expected_output`, ignoring case. A list means *all* of them.
 - **`not_contains`** passes when the reply includes none of them, ignoring case.
-- **`regex`** passes when Python's [`re.search`](https://docs.python.org/3/library/re.html) finds the pattern anywhere in the reply. It is case-sensitive: start the pattern with `(?i)` to ignore case, or wrap it in `^…$` to match the whole reply. Write it in single quotes in YAML so backslashes stay as they are. `evalblink validate` rejects a pattern that doesn't compile.
+- **`regex`** passes when Python's [`re.search`](https://docs.python.org/3/library/re.html) finds the pattern anywhere in the reply. It is case-sensitive: start the pattern with `(?i)` to ignore case. Wrap it in `^…$` to match the whole reply; as with `exact_match`, whitespace around the reply is ignored. Write it in single quotes in YAML so backslashes stay as they are. `evalblink validate` rejects a pattern that doesn't compile. Avoid nested repeats such as `(a+)+`: on a long reply they can take practically forever, and Ctrl-C can't interrupt them.
 
-They match text, not meaning. "I can't guarantee a date" still contains "guarantee", and `contains: "30 days"` fails a reply that says "30-day". So check what must, or must never, appear verbatim (a code, an ID, a number, a banned phrase), keep each text short, and use `llm_judge` when the wording can vary.
+Before matching, the reply is made plain: models often write `30 days` with a no-break or narrow space, or `30‑day` with a non-breaking hyphen, so Unicode spaces become a normal space (NFKC, which also turns fullwidth letters into ASCII) and every Unicode dash becomes `-`. The `contains` / `not_contains` texts get the same treatment; a `regex` pattern is used as written.
 
-In a CSV file the `expected_output` cell holds one text (for several, use one `regex` such as `(?s)(?=.*refund)(?=.*30 days)`, or several rows).
+They match text, not meaning. "I can't guarantee a date" still contains "guarantee", and `contains: "30 days"` fails a reply that says "30-day" (the regex above accepts both). So check what must, or must never, appear verbatim (a code, an ID, a number, a banned phrase), keep each text short, and use `llm_judge` when the wording can vary.
+
+In a CSV file the `expected_output` cell holds one text (for several, use one `regex` such as `(?is)(?=.*refund)(?=.*30 days)` — `i` ignores case like `contains`, `s` lets `.` cross lines —, or several rows).
 
 ### LLM-as-judge
 

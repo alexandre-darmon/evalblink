@@ -347,9 +347,27 @@ def test_not_contains_fails_on_any_snippet(reply, expected, want):
         ("Your order ORD-48213 has shipped.", r"ORD-\d{5}", True),  # anywhere
         ("Your order ord-48213 has shipped.", r"ORD-\d{5}", False),  # case-sensitive
         ("Your order ord-48213 has shipped.", r"(?i)ORD-\d{5}", True),
-        ("billing\n", r"^billing$", True),  # $ matches before a final newline
+        ("\n\nbilling\n\n", r"^billing$", True),  # surrounding whitespace ignored
         ("billing issue", r"^billing$", False),
     ],
 )
 def test_regex_searches_the_reply(reply, pattern, want):
     assert evaluator.regex(reply, pattern) is want
+
+
+@pytest.mark.parametrize(
+    "check, reply, expected",
+    [
+        # Seen live: a narrow no-break space and a non-breaking hyphen.
+        (evaluator.contains, "within 30\u202fdays of delivery", "30 days"),
+        (evaluator.contains, "our 30\u2011day window", "30-day"),
+        (evaluator.contains, "within 30 days", "30\u00a0days"),  # in the text too
+        (evaluator.regex, "within 30\u202fdays", r"\b30[- ]days?\b"),
+        (evaluator.regex, "our 30\u2013day window", r"30-day"),
+        (evaluator.contains, "Code: ＳＴＡＦＦ５０", "STAFF50"),  # fullwidth
+    ],
+)
+def test_text_checks_see_unicode_spaces_and_dashes_as_plain(check, reply, expected):
+    assert check(reply, expected)
+    if check is evaluator.contains:
+        assert not evaluator.not_contains(reply, expected)

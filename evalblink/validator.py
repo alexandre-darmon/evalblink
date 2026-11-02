@@ -322,7 +322,9 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                     f"test_cases[{label}]: {eval_type} requires 'expected_output'"
                 )
             elif snippets and isinstance(expected, list):
-                if not expected or not all(isinstance(s, str) and s for s in expected):
+                if not expected or not all(
+                    isinstance(s, str) and s.strip() for s in expected
+                ):
                     errors.append(
                         f"test_cases[{label}]: {eval_type} expected_output must be"
                         " a string or a non-empty list of non-empty strings"
@@ -334,7 +336,7 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                     f" string (got {expected!r}) — quote it in the YAML; unquoted"
                     " yes/no/true/false and numbers are not parsed as text"
                 )
-            elif snippets and not expected:
+            elif eval_type != "exact_match" and not expected.strip():
                 errors.append(
                     f"test_cases[{label}]: {eval_type} expected_output is empty —"
                     " it would match every reply"
@@ -342,7 +344,8 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
             elif eval_type == "regex":
                 try:
                     re.compile(expected)
-                except re.error as exc:
+                # Not only re.error: a{4294967296} overflows, deep nesting recurses.
+                except (re.error, OverflowError, RecursionError, ValueError) as exc:
                     errors.append(
                         f"test_cases[{label}]: regex expected_output is not a"
                         f" valid regular expression: {exc}"

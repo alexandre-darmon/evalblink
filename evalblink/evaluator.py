@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 import httpx
 
@@ -45,27 +46,43 @@ def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
 
 
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"), "-")
+
+
+def _plain(text):
+    """Text as a reader sees it: models write "30\u202fdays" and "30\u2011day".
+
+    NFKC turns no-break, narrow and other Unicode spaces into " " (and
+    fullwidth letters into ASCII); every Unicode dash becomes "-".
+    """
+    return unicodedata.normalize("NFKC", text).translate(_DASHES)
+
+
 def _snippets(expected):
-    """``expected_output`` as a list: one string, or a list of them."""
-    return [expected] if isinstance(expected, str) else list(expected)
+    """``expected_output`` as a list of plain, casefolded texts."""
+    texts = [expected] if isinstance(expected, str) else expected
+    return [_plain(s).casefold() for s in texts]
 
 
 def contains(response, expected):
     """Every expected snippet appears in the reply (case-insensitive)."""
-    text = response.casefold()
-    return all(s.casefold() in text for s in _snippets(expected))
+    text = _plain(response).casefold()
+    return all(s in text for s in _snippets(expected))
 
 
 def not_contains(response, expected):
     """No expected snippet appears in the reply (case-insensitive)."""
-    text = response.casefold()
-    return not any(s.casefold() in text for s in _snippets(expected))
+    text = _plain(response).casefold()
+    return not any(s in text for s in _snippets(expected))
 
 
 def regex(response, pattern):
     """The pattern matches somewhere in the reply (``re.search``; ``(?i)`` for
-    case-insensitive, ``^…$`` for the whole reply)."""
-    return re.search(pattern, response) is not None
+    case-insensitive, ``^…$`` for the whole reply). Like ``exact_match``, the
+    reply's surrounding whitespace is ignored, so ``^…$`` survives a stray
+    leading or trailing newline. The reply is made plain first (:func:`_plain`);
+    the pattern is used as written."""
+    return re.search(pattern, _plain(response).strip()) is not None
 
 
 # Pass/fail checks of the reply against expected_output: scored 1.0 or 0.0.
