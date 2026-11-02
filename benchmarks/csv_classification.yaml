@@ -17,7 +17,7 @@ prompts:
       Conversation: {{ conversation }}
 
 models:
-  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 variables:
   labels: "order_issue, billing, product_question, other"

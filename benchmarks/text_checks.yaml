@@ -24,7 +24,7 @@ prompts:
       Customer: {{ message }}
 
 models:
-  - "nvidia/nemotron-3-ultra-550b-a55b:free"
+  - "cohere/north-mini-code:free"
 
 variables:
   order_id: ""

@@ -41,7 +41,7 @@ RATE_LIMIT_BACKOFF = 5
 MAX_BACKOFF = 60
 RATE_LIMIT_HINT = (
     " Rate-limited: free models allow few calls per minute. Retry later, lower"
-    " `concurrency`, or add a paid model (e.g. google/gemma-4-31b-it)."
+    " `concurrency`, or add a paid model (e.g. openai/gpt-oss-20b)."
 )
 
 

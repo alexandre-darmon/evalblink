@@ -28,7 +28,7 @@ prompts:
        Conversation: {{ conversation }}
 
 models:
-  - "poolside/laguna-xs-2.1:free"
+  - "cohere/north-mini-code:free"
 
 variables:
   use_cases: "Translate content, Analyze content, Summarize content, Generate new ideas, Write content, Generate simple code, Other"

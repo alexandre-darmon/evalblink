@@ -73,7 +73,7 @@ A run flows through one linear pipeline; module boundaries are deliberate, not i
 Configs live in `benchmarks/*.yaml`. The structure the code reads:
 
 - **Templates use Jinja2** — `{{ variable }}`, NOT `{variable}`. Single braces render literally and silently produce wrong prompts (a real bug class). `evalblink validate` warns on this pattern. Variables come from the global `variables:` block merged with each `test_case.variables`.
-- **`inference:`** `temperature`, `max_tokens` (a positive int; `100.0` is an error). Reasoning models (e.g. `poolside/laguna`) consume the budget on reasoning tokens and return null content if `max_tokens` is too low — give headroom.
+- **`inference:`** `temperature`, `max_tokens` (a positive int; `100.0` is an error). Reasoning models (e.g. `nvidia/nemotron-3.5-lightning`) consume the budget on reasoning tokens and return null content if `max_tokens` is too low — give headroom.
 - **`evaluation:` block is per-mode:**
   - `contains` / `not_contains` / `regex` (like `exact_match`) need only `expected_output`: case-insensitive substring(s) — a string or a non-empty list, all must / none may appear — or a Python `re.search` pattern (case-sensitive; `(?i)`), which `validate` compiles. They match text, not meaning.
   - `exact_match` cases need no `evaluation:` block at all. The scorer is a plain case-insensitive string comparison — prompt the model to return the label text only, no JSON.

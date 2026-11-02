@@ -13,10 +13,10 @@ import yaml
 
 # Free defaults, also used by the shipped benchmarks (the weekly models check
 # covers them through tests/test_models_live.py).
-DEFAULT_MODEL = "poolside/laguna-xs-2.1:free"
+DEFAULT_MODEL = "cohere/north-mini-code:free"
 JUDGE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Suggested, never preselected: no free-tier rate limits for a few cents.
-PAID_MODEL = "google/gemma-4-31b-it"
+PAID_MODEL = "openai/gpt-oss-20b"
 
 MODES = ("exact_match", "llm_judge")
 
