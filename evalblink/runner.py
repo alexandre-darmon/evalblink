@@ -20,8 +20,8 @@ import httpx
 from jinja2.sandbox import SandboxedEnvironment
 
 from .evaluator import (
+    TEXT_CHECKS,
     evaluate_llm_judge,
-    exact_match,
     judge_vendor_warning,
     weighted_match,
 )
@@ -143,8 +143,9 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
 
     if error is not None:
         status = "api_error"
-    elif evaluation == "exact_match":
-        match_result = exact_match(response["response"], test_case["expected_output"])
+    elif evaluation in TEXT_CHECKS:
+        check = TEXT_CHECKS[evaluation]
+        match_result = check(response["response"], test_case["expected_output"])
         match_score = 1.0 if match_result else 0.0
     elif evaluation == "weighted_match":
         match_score = weighted_match(
@@ -365,7 +366,7 @@ def _progress_line(done, total, case_result):
         outcome = f"⚠ {label}: {tc.get('error', '')}"
     else:
         outcome = "pass" if tc["match_result"] else "fail"
-        if tc["evaluation"] != "exact_match":
+        if tc["evaluation"] in ("llm_judge", "weighted_match"):  # graded, not 1/0
             outcome += f" ({tc['match_score']:.2f})"
     where = f"{case_result['model']} / {case_result['prompt_id']} / {tc['id']}"
     return f"[{done:>{len(str(total))}}/{total}] {where}  {outcome}"

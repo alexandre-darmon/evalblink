@@ -58,6 +58,7 @@ prompts:
   #   template: "Sentiment ({{ labels }}) of: {{ text }}"
 
 # exact_match passes when the whole reply equals expected_output (case-insensitive).
+# For free text, `contains`, `not_contains` and `regex` check what the reply says.
 #
 # Many cases? Keep them in a spreadsheet. These three, as a cases.csv saved next
 # to this file (copy the lines without their leading "#   "; `text` fills

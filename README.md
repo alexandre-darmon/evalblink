@@ -215,8 +215,8 @@ evalblink run benchmarks/exact_match_classification.yaml
 | `variables` | — | Global key/value pairs injected into all templates |
 | `test_cases` | ✅ | The list of test cases below, or `{file: cases.csv, evaluation?}` to load them from a CSV, TSV or JSONL file (see [Test cases from a file](#test-cases-from-a-csv-or-jsonl-file)) |
 | `test_cases[].id` | ✅ | Unique identifier |
-| `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
-| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth (string for `exact_match`, JSON array for `weighted_match`) |
+| `test_cases[].evaluation` | ✅ | `exact_match` \| `contains` \| `not_contains` \| `regex` \| `llm_judge` \| `weighted_match` |
+| `test_cases[].expected_output` | ✅ except for `llm_judge` | The label (`exact_match`), the text that must (`contains`) or must not (`not_contains`) appear — a string or a list of strings — the pattern (`regex`), or a JSON array (`weighted_match`) |
 | `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
 | `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
 | `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
@@ -229,7 +229,7 @@ evalblink run benchmarks/exact_match_classification.yaml
 > - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type; a self-referencing YAML alias (`&a [*a]`), which could not be written to the results JSON.
 > - **Unknown keys:** a top-level key the code doesn't read is an error, with a suggestion when one is close (`unknown key 'qualty_threshold' — did you mean 'quality_threshold'?`): a misspelled `quality_threshold` would otherwise switch the CI gate off without a word. An unknown key inside `inference`, `evaluation`, a prompt or a test case is a warning naming where it is. Keys starting with `_` or `x-` are yours (YAML anchors, notes) and never flagged.
 > - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
-> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
+> - **Per mode:** an `exact_match`, `contains`, `not_contains` or `regex` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it; `contains` / `not_contains` also take a non-empty list of non-empty strings); an empty `contains` / `not_contains` text, which would match every reply; a `regex` that doesn't compile; `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
@@ -364,6 +364,32 @@ test_cases:
 ```
 
 Case-insensitive string comparison after whitespace trimming. The model must return just the label text. If it wraps the output in JSON or adds any explanation, the match fails.
+
+### Contains, not contains and regex
+
+For free-text replies with a checkable fact in them — "mentions the 30-day refund window", "echoes the order ID", "never leaks the staff discount code" — without paying for a judge. Like `exact_match`, they are deterministic, free and instant, and a case scores pass or fail.
+
+```yaml
+# Excerpt of benchmarks/text_checks.yaml
+test_cases:
+  - id: "refund_window"
+    evaluation: "contains"          # every text in expected_output appears in the reply
+    expected_output: ["30", "day"]  # matches "30 days" and "30-day"
+  - id: "no_staff_code"
+    evaluation: "not_contains"      # none of them appears
+    expected_output: ["STAFF50"]
+  - id: "order_id_echoed"
+    evaluation: "regex"             # the pattern matches somewhere in the reply
+    expected_output: 'ORD-\d{5}'
+```
+
+- **`contains`** passes when the reply includes `expected_output`, ignoring case. A list means *all* of them.
+- **`not_contains`** passes when the reply includes none of them, ignoring case.
+- **`regex`** passes when Python's [`re.search`](https://docs.python.org/3/library/re.html) finds the pattern anywhere in the reply. It is case-sensitive: start the pattern with `(?i)` to ignore case, or wrap it in `^…$` to match the whole reply. Write it in single quotes in YAML so backslashes stay as they are. `evalblink validate` rejects a pattern that doesn't compile.
+
+They match text, not meaning. "I can't guarantee a date" still contains "guarantee", and `contains: "30 days"` fails a reply that says "30-day". So check what must, or must never, appear verbatim (a code, an ID, a number, a banned phrase), keep each text short, and use `llm_judge` when the wording can vary.
+
+In a CSV file the `expected_output` cell holds one text (for several, use one `regex` such as `(?s)(?=.*refund)(?=.*30 days)`, or several rows).
 
 ### LLM-as-judge
 
@@ -690,7 +716,7 @@ Four practitioner guides covering the full evaluation workflow are planned for V
 ## Roadmap
 
 **V1 — CLI (current)**
-- Exact match + LLM-as-judge + weighted match evaluation
+- Exact match, contains / not contains / regex, LLM-as-judge and weighted match evaluation
 - Per-tag result stratification with auto-warnings
 - Self-preference, verbosity, and style bias mitigations
 - Reference-guided grading

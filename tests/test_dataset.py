@@ -337,3 +337,21 @@ def test_the_near_miss_warning_is_neither_silent_nor_noisy(
 ):
     _load(tmp_path, "c.csv", f"id,{column}\nc1,x\n")
     assert bool(capsys.readouterr().err) is warned
+
+
+def test_text_check_rows_keep_their_text_and_pattern(tmp_path):
+    config = _load(
+        tmp_path,
+        "cases.csv",
+        "id,evaluation,expected_output,text\n"
+        "c1,contains,30 days,a\n"
+        "c2,not_contains,STAFF50,b\n"
+        'c3,regex,"(?i)^ORD-\\d{5}, sent$",c\n',  # a comma inside: quoted
+        {"file": "cases.csv"},
+    )
+    assert [(c["evaluation"], c["expected_output"]) for c in config["test_cases"]] == [
+        ("contains", "30 days"),
+        ("not_contains", "STAFF50"),
+        ("regex", r"(?i)^ORD-\d{5}, sent$"),  # the backslash is kept as is
+    ]
+    assert validate(config) == ([], [])

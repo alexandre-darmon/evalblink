@@ -309,3 +309,47 @@ def test_judge_errors_name_the_judge_budget(disable_cache, client_factory):
     assert result["status"] == "judge_error"
     assert "16 completion tokens" in result["error"]
     assert "evaluation.judge_max_tokens" in result["error"]
+
+
+# --- contains / not_contains / regex ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reply, expected, want",
+    [
+        ("Refunds are accepted within 30 DAYS.", "30 days", True),
+        ("Refunds are accepted within a month.", "30 days", False),
+        ("Ship to Canada: yes, in 5 days.", ["canada", "5 days"], True),  # all
+        ("Ship to Canada: yes.", ["canada", "5 days"], False),
+        ("Straße", "STRASSE", True),  # casefold, not lower
+    ],
+)
+def test_contains_needs_every_snippet_ignoring_case(reply, expected, want):
+    assert evaluator.contains(reply, expected) is want
+
+
+@pytest.mark.parametrize(
+    "reply, expected, want",
+    [
+        ("We can help with that.", "guarantee", True),
+        ("We GUARANTEE delivery.", "guarantee", False),
+        ("Sorry, as an AI I cannot.", ["as an ai", "i cannot"], False),  # any
+        ("Here is your answer.", ["as an ai", "i cannot"], True),
+    ],
+)
+def test_not_contains_fails_on_any_snippet(reply, expected, want):
+    assert evaluator.not_contains(reply, expected) is want
+
+
+@pytest.mark.parametrize(
+    "reply, pattern, want",
+    [
+        ("Your order ORD-48213 has shipped.", r"ORD-\d{5}", True),  # anywhere
+        ("Your order ord-48213 has shipped.", r"ORD-\d{5}", False),  # case-sensitive
+        ("Your order ord-48213 has shipped.", r"(?i)ORD-\d{5}", True),
+        ("billing\n", r"^billing$", True),  # $ matches before a final newline
+        ("billing issue", r"^billing$", False),
+    ],
+)
+def test_regex_searches_the_reply(reply, pattern, want):
+    assert evaluator.regex(reply, pattern) is want

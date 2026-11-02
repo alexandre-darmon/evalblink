@@ -1,4 +1,5 @@
-"""The three evaluators: exact_match, weighted_match, llm_judge.
+"""The evaluators: the text checks (exact_match, contains, not_contains,
+regex), weighted_match and llm_judge.
 
 Pure scoring logic. ``evaluate_llm_judge`` makes an API call, but it receives
 the ``httpx.Client`` as a parameter rather than creating one — that keeps this
@@ -42,6 +43,38 @@ def _extract_json(raw):
 
 def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
+
+
+def _snippets(expected):
+    """``expected_output`` as a list: one string, or a list of them."""
+    return [expected] if isinstance(expected, str) else list(expected)
+
+
+def contains(response, expected):
+    """Every expected snippet appears in the reply (case-insensitive)."""
+    text = response.casefold()
+    return all(s.casefold() in text for s in _snippets(expected))
+
+
+def not_contains(response, expected):
+    """No expected snippet appears in the reply (case-insensitive)."""
+    text = response.casefold()
+    return not any(s.casefold() in text for s in _snippets(expected))
+
+
+def regex(response, pattern):
+    """The pattern matches somewhere in the reply (``re.search``; ``(?i)`` for
+    case-insensitive, ``^…$`` for the whole reply)."""
+    return re.search(pattern, response) is not None
+
+
+# Pass/fail checks of the reply against expected_output: scored 1.0 or 0.0.
+TEXT_CHECKS = {
+    "exact_match": exact_match,
+    "contains": contains,
+    "not_contains": not_contains,
+    "regex": regex,
+}
 
 
 def _vendor(model):

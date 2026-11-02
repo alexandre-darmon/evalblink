@@ -9,11 +9,12 @@ import re
 import jinja2
 import jinja2.meta
 
+from .evaluator import TEXT_CHECKS
 from .openrouter import is_number as _is_number
 from .runner import JINJA_ENV, render_template
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
-KNOWN_EVAL_TYPES = {"exact_match", "weighted_match", "llm_judge"}
+KNOWN_EVAL_TYPES = {*TEXT_CHECKS, "weighted_match", "llm_judge"}
 # Hardcoded in ``evaluator.weighted_match`` — every one must be weighted.
 WEIGHTED_DIMENSIONS = ("use_case", "percent", "order")
 
@@ -313,19 +314,40 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         ):
             errors.append(f"test_cases[{label}]: 'tags' must be a list of strings")
 
-        if eval_type == "exact_match":
+        if isinstance(eval_type, str) and eval_type in TEXT_CHECKS:
             expected = tc.get("expected_output")
+            snippets = eval_type in ("contains", "not_contains")
             if expected is None:
                 errors.append(
-                    f"test_cases[{label}]: exact_match requires 'expected_output'"
+                    f"test_cases[{label}]: {eval_type} requires 'expected_output'"
                 )
+            elif snippets and isinstance(expected, list):
+                if not expected or not all(isinstance(s, str) and s for s in expected):
+                    errors.append(
+                        f"test_cases[{label}]: {eval_type} expected_output must be"
+                        " a string or a non-empty list of non-empty strings"
+                        f" (got {expected!r}) — quote numbers and yes/no"
+                    )
             elif not isinstance(expected, str):
                 errors.append(
-                    f"test_cases[{label}]: exact_match expected_output must be a"
+                    f"test_cases[{label}]: {eval_type} expected_output must be a"
                     f" string (got {expected!r}) — quote it in the YAML; unquoted"
                     " yes/no/true/false and numbers are not parsed as text"
                 )
-            elif len(expected) > max_tokens * 4:
+            elif snippets and not expected:
+                errors.append(
+                    f"test_cases[{label}]: {eval_type} expected_output is empty —"
+                    " it would match every reply"
+                )
+            elif eval_type == "regex":
+                try:
+                    re.compile(expected)
+                except re.error as exc:
+                    errors.append(
+                        f"test_cases[{label}]: regex expected_output is not a"
+                        f" valid regular expression: {exc}"
+                    )
+            elif eval_type == "exact_match" and len(expected) > max_tokens * 4:
                 warnings.append(
                     f"test_cases[{label}]: expected_output is long"
                     f" ({len(expected)} chars) relative to"

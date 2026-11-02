@@ -754,3 +754,46 @@ def test_every_key_in_the_readme_config_table_is_known():
             ("gate",): "gate",
         }[tuple(parents)]
         assert leaf in KNOWN_KEYS[section], key
+
+
+# ── contains / not_contains / regex ───────────────────────────────────────────
+
+
+def _text_check_config(evaluation, expected):
+    case = {"id": "tc_001", "evaluation": evaluation}
+    if expected is not ...:
+        case["expected_output"] = expected
+    return _exact_match_config(test_cases=[case])
+
+
+@pytest.mark.parametrize(
+    "evaluation, expected",
+    [
+        ("contains", "30 days"),
+        ("contains", ["refund", "30 days"]),
+        ("not_contains", "guarantee"),
+        ("not_contains", ["as an AI", "I cannot"]),
+        ("regex", r"(?i)^ORD-\d{5}$"),
+    ],
+)
+def test_text_checks_accept_their_expected_output(evaluation, expected):
+    assert validate(_text_check_config(evaluation, expected)) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "evaluation, expected, message",
+    [
+        ("contains", ..., "contains requires 'expected_output'"),
+        ("not_contains", "", "it would match every reply"),
+        ("contains", [], "non-empty list of non-empty strings"),
+        ("contains", ["ok", ""], "non-empty list of non-empty strings"),
+        ("not_contains", ["ok", 3], "non-empty list of non-empty strings"),
+        ("contains", 30, "contains expected_output must be a string"),
+        ("regex", ["a", "b"], "regex expected_output must be a string"),
+        ("regex", "ORD-(\\d+", "not a valid regular expression"),
+        ("exact_match", ["a"], "exact_match expected_output must be a string"),
+    ],
+)
+def test_text_checks_reject_a_bad_expected_output(evaluation, expected, message):
+    errors, _ = validate(_text_check_config(evaluation, expected))
+    assert any(message in e for e in errors), errors

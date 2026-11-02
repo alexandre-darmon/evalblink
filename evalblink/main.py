@@ -851,8 +851,10 @@ YAML CONFIG KEYS
                                 evaluation: <default>} — columns are fields
                                 or template variables
   test_cases[].id               required
-  test_cases[].evaluation       exact_match | llm_judge | weighted_match  (required)
-  test_cases[].expected_output  required for exact_match and weighted_match
+  test_cases[].evaluation       exact_match | contains | not_contains | regex |
+                                llm_judge | weighted_match  (required)
+  test_cases[].expected_output  required except for llm_judge (a list of texts for
+                                contains / not_contains)
   test_cases[].criteria         required for llm_judge
   test_cases[].reference        optional gold answer injected into the judge prompt
   test_cases[].variables        per-case variables

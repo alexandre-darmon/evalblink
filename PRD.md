@@ -212,8 +212,8 @@ test_cases:
 | `variables` | — | Global key/value pairs injected into all templates |
 | `test_cases` | ✅ | The list of test cases below, or `{file: cases.csv, evaluation?}` to load them from a CSV, TSV or JSONL file next to the YAML. Fields `id`, `evaluation`, `expected_output`, `criteria`, `reference`, `tags` (`;`-separated in CSV) and `human_score` keep their meaning; every other column is a template variable; rows without an `id` are named `line_<n>`. Errors name the file and line; a column close to a field name gets a warning. |
 | `test_cases[].id` | ✅ | Unique identifier |
-| `test_cases[].evaluation` | ✅ | `exact_match` \| `llm_judge` \| `weighted_match` |
-| `test_cases[].expected_output` | ✅ if `exact_match` or `weighted_match` | Ground truth — string for `exact_match`, JSON array for `weighted_match` |
+| `test_cases[].evaluation` | ✅ | `exact_match` \| `contains` \| `not_contains` \| `regex` \| `llm_judge` \| `weighted_match` |
+| `test_cases[].expected_output` | ✅ except for `llm_judge` | Ground truth — the label for `exact_match`, text(s) for `contains` / `not_contains`, a pattern for `regex`, a JSON array for `weighted_match` |
 | `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
 | `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
 | `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
@@ -230,7 +230,7 @@ test_cases:
 >
 > - **Structure:** an empty or non-mapping file; missing `name` / `models` / `prompts` / `test_cases`; a non-string `name`, model ID, `prompts[].id` or `test_cases[].id`; duplicate entries in `models`; duplicate prompt or test-case ids; an `inference` / `evaluation` block that isn't a mapping (a bare `inference:` with no value counts as absent); an unknown `evaluation` type; a self-referencing YAML alias (`&a [*a]`), which could not be written to the results JSON.
 > - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
-> - **Per mode:** an `exact_match` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
+> - **Per mode:** an `exact_match` / `contains` / `not_contains` / `regex` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it; `contains` / `not_contains` also take a non-empty list of non-empty strings); an empty `contains` / `not_contains` text; a `regex` that doesn't compile; `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
@@ -281,6 +281,14 @@ test_cases:
   - id: "conv_001"
     evaluation: "exact_match"
     expected_output: "order_issue"
+```
+
+**`[shipped]` Contains, not contains, regex.** For free text with a checkable fact in it, without a judge: `contains` passes when every text in `expected_output` (a string or a list) appears in the reply, ignoring case (casefold); `not_contains` when none does; `regex` when Python's `re.search` finds the pattern (case-sensitive unless `(?i)`). Scored 1/0 like `exact_match`; `validate` rejects a missing or empty text and a pattern that doesn't compile. They match text, not meaning — "I can't guarantee" contains "guarantee" — so they suit codes, IDs, numbers and banned phrases; `llm_judge` covers varied wording. Example: `benchmarks/text_checks.yaml`.
+
+```yaml
+  - id: "no_staff_code"
+    evaluation: "not_contains"
+    expected_output: ["STAFF50"]
 ```
 
 ### 7.2 LLM-as-Judge
@@ -819,7 +827,7 @@ evalblink/
 ├── evalblink/
 │   ├── main.py             # argparse CLI entrypoint + subcommand handlers
 │   ├── runner.py           # Benchmark execution (ThreadPoolExecutor)
-│   ├── evaluator.py        # exact_match + weighted_match + llm_judge + bias detection
+│   ├── evaluator.py        # text checks (exact_match, contains, not_contains, regex) + weighted_match + llm_judge + bias detection
 │   ├── reporter.py         # Terminal (Rich) + JSON + Markdown output
 │   ├── openrouter.py       # the API choke point: requests, retries, model catalog (client owned by runner)
 │   ├── cache.py            # SHA256 cache read/write/stats/clear
