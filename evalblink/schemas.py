@@ -73,7 +73,8 @@ class Prompt(TypedDict, total=False):
 class TestCase(TypedDict, total=False):
     id: str
     variables: dict[str, Any]
-    evaluation: str  # "exact_match" | "weighted_match" | "llm_judge"
+    evaluation: str  # a TEXT_CHECKS key (exact_match, contains, not_contains,
+    # regex) | "weighted_match" | "llm_judge"
     expected_output: Any
     criteria: str
     tags: list[str]

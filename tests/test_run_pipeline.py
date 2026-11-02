@@ -101,6 +101,37 @@ def test_exact_match_pipeline(monkeypatch):
     assert statuses == {"c1": "scored", "c2": "scored"}
 
 
+def test_text_check_pipeline_scores_pass_or_fail(monkeypatch):
+    def case(i, evaluation, expected):
+        return {
+            "id": f"c{i}",
+            "variables": {"q": str(i)},
+            "evaluation": evaluation,
+            "expected_output": expected,
+        }
+
+    config = _config(
+        [
+            case(1, "contains", "30 days"),
+            case(2, "not_contains", ["guarantee"]),
+            case(3, "regex", r"ORD-\d{5}"),
+            case(4, "contains", ["refund", "30 days"]),
+        ]
+    )
+    replies = ["Within 30 days.", "We guarantee it.", "Order ORD-12345", "30 days"]
+    [combo] = _run(monkeypatch, config, [_resp(r) for r in replies])
+    got = {
+        tc["id"]: (tc["match_result"], tc["match_score"]) for tc in combo["test_cases"]
+    }
+    assert got == {
+        "c1": (True, 1.0),
+        "c2": (False, 0.0),
+        "c3": (True, 1.0),
+        "c4": (False, 0.0),  # "refund" is missing
+    }
+    assert (combo["success"], combo["scored"], combo["errors"]) == (2, 4, 0)
+
+
 # Absent key, and a bare `inference:` line in YAML (parsed as None).
 @pytest.mark.parametrize("inference", ["absent", None])
 def test_missing_inference_block_uses_defaults(monkeypatch, inference):
@@ -537,6 +568,10 @@ def test_progress_shows_the_score_and_the_pipeline_error():
 
     assert line(match_score=0.75, match_result=True) == "[ 3/12] m / p / c  pass (0.75)"
     assert line(match_score=0.0, match_result=False) == "[ 3/12] m / p / c  fail (0.00)"
+    # A 1/0 text check shows no score.
+    assert line(evaluation="contains", match_score=1.0, match_result=True) == (
+        "[ 3/12] m / p / c  pass"
+    )
     assert (
         line(
             match_score=None, match_result=False, status="judge_error", error="bad JSON"

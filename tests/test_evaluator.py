@@ -309,3 +309,74 @@ def test_judge_errors_name_the_judge_budget(disable_cache, client_factory):
     assert result["status"] == "judge_error"
     assert "16 completion tokens" in result["error"]
     assert "evaluation.judge_max_tokens" in result["error"]
+
+
+# --- contains / not_contains / regex ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reply, expected, want",
+    [
+        ("Refunds are accepted within 30 DAYS.", "30 days", True),
+        ("Refunds are accepted within a month.", "30 days", False),
+        ("Ship to Canada: yes, in 5 days.", ["canada", "5 days"], True),  # all
+        ("Ship to Canada: yes.", ["canada", "5 days"], False),
+        ("Straße", "STRASSE", True),  # casefold, not lower
+    ],
+)
+def test_contains_needs_every_snippet_ignoring_case(reply, expected, want):
+    assert evaluator.contains(reply, expected) is want
+
+
+@pytest.mark.parametrize(
+    "reply, expected, want",
+    [
+        ("We can help with that.", "guarantee", True),
+        ("We GUARANTEE delivery.", "guarantee", False),
+        ("Sorry, as an AI I cannot.", ["as an ai", "i cannot"], False),  # any
+        ("Here is your answer.", ["as an ai", "i cannot"], True),
+    ],
+)
+def test_not_contains_fails_on_any_snippet(reply, expected, want):
+    assert evaluator.not_contains(reply, expected) is want
+
+
+@pytest.mark.parametrize(
+    "reply, pattern, want",
+    [
+        ("Your order ORD-48213 has shipped.", r"ORD-\d{5}", True),  # anywhere
+        ("Your order ord-48213 has shipped.", r"ORD-\d{5}", False),  # case-sensitive
+        ("Your order ord-48213 has shipped.", r"(?i)ORD-\d{5}", True),
+        ("\n\nbilling\n\n", r"^billing$", True),  # surrounding whitespace ignored
+        ("billing issue", r"^billing$", False),
+    ],
+)
+def test_regex_searches_the_reply(reply, pattern, want):
+    assert evaluator.regex(reply, pattern) is want
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        # Seen live: a narrow no-break space and a non-breaking hyphen.
+        ("within 30\u202fdays of delivery", "30 days"),
+        ("our 30\u2011day window", "30-day"),
+        ("within 30 days", "30\u00a0days"),  # in the text too
+        ("Refund within 30\n  days", "30 days"),  # a wrapped line, a double space
+        ("Code: ＳＴＡＦＦ５０", "STAFF50"),  # fullwidth
+        ("use STAFF\u00ad50 or STAFF\u200b50", "STAFF50"),  # soft hyphen, zero-width
+        ("Add ½ cup", "1/2 cup"),
+    ],
+)
+def test_contains_reads_the_reply_as_a_reader_sees_it(reply, expected):
+    assert evaluator.contains(reply, expected)
+    assert not evaluator.not_contains(reply, expected)  # a leak is still caught
+
+
+def test_regex_sees_the_reply_as_written():
+    # \s and \W cover Unicode spaces and dashes; the reply is not rewritten,
+    # so a pattern can ban a character or count them.
+    assert evaluator.regex("within 30\u202fdays", r"\b30\W?days?\b")
+    assert evaluator.regex("our 30\u2011day window", r"\b30\W?days?\b")
+    assert not evaluator.regex("Short answer \u2014 really", r"^(?!.*\u2014)")
+    assert evaluator.regex("Wait\u2026ok\u2026!", r"^.{1,10}$")  # 9 characters

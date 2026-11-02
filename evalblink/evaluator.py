@@ -1,4 +1,5 @@
-"""The three evaluators: exact_match, weighted_match, llm_judge.
+"""The evaluators: the text checks (exact_match, contains, not_contains,
+regex), weighted_match and llm_judge.
 
 Pure scoring logic. ``evaluate_llm_judge`` makes an API call, but it receives
 the ``httpx.Client`` as a parameter rather than creating one — that keeps this
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 import httpx
 
@@ -42,6 +44,62 @@ def _extract_json(raw):
 
 def exact_match(response, expected):
     return response.strip().lower() == expected.strip().lower()
+
+
+_PUNCTUATION = {
+    **dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"), "-"),
+    ord("\u2044"): "/",  # NFKC writes ½ as 1⁄2
+}
+
+
+def plain_text(text):
+    """Text as a reader sees it, for ``contains`` / ``not_contains``.
+
+    Models write "30\u202fdays", "30\u2011day" and "STAFF\u00ad50". NFKC turns
+    Unicode spaces into " " (and fullwidth letters into ASCII), every dash
+    becomes "-", invisible format characters (soft hyphen, zero-width space)
+    are dropped, runs of whitespace become one space, and case is folded.
+    """
+    text = unicodedata.normalize("NFKC", text).translate(_PUNCTUATION)
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return " ".join(text.split()).casefold()
+
+
+def _snippets(expected):
+    """``expected_output`` as a list of plain texts."""
+    texts = [expected] if isinstance(expected, str) else expected
+    return [plain_text(s) for s in texts]
+
+
+def contains(response, expected):
+    """Every expected snippet appears in the reply (see :func:`plain_text`)."""
+    text = plain_text(response)
+    return all(s in text for s in _snippets(expected))
+
+
+def not_contains(response, expected):
+    """No expected snippet appears in the reply (see :func:`plain_text`)."""
+    text = plain_text(response)
+    return not any(s in text for s in _snippets(expected))
+
+
+def regex(response, pattern):
+    """The pattern matches somewhere in the reply (``re.search``; ``(?i)`` for
+    case-insensitive, ``^…$`` for the whole reply). Like ``exact_match``, the
+    reply's surrounding whitespace is ignored, so ``^…$`` survives a stray
+    leading or trailing newline. Otherwise the reply is matched as written, so
+    a pattern can look for (or ban) a "—" or count characters; ``\\s`` already
+    matches no-break spaces and ``\\W`` any space or dash."""
+    return re.search(pattern, response.strip()) is not None
+
+
+# Pass/fail checks of the reply against expected_output: scored 1.0 or 0.0.
+TEXT_CHECKS = {
+    "exact_match": exact_match,
+    "contains": contains,
+    "not_contains": not_contains,
+    "regex": regex,
+}
 
 
 def _vendor(model):
