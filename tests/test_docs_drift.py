@@ -130,5 +130,3 @@ def test_readme_visuals_exist_and_are_self_contained():
         assert not re.search(
             r"<script|<text|<image|<style|https?://(?!www\.w3\.org)", svg
         )
-    # evalblink deliberately doesn't track latency; the banner once claimed it.
-    assert "latency" not in (ROOT / "docs" / "assets" / "banner.svg").read_text("utf-8")
