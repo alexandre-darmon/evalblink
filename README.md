@@ -1,4 +1,4 @@
-![evalblink: benchmark LLM prompts × models. Quality and cost in one command.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/banner.svg)
+![evalblink: benchmark LLM prompts × models. Quality, cost and latency in one command.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/banner.svg)
 
 Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. No JavaScript, no vendor lock-in.
 
