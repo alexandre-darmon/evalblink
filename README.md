@@ -1,6 +1,4 @@
-# evalblink
-
-**Benchmark LLM prompts × models — quality and cost in one command.**
+![evalblink: benchmark LLM prompts × models. Quality and cost in one command.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/banner.svg)
 
 Vendor-neutral Python CLI to benchmark LLM prompts and models on your own data. No JavaScript, no vendor lock-in.
 
@@ -30,6 +28,11 @@ Most LLM eval tools are built for JavaScript developers, locked to a single vend
 ## What it does
 
 Define a benchmark in YAML. Run one command. Get a results matrix, a versioned Markdown report, and a local cache so prompt iteration costs almost nothing.
+
+![Results of evalblink run: a progress line per case, a table of six model and prompt combinations with score, pass count, errors, tokens and cost, quality by tag, a recommendation, and a PASS verdict.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/run-output.svg)
+
+<details>
+<summary>The same output as text</summary>
 
 ```
 Running 300 cases (3 models × 2 prompts × 50 test cases), 5 at a time
@@ -74,6 +77,8 @@ Markdown report saved to results/2026-06-10_143205_customer-support-classificati
 
 PASS: best score meets quality_threshold (85).
 ```
+
+</details>
 
 Sample from a 50-case run (3 models × 2 prompts, `quality_threshold: 85`) in which three calls timed out. The run prints one progress line per finished case, in the order cases finish: `pass` / `fail` (with the 0–1 score for `llm_judge` and `weighted_match`), or `⚠` and the reason for a pipeline error; most are trimmed here. Progress and warnings go to stderr and the results to stdout, so `evalblink run bench.yaml > results.txt` keeps the table and the verdict while the progress stays on screen. Rows follow the config's model × prompt order; the tag table lists warning rows first, then the rest alphabetically. **Pass/Scored** counts only genuinely scored cases — pipeline errors (a failed API call or an unusable judge reply) are shown in **Errors** and excluded from the score. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the `quality_threshold` gate (see the CI/CD Integration section below). Names, ids, tags, error messages and model output are printed literally: Rich markup such as `[bold]` and `:emoji:` codes in them are not interpreted.
 
@@ -527,6 +532,11 @@ Before running a benchmark, estimate the cost without making any completion call
 evalblink run my_benchmark.yaml --dry-run    # the Quickstart config above
 ```
 
+![Output of evalblink run --dry-run: estimated tokens and cost per model and prompt, $0.089304 in total, within the $10 budget.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/dry-run.svg)
+
+<details>
+<summary>The same output as text</summary>
+
 ```
                           DRY RUN — estimated cost (no API calls)
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
@@ -544,6 +554,8 @@ Estimated total cost: $0.089304
 Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
 ✓ Within budget: estimate $0.089304 ≤ max_cost_usd $10.000000.
 ```
+
+</details>
 
 Per combo, **Est completion tok** is `max_tokens` (or the model's output limit, if lower) × the number of test cases (a ceiling — real outputs are usually shorter), and **Est cost** includes that combo's share of judge calls. The `Judge cost` line appears only when the estimated judge cost is non-zero — so not with a free (`:free`) judge model. A model that isn't in the catalog at all is almost always a typo: `--dry-run` prints `✗ Unknown model 'openai/gpt-4o-mni': not in the OpenRouter catalog — did you mean 'openai/gpt-4o-mini'?` and exits 1. A model listed with a negative or non-numeric price (such as the `openrouter/*` routers) has unknown pricing: it is excluded from the estimate with a warning (`No pricing for '<model>' — excluded from the estimate.`). Each budget is capped at the model's own output limit from the catalog (`top_provider.max_completion_tokens`); when `inference.max_tokens` or `evaluation.judge_max_tokens` is above it, `--dry-run` warns: `inference.max_tokens (5000) is above <model>'s output limit (2048 tokens) — lower it to 2048 or less.`
 
@@ -634,6 +646,11 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
                   results/2026-06-10_143205_customer-support-classification.json
 ```
 
+![Output of evalblink compare: quality and cost changes per model and prompt between two runs. Run B improves quality on 2 of 3 shared combos.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/compare.svg)
+
+<details>
+<summary>The same output as text</summary>
+
 ```
  DELTA: 2026-06-08_101500_customer-support-classification → 2026-06-10_143205_customer-support-classification
  Model                          Prompt  Quality Δ    Cost Δ       Notes
@@ -643,6 +660,8 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 
 Verdict: Run B improves quality on 2/3 shared combo(s).
 ```
+
+</details>
 
 Changed combos are listed first. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict leaves it out of the improved count and says how many were left out. Use `--detailed` to see which cases changed. `--detailed` adds per-combo test-case transitions (regressed / improved / new error / recovered) and a global summary.
 

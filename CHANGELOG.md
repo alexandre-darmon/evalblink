@@ -4,6 +4,9 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+### Changed
+- The README opens with a banner, and its terminal samples are now visuals in the same style (`docs/assets/`), each with the text version in a collapsible block. `docs/assets/make_visuals.py` redraws them.
+
 ## [0.1.5] — 2026-11-02
 
 ### Changed
