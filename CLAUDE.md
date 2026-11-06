@@ -68,6 +68,8 @@ A run flows through one linear pipeline; module boundaries are deliberate, not i
 - **`dataset.py`** — `expand(config, base_dir)` turns `test_cases: {file, evaluation?}` into the plain list (CSV/TSV via `csv`, JSONL via `json`; `FIELDS` keep their meaning, other columns become variables, `tags` split on `;`, a weighted `expected_output` is JSON in CSV, missing ids become `line_<n>`). `main.load_config` calls it relative to the YAML's directory, before validation, so nothing downstream sees the file form; `DatasetError` messages name the file and line, and near-miss column names come back as warnings (printed to stderr).
 - **`schemas.py`** — `TypedDict`s documenting the config and result dict shapes (typing only — the pipeline passes plain dicts straight from the YAML; runtime validation is `validator.py`'s job), plus the shared runtime constants `SCHEMA_VERSION`, `DEFAULT_TEMPERATURE`, `DEFAULT_MAX_TOKENS`, `DEFAULT_JUDGE_MAX_TOKENS` imported by runner, validator, reporter, evaluator and estimate.
 
+`docs/assets/` holds the README's visuals: `banner.svg` plus `run-output.svg`, `dry-run.svg` and `compare.svg`, drawn by `make_visuals.py` (needs fonttools and the Geist fonts; text becomes outlines because an SVG in `<img>` can't load fonts). The README links them by absolute `raw.githubusercontent.com` URL so they also show on PyPI, with the same sample as text below each. When a sample's output changes, update the text and the script's figures together.
+
 ## Benchmark config schema (as actually consumed)
 
 Configs live in `benchmarks/*.yaml`. The structure the code reads:

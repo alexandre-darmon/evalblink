@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import re
 import shlex
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,30 @@ def test_documented_flags_exist(argv):
     known = {s for a in SUBCOMMANDS[name]._actions for s in a.option_strings}
     flags = {w.split("=", 1)[0] for w in argv if w.startswith("-")}
     assert flags <= known, f"`evalblink {' '.join(argv)}`: unknown {flags - known}"
+
+
+# ── README visuals ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(
+    not (ROOT / "docs" / "assets").is_dir(), reason="the sdist ships no docs/assets"
+)
+def test_readme_visuals_exist_and_are_self_contained():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    images = re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", readme)
+    base = (
+        "https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/"
+    )
+    assert len(images) == 4
+    for alt, url in images:
+        assert alt, url
+        # Absolute: PyPI shows the README without the repo around it.
+        assert url.startswith(base), url
+        svg = (ROOT / "docs" / "assets" / url.removeprefix(base)).read_text("utf-8")
+        ET.fromstring(svg)  # well-formed
+        # An SVG in <img> can't load anything, so nothing may depend on it.
+        assert not re.search(
+            r"<script|<text|<image|<style|https?://(?!www\.w3\.org)", svg
+        )
+    # evalblink deliberately doesn't track latency; the banner once claimed it.
+    assert "latency" not in (ROOT / "docs" / "assets" / "banner.svg").read_text("utf-8")
