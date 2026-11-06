@@ -216,7 +216,7 @@ def run_output(fonts):
         "evalblink run: a progress line per case, a results table of six model and"
         " prompt combinations, quality by tag, a recommendation, and a PASS verdict.",
     )
-    y = header(c, "evalblink run my_benchmark.yaml") + 6
+    y = header(c, "evalblink run bench.yaml") + 6
     c.text(
         MARGIN,
         y,
@@ -362,7 +362,17 @@ def run_output(fonts):
             "non_english quality is below 70%.",
         ),
     )
-    y = tags_bottom + 20
+    y = tags_bottom + 32
+    left = c.warning(MARGIN, y - 1)
+    c.text(
+        left,
+        y,
+        "3 of 300 case(s) hit a pipeline error (API / judge failure) and are excluded"
+        " from scores.",
+        WARN,
+        size=18,
+    )
+    y += 18
     y = verdict(c, y, "PASS", "best score meets quality_threshold (85)")
     return c.svg(y + 40)
 
@@ -400,6 +410,15 @@ def dry_run(fonts):
     y += 32
     c.text(MARGIN, y, "Estimated total cost", INK, BOLD, 21)
     c.text(WIDTH - MARGIN, y, "$0.089304", INK, end=True)
+    y += 28
+    c.text(
+        MARGIN,
+        y,
+        "Estimate only — completion tokens assume max_tokens (capped at each model's"
+        " output limit); prompt tokens ≈ chars/4.",
+        MUTED,
+        size=16,
+    )
     y += 20
     y = verdict(c, y, "WITHIN BUDGET", "estimate $0.089304 ≤ max_cost_usd $10.000000")
     return c.svg(y + 40)

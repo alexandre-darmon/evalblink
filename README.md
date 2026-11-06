@@ -32,7 +32,7 @@ Define a benchmark in YAML. Run one command. Get a results matrix, a versioned M
 ![Results of evalblink run: a progress line per case, a table of six model and prompt combinations with score, pass count, errors, tokens and cost, quality by tag, a recommendation, and a PASS verdict.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/run-output.svg)
 
 <details>
-<summary>The same output as text</summary>
+<summary>Full output as text</summary>
 
 ```
 Running 300 cases (3 models × 2 prompts × 50 test cases), 5 at a time
@@ -535,7 +535,7 @@ evalblink run my_benchmark.yaml --dry-run    # the Quickstart config above
 ![Output of evalblink run --dry-run: estimated tokens and cost per model and prompt, $0.089304 in total, within the $10 budget.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/dry-run.svg)
 
 <details>
-<summary>The same output as text</summary>
+<summary>Full output as text</summary>
 
 ```
                           DRY RUN — estimated cost (no API calls)
@@ -551,7 +551,7 @@ evalblink run my_benchmark.yaml --dry-run    # the Quickstart config above
 └──────────────────────────────┴────────┴────────────────┴────────────────────┴───────────┘
 Judge cost (llm_judge cases): $0.061942
 Estimated total cost: $0.089304
-Estimate only — completion tokens assume max_tokens; prompt tokens ≈ chars/4.
+Estimate only — completion tokens assume max_tokens (capped at each model's output limit); prompt tokens ≈ chars/4.
 ✓ Within budget: estimate $0.089304 ≤ max_cost_usd $10.000000.
 ```
 
@@ -649,7 +649,7 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 ![Output of evalblink compare: quality and cost changes per model and prompt between two runs. Run B improves quality on 2 of 3 shared combos.](https://raw.githubusercontent.com/alexandre-darmon/evalblink/main/docs/assets/compare.svg)
 
 <details>
-<summary>The same output as text</summary>
+<summary>Full output as text</summary>
 
 ```
  DELTA: 2026-06-08_101500_customer-support-classification → 2026-06-10_143205_customer-support-classification
