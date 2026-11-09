@@ -10,13 +10,14 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 - **`repeats: N`** runs every model × prompt × test case N times (each repeat with its own cache entry). The score covers every repeat, cases whose repeats disagree are reported as **flaky**, and `--dry-run` multiplies the estimate by N.
 - **`json_match`**: the reply's JSON must hold the values in `expected_output` (extra keys ignored, strings ignore case, partial credit shown). **`json_schema`**: the reply's JSON must satisfy a JSON Schema. **`python`**: your own scorer, `scorer: "scorers.py:my_check"`, returning `True`/`False` or `{passed, score, reason}`; a scorer that raises is a pipeline error (`scorer error`), not a failed case. Example: `benchmarks/structured_output.yaml`.
 - **GitHub Action** (`action.yml`): `uses: alexandre-darmon/evalblink@<tag>` runs a benchmark, puts the report in the job summary, and fails the job on the quality gate or, with `baseline`, on a regression.
+- **Local and self-hosted models.** A model id `ollama:llama3.2` (or `lmstudio:…`, `llamacpp:…`, `vllm:…`) runs on that server at its default local address, next to OpenRouter models in the same run; a `providers:` block moves a built-in server or adds any OpenAI-compatible one (`base_url`, optional `api_key_env`, `concurrency`, `timeout`). The data stays on your machine, local calls cost $0, and a run of local models needs no OpenRouter key (`--dry-run` then makes no network call). Before the first call, `run` checks each server and model and says how to fix a problem (`Start it: ollama serve`, `Get it: ollama pull llama3.2`). Each server gets one request at a time by default, so its queue never counts as latency. The judge can be local too. Example: `benchmarks/local_models.yaml`.
 - `docs/reference.md`: the full reference (every config key, validation rule, mode, statistic and output file).
 
 ### Changed
 - The README is an overview (about a third of its former length), opens with a banner, and its terminal samples are visuals in the same style (`docs/assets/`), each with the full text output in a collapsible block. The details moved to `docs/reference.md`.
 - The terminal results table fits an 80-column terminal: `Score (95% CI)`, `Tokens in/out` and `p50 latency` columns. The Markdown report keeps separate columns.
 - The comparison with promptfoo was rechecked against its documentation and corrected.
-- The roadmap adds local evals (Ollama, LM Studio, llama.cpp, vLLM — any OpenAI-compatible endpoint) and evaluating your own application (an HTTP endpoint or a command) for V1.1.
+- The roadmap adds evaluating your own application (an HTTP endpoint or a command) for V1.1.
 - Run records are `schema_version` 2 (additive: version 1 records still load, compare and report, with no latency).
 - New dependency: `jsonschema`.
 

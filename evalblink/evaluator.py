@@ -306,6 +306,7 @@ def evaluate_llm_judge(
     criteria,
     reference=None,
     use_cache=True,
+    providers_config=None,
 ):
     judge_model = evaluation_params.get("judge_model")
     if not judge_model:
@@ -345,6 +346,7 @@ def evaluate_llm_judge(
             temperature=0,
             max_tokens=judge_max_tokens,
             use_cache=use_cache,
+            providers_config=providers_config,
         )
     except (RuntimeError, httpx.HTTPError) as exc:
         # Judge API failed (error response, timeout, rate limit) — pipeline

@@ -100,7 +100,9 @@ def test_run_without_api_key_exits_1_before_any_call(monkeypatch, capsys, key):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     else:
         monkeypatch.setenv("OPENROUTER_API_KEY", key)
-    monkeypatch.setattr(main, "load_config", lambda p: {"name": "X"})
+    monkeypatch.setattr(
+        main, "load_config", lambda p: {"name": "X", "models": ["openai/gpt-4o-mini"]}
+    )
     monkeypatch.setattr(main, "_validate_config", lambda c: ([], []))
     monkeypatch.setattr(
         main.runner, "run", lambda *a, **k: pytest.fail("runner.run called")

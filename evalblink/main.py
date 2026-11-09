@@ -22,6 +22,7 @@ from evalblink import (
     dataset,
     estimate,
     openrouter,
+    providers,
     reporter,
     runner,
     starter,
@@ -180,6 +181,62 @@ def _filtered(config, args):
     return config
 
 
+def _check_local_servers(config, called, console):
+    """Exit before any call when a local server is down, lacks a model, or
+    misses its API key variable.
+
+    Each server is asked once for its model list (``GET /models``); a server
+    that doesn't list models is trusted. Ollama's ``llama3.2`` matches its
+    listed ``llama3.2:latest``.
+    """
+    servers: dict = {}
+    for model in called:
+        if providers.is_local(model):
+            endpoint = providers.resolve(model, config.get("providers"))
+            servers.setdefault((endpoint.provider, endpoint.base_url), []).append(
+                endpoint
+            )
+    if not servers:
+        return
+    with httpx.Client() as client:
+        for (name, base_url), endpoints in servers.items():
+            first = endpoints[0]
+            if first.api_key_env and not (os.getenv(first.api_key_env) or "").strip():
+                sys.exit(
+                    f"✗  {first.api_key_env} is not set — providers.{name} reads"
+                    " its API key from it."
+                )
+            try:
+                listed = openrouter.fetch_local_models(client, first)
+            except httpx.HTTPError as exc:
+                start = f" Start it: {first.start}" if first.start else ""
+                sys.exit(
+                    f"✗  Can't reach {name} at {base_url}"
+                    f" ({type(exc).__name__}).{start}"
+                )
+            except RuntimeError as exc:  # e.g. a non-ASCII key
+                sys.exit(f"✗  {name}: {exc}")
+            if listed is None or not first.check_models:
+                continue
+            for endpoint in endpoints:
+                if endpoint.model in listed or f"{endpoint.model}:latest" in listed:
+                    continue
+                pull = (
+                    f" Get it: {endpoint.pull.format(model=endpoint.model)}."
+                    if endpoint.pull
+                    else ""
+                )
+                sys.exit(
+                    f"✗  {name} at {base_url} has no model '{endpoint.model}'."
+                    f"{pull} Available: {', '.join(listed) or 'none'}"
+                )
+            console.print(
+                f"✓  {name} at {base_url}:"
+                f" {', '.join(e.model for e in endpoints)} ready",
+                style="green",
+            )
+
+
 def cmd_run(args):
     """Run a benchmark, write the report, and exit on the CI quality gate."""
     config = load_config(_config_path(args.config))
@@ -193,21 +250,25 @@ def cmd_run(args):
         sys.exit(1)
     config = _filtered(config, args)
 
+    called = providers.called_models(config)
+    remote = [m for m in called if not providers.is_local(m)]
     if args.dry_run:
         # Estimate cost from the pricing catalog only — no completion calls.
-        models_meta = _fetch_models()
+        # Local models cost nothing: a local-only config needs no network.
+        models_meta = _fetch_models() if remote else {}
         est = estimate.estimate(config, models_meta)
         reporter.render_estimate(est)
         sys.exit(1 if est["over_budget"] or est["unknown_models"] else 0)
 
     # Fail fast: without a key every candidate call would come back as an error.
-    if not (os.getenv("OPENROUTER_API_KEY") or "").strip():
+    if remote and not (os.getenv("OPENROUTER_API_KEY") or "").strip():
         console.print(
             "✗  OPENROUTER_API_KEY is not set — export it or add it to"
             " a .env file in this directory. `--dry-run` works without it.",
             style="red",
         )
         sys.exit(1)
+    _check_local_servers(config, called, console)
 
     # Check before paying for any call: results are written at the very end.
     try:
@@ -835,7 +896,11 @@ _RUN_DESCRIPTION = "Run a benchmark YAML against all model × prompt combination
 _RUN_EPILOG = """\
 YAML CONFIG KEYS
   name                          required
-  models                        list of OpenRouter model IDs  (required)
+  models                        list of model IDs (required): OpenRouter ones, or
+                                provider:model for a local server — ollama:llama3.2,
+                                lmstudio:…, llamacpp:…, vllm:…
+  providers                     {name: {base_url, api_key_env, concurrency, timeout}}:
+                                move a built-in server or add an OpenAI-compatible one
   prompts[].id                  prompt identifier             (required)
   prompts[].template            Jinja2 — use {{ var }}        (required)
   prompts[].system              optional system message
@@ -876,6 +941,7 @@ EXAMPLES
   evalblink run benchmarks/classification.yaml -v
   evalblink run benchmarks/classification.yaml --no-cache
   evalblink run benchmarks/classification.yaml --dry-run
+  evalblink run benchmarks/local_models.yaml     # Ollama on this machine, no API key
 """
 
 _COMPARE_DESCRIPTION = (
@@ -928,7 +994,8 @@ QUICKSTART
   evalblink run               run it, then open results/<run>.md
 
 ENVIRONMENT
-  OPENROUTER_API_KEY          needed by `run`; get one at https://openrouter.ai/keys.
+  OPENROUTER_API_KEY          needed by `run` for OpenRouter models (not for local ones,
+                              e.g. ollama:llama3.2); get one at https://openrouter.ai/keys.
                               Also read from a .env file in this directory or a parent.
 
 Run `evalblink <command> -h` for a command's options and examples.

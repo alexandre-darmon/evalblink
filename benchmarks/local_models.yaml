@@ -1,0 +1,80 @@
+# benchmarks/local_models.yaml
+# Local evals: the models run on your machine, the data never leaves it, and no
+# OpenRouter key is needed.
+#
+#   ollama pull llama3.2          # then `ollama serve` if it isn't running
+#   evalblink run benchmarks/local_models.yaml
+#
+# A model id is `provider:model`. Built in, at their default addresses:
+#   ollama:<model>     http://localhost:11434/v1
+#   lmstudio:<model>   http://localhost:1234/v1
+#   llamacpp:<model>   http://localhost:8080/v1   (serves whatever it loaded)
+#   vllm:<model>       http://localhost:8000/v1
+# Any other OpenAI-compatible server goes under `providers:` below. OpenRouter
+# ids (vendor/model) can sit in the same list, to compare local and hosted.
+name: "Customer Support Classification (local)"
+
+models:
+  - "ollama:llama3.2"
+  # - "ollama:qwen2.5:3b"
+  # - "openai/gpt-4o-mini"        # hosted, through OpenRouter (needs the key)
+
+# Optional: move a built-in server, or add your own.
+# providers:
+#   ollama:
+#     base_url: "http://gpu-box.local:11434/v1"
+#     concurrency: 2              # requests at a time (default 1: no queueing in the latency)
+#     timeout: 900                # seconds per request (default 600)
+#   lab:                          # then models: ["lab:qwen2.5-7b"]
+#     base_url: "http://10.0.0.5:8000/v1"
+#     api_key_env: "LAB_API_KEY"  # sent as a Bearer token, read from this variable
+
+inference:
+  temperature: 0
+  max_tokens: 2048  # headroom: thinking models (qwen3, gemma4…) reason before the label
+
+prompts:
+  - id: "v1"
+    template: >
+      Classify this customer message.
+      Return only one label from this list, nothing else: {{ labels }}.
+      Message: {{ message }}
+
+variables:
+  labels: "order_issue, billing, product_question, other"
+
+test_cases:
+  - id: "late_parcel"
+    variables:
+      message: "My parcel was due on Monday and it still hasn't arrived."
+    expected_output: "order_issue"
+    evaluation: "exact_match"
+    tags: ["order"]
+
+  - id: "double_charge"
+    variables:
+      message: "I was charged twice for the same order this month."
+    expected_output: "billing"
+    evaluation: "exact_match"
+    tags: ["billing"]
+
+  - id: "sizes"
+    variables:
+      message: "Does the rain jacket come in XL?"
+    expected_output: "product_question"
+    evaluation: "exact_match"
+    tags: ["product"]
+
+  - id: "refund_status"
+    variables:
+      message: "I returned the shoes two weeks ago. When will I get my money back?"
+    expected_output: "billing"
+    evaluation: "exact_match"
+    tags: ["billing", "edge_case"]
+
+  - id: "job"
+    variables:
+      message: "Are you hiring warehouse staff?"
+    expected_output: "other"
+    evaluation: "exact_match"
+    tags: ["other"]

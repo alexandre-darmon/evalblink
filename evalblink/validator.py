@@ -13,6 +13,7 @@ import re
 import jinja2
 import jinja2.meta
 
+from . import providers
 from .evaluator import TEXT_CHECKS, ScorerError, load_scorer, plain_text, schema_problem
 from .openrouter import is_number as _is_number
 from .runner import JINJA_ENV, render_template
@@ -53,7 +54,9 @@ KNOWN_KEYS = {
         "concurrency",
         "max_cost_usd",
         "repeats",
+        "providers",
     },
+    "providers.*": providers.KEYS,
     "inference": {"temperature", "max_tokens"},
     "evaluation": {
         "judge_model",
@@ -110,6 +113,9 @@ def _unknown_keys(config: dict) -> tuple[list[str], list[str]]:
                 var, "evaluation.variables[]", f"evaluation.variables[{i}]: ", warnings
             )
     check(config.get("gate"), "gate", "gate: ", errors)
+    block = config.get("providers")
+    for name, settings in block.items() if isinstance(block, dict) else []:
+        check(settings, "providers.*", f"providers.{name}: ", warnings)
     for section, field in (("prompts[]", "prompts"), ("test_cases[]", "test_cases")):
         items = config.get(field)
         for i, item in enumerate(items if isinstance(items, list) else []):
@@ -148,6 +154,90 @@ def _mapping(value, label: str, errors: list[str]) -> dict:
         )
         return {}
     return value
+
+
+def _provider_problem(model: str, config: dict) -> str | None:
+    """Why ``model``'s provider prefix is unusable (``olama:llama3.2``), or ``None``."""
+    name, _ = providers.split(model)
+    names = providers.known(config.get("providers"))
+    if name is None or name in names:
+        return None
+    close = difflib.get_close_matches(name, names, n=1)
+    hint = f" — did you mean '{close[0]}:'?" if close else ""
+    return (
+        f"'{model}' names an unknown provider '{name}'{hint} Built in:"
+        f" {', '.join(sorted(providers.BUILTIN))}; add others under `providers:`"
+        " (an OpenRouter id has a vendor/ before any colon)"
+    )
+
+
+def _check_providers(config: dict, errors: list[str]) -> None:
+    """The ``providers:`` block, and every model's provider prefix."""
+    block = config.get("providers")
+    if block is not None and not isinstance(block, dict):
+        errors.append(
+            "providers must be a mapping of name → {base_url, …}"
+            f" (got {type(block).__name__})"
+        )
+        block = {}
+    for name, settings in (block or {}).items():
+        where = f"providers.{name}"
+        if not isinstance(name, str) or not providers.NAME.match(name):
+            errors.append(
+                f"{where}: a provider name is lowercase letters, digits, '-' or '_'"
+                " (it is the model id prefix, as in ollama:llama3.2)"
+            )
+            continue
+        if name == providers.OPENROUTER:
+            errors.append(
+                f"{where}: 'openrouter' is reserved — OpenRouter ids need no prefix"
+            )
+            continue
+        if settings is None:  # `ollama:` alone keeps the built-in settings
+            settings = {}
+        if not isinstance(settings, dict):
+            errors.append(f"{where} must be a mapping (got {settings!r})")
+            continue
+        base_url = settings.get("base_url")
+        if base_url is None and name not in providers.BUILTIN:
+            errors.append(
+                f"{where}: base_url is required, e.g. http://localhost:8000/v1"
+            )
+        elif base_url is not None and not (
+            isinstance(base_url, str) and re.match(r"^https?://[^/\s]+", base_url)
+        ):
+            errors.append(
+                f"{where}.base_url must be an http(s) URL like"
+                f" http://localhost:11434/v1 (got {base_url!r})"
+            )
+        key_env = settings.get("api_key_env")
+        if key_env is not None and not (isinstance(key_env, str) and key_env.strip()):
+            errors.append(
+                f"{where}.api_key_env must be the name of an environment variable"
+                f" (got {key_env!r})"
+            )
+        concurrency = settings.get("concurrency")
+        if concurrency is not None and not (
+            _is_number(concurrency)
+            and isinstance(concurrency, int)
+            and not isinstance(concurrency, bool)
+            and 1 <= concurrency <= MAX_CONCURRENCY
+        ):
+            errors.append(
+                f"{where}.concurrency must be a whole number from 1 to"
+                f" {MAX_CONCURRENCY} (got {concurrency!r})"
+            )
+        timeout = settings.get("timeout")
+        if timeout is not None and not (_is_number(timeout) and timeout > 0):
+            errors.append(
+                f"{where}.timeout must be a number of seconds above 0 (got {timeout!r})"
+            )
+    models = config.get("models")
+    for i, model in enumerate(models if isinstance(models, list) else []):
+        if isinstance(model, str):
+            problem = _provider_problem(model, config)
+            if problem:
+                errors.append(f"models[{i}]: {problem}")
 
 
 def validate(config: dict) -> tuple[list[str], list[str]]:
@@ -191,6 +281,8 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                 errors.append(f"Duplicate model: '{model}'")
             else:
                 seen_models.add(model)
+
+    _check_providers(config, errors)
 
     # Top-level scalars
     threshold = config.get("quality_threshold")
@@ -471,6 +563,10 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         errors.append(
             "One or more test_cases use 'llm_judge' but 'evaluation.judge_model' is not set"
         )
+    if isinstance(judge_model, str) and judge_model:
+        problem = _provider_problem(judge_model, config)
+        if problem:
+            errors.append(f"evaluation.judge_model: {problem}")
     if has_llm_judge:
         judge_max_tokens = evaluation.get("judge_max_tokens")
         if judge_max_tokens is not None and not (
