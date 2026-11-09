@@ -1,0 +1,110 @@
+# Run an evalblink benchmark in a GitHub workflow:
+#
+#   - uses: alexandre-darmon/evalblink@v0.2.0
+#     with:
+#       config: benchmarks/my-benchmark.yaml
+#       openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+#       baseline: benchmarks/baseline.json   # optional: fail on a regression
+#
+# The job fails when the run fails its quality_threshold gate, when nothing
+# could be scored, or when `baseline` is set and a combo's pass rate drops by
+# more than `max-drop` points. The Markdown report goes to the job summary.
+name: evalblink
+description: Benchmark LLM prompts × models on your own data; fail the job on a quality gate or regression.
+author: Alexandre Darmon
+branding:
+  icon: check-circle
+  color: purple
+
+inputs:
+  config:
+    description: Benchmark YAML. Empty uses the only YAML in benchmarks/.
+    required: false
+    default: ""
+  args:
+    description: Extra `evalblink run` arguments, e.g. `--tag smoke --limit 20` or `--dry-run`.
+    required: false
+    default: ""
+  openrouter-api-key:
+    description: OpenRouter API key (pass a secret). Not needed with `--dry-run`.
+    required: false
+    default: ""
+  baseline:
+    description: A kept run record (JSON). When set, the run is compared with it and a drop beyond `max-drop` fails the job.
+    required: false
+    default: ""
+  max-drop:
+    description: Pass-rate drop, in points, that `baseline` tolerates.
+    required: false
+    default: "2"
+  package:
+    description: What to pip install — `evalblink`, `evalblink==0.2.0`, or `.` for a checkout.
+    required: false
+    default: evalblink
+  python-version:
+    description: Python version to run evalblink with.
+    required: false
+    default: "3.12"
+
+outputs:
+  json:
+    description: Path of the run record (empty with `--dry-run`).
+    value: ${{ steps.run.outputs.json }}
+  markdown:
+    description: Path of the Markdown report (empty with `--dry-run`).
+    value: ${{ steps.run.outputs.markdown }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install evalblink
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: python -m pip install --quiet "$PACKAGE"
+
+    - name: Run the benchmark
+      id: run
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+        ARGS: ${{ inputs.args }}
+        INPUT_KEY: ${{ inputs.openrouter-api-key }}
+      run: |
+        # The input wins; otherwise a key set in the workflow's env is used.
+        if [ -n "$INPUT_KEY" ]; then export OPENROUTER_API_KEY="$INPUT_KEY"; fi
+        out="$RUNNER_TEMP/evalblink-run.txt"
+        # $ARGS is split into words on purpose: it holds several flags.
+        set +e
+        evalblink run $CONFIG $ARGS | tee "$out"
+        code=${PIPESTATUS[0]}
+        set -e
+        json=$(sed -n 's/^Results saved to //p' "$out" | tail -n 1)
+        markdown=$(sed -n 's/^Markdown report saved to //p' "$out" | tail -n 1)
+        echo "json=$json" >> "$GITHUB_OUTPUT"
+        echo "markdown=$markdown" >> "$GITHUB_OUTPUT"
+        if [ -n "$markdown" ] && [ -f "$markdown" ]; then
+          cat "$markdown" >> "$GITHUB_STEP_SUMMARY"
+        else
+          { echo '```'; cat "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "$code"
+
+    - name: Compare with the baseline
+      if: ${{ inputs.baseline != '' }}
+      shell: bash
+      env:
+        BASELINE: ${{ inputs.baseline }}
+        MAX_DROP: ${{ inputs.max-drop }}
+      run: |
+        out="$RUNNER_TEMP/evalblink-compare.txt"
+        set +e
+        evalblink compare "$BASELINE" --fail-on-regression "$MAX_DROP" | tee "$out"
+        code=${PIPESTATUS[0]}
+        set -e
+        { echo; echo "## Compared with $BASELINE"; echo '```'; cat "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"

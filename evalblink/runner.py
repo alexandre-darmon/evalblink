@@ -1,8 +1,9 @@
 """Executes a benchmark config and returns raw results.
 
-One job: own the ``httpx.Client`` and the model × prompt × test-case loop, call
-OpenRouter for each candidate, route the response to the right evaluator, and
-accumulate per-prompt results and token/cost totals. Its only output is
+One job: own the ``httpx.Client`` and the model × prompt × test-case (× repeat)
+loop, call OpenRouter for each candidate, route the response to the right
+evaluator, and accumulate per-prompt results: token/cost totals, latency
+percentiles and the score's interval (computed by ``analysis``). Its only output is
 diagnostics on stderr (one progress line per finished case, warnings); the
 results table is the reporter's job.
 """
@@ -19,10 +20,16 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 from jinja2.sandbox import SandboxedEnvironment
 
+from . import analysis
 from .evaluator import (
     TEXT_CHECKS,
+    ScorerError,
     evaluate_llm_judge,
+    json_match,
+    json_schema,
     judge_vendor_warning,
+    load_scorer,
+    python_score,
     weighted_match,
 )
 from .openrouter import CANCELLED, openrouter_request
@@ -55,7 +62,11 @@ def render_template(prompt, variables, test_case):
     return rendered_prompt, rendered_system
 
 
-def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
+# Modes whose score is graded (0–1), not just 1/0: the progress line shows it.
+GRADED = {"llm_judge", "weighted_match", "json_match", "python"}
+
+
+def _run_case(client, model, prompt, config, test_case, verbose, use_cache, sample):
     """``_evaluate_case``, but no single case can crash the run.
 
     Anything unexpected (a template that only fails on some renders, a value the
@@ -64,36 +75,49 @@ def _run_case(client, model, prompt, config, test_case, verbose, use_cache):
     """
     try:
         return _evaluate_case(
-            client, model, prompt, config, test_case, verbose, use_cache
+            client, model, prompt, config, test_case, verbose, use_cache, sample
         )
     except Exception as exc:  # noqa: BLE001 — the point: one case never kills a run
         error = f"{type(exc).__name__}: {exc}"
-        return {
-            "model": model,
-            "prompt_id": prompt["id"],
-            "test_case": {
-                "id": test_case["id"],
-                "tags": test_case.get("tags") or [],
-                "evaluation": test_case.get("evaluation"),
-                "status": "internal_error",
-                "match_result": False,
-                "match_score": None,
-                "response": "",
-                "reasoning": None,
-                "expected": test_case.get("expected_output"),
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "cost": 0.0,
-                "judge_prompt_tokens": 0,
-                "judge_completion_tokens": 0,
-                "judge_cost": 0.0,
-                "total_cost": 0.0,
-                "error": error,
+        return _sampled(
+            sample,
+            {
+                "model": model,
+                "prompt_id": prompt["id"],
+                "test_case": {
+                    "id": test_case["id"],
+                    "tags": test_case.get("tags") or [],
+                    "evaluation": test_case.get("evaluation"),
+                    "status": "internal_error",
+                    "match_result": False,
+                    "match_score": None,
+                    "response": "",
+                    "reasoning": None,
+                    "expected": test_case.get("expected_output"),
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cost": 0.0,
+                    "judge_prompt_tokens": 0,
+                    "judge_completion_tokens": 0,
+                    "judge_cost": 0.0,
+                    "total_cost": 0.0,
+                    "latency_s": None,
+                    "error": error,
+                },
             },
-        }
+        )
 
 
-def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache):
+def _sampled(sample, result):
+    """Tag a case result with its repeat index (``None``: a run without repeats)."""
+    if sample is not None:
+        result["test_case"]["sample"] = sample
+    return result
+
+
+def _evaluate_case(
+    client, model, prompt, config, test_case, verbose, use_cache, sample=None
+):
     """Run one (model × prompt × test_case) triple and return a tagged result.
 
     Returned dict has ``"model"``, ``"prompt_id"``, and ``"test_case"`` keys.
@@ -118,6 +142,7 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
             inference.get("max_tokens", DEFAULT_MAX_TOKENS),
             rendered_system,
             use_cache=use_cache,
+            sample=sample or 0,
         )
     except (RuntimeError, httpx.HTTPError) as exc:
         # Candidate API failed after retries — a pipeline failure, not a real
@@ -128,6 +153,7 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "cost": 0.0,
+            "latency_s": None,
         }
     if verbose:
         print(f"Raw response: {response['response']}")
@@ -147,6 +173,24 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
         check = TEXT_CHECKS[evaluation]
         match_result = check(response["response"], test_case["expected_output"])
         match_score = 1.0 if match_result else 0.0
+    elif evaluation == "json_match":
+        match_score = json_match(response["response"], test_case["expected_output"])
+        match_result = match_score >= 1.0
+    elif evaluation == "json_schema":
+        match_result, reasoning = json_schema(
+            response["response"], test_case["expected_output"]
+        )
+        match_score = 1.0 if match_result else 0.0
+    elif evaluation == "python":
+        try:
+            scorer = load_scorer(test_case["scorer"], config.get("_base_dir", ""))
+            match_result, match_score, reasoning = python_score(
+                scorer, response["response"], test_case
+            )
+        except ScorerError as exc:
+            # The user's scorer failed — a pipeline error, not a 0 for the model.
+            status = "scorer_error"
+            error = f"{test_case['scorer']}: {exc}"
     elif evaluation == "weighted_match":
         match_score = weighted_match(
             eval_config,
@@ -218,11 +262,12 @@ def _evaluate_case(client, model, prompt, config, test_case, verbose, use_cache)
             "judge_completion_tokens": judge_completion_tokens,
             "judge_cost": judge_cost,
             "total_cost": cost + judge_cost,
+            "latency_s": response.get("latency_s"),
         },
     }
     if error is not None:
         result["test_case"]["error"] = error
-    return result
+    return _sampled(sample, result)
 
 
 def run(config, verbose=False, use_cache=True):
@@ -241,6 +286,9 @@ def run(config, verbose=False, use_cache=True):
     # ThreadPoolExecutor raises on max_workers < 1.
     concurrency = config.get("concurrency")
     concurrency = max(1, 5 if concurrency is None else concurrency)
+    repeats = config.get("repeats") or 1
+    # A run without repeats records no `sample`, like records before repeats.
+    samples = list(range(repeats)) if repeats > 1 else [None]
 
     warning = judge_vendor_warning(
         (config.get("evaluation") or {}).get("judge_model"), config["models"]
@@ -250,10 +298,11 @@ def run(config, verbose=False, use_cache=True):
 
     # Build the full task list in config order so futures preserve that order.
     tasks = [
-        (model, prompt, test_case)
+        (model, prompt, test_case, sample)
         for model in config["models"]
         for prompt in config["prompts"]
         for test_case in config["test_cases"]
+        for sample in samples
     ]
     shape = [
         _plural(len(config[key]), noun)
@@ -263,6 +312,8 @@ def run(config, verbose=False, use_cache=True):
             ("test_cases", "test case"),
         )
     ]
+    if repeats > 1:
+        shape.append(f"{repeats} repeats")
     _diag(
         f"Running {_plural(len(tasks), 'case')} ({' × '.join(shape)}), {concurrency} at a time"
     )
@@ -293,8 +344,9 @@ def run(config, verbose=False, use_cache=True):
                 test_case,
                 verbose,
                 use_cache,
+                sample,
             )
-            for model, prompt, test_case in tasks
+            for model, prompt, test_case, sample in tasks
         ]
         for future in futures:
             future.add_done_callback(report)
@@ -330,6 +382,13 @@ def run(config, verbose=False, use_cache=True):
             total_cost = sum(tc["total_cost"] for tc in test_case_results)
             # Quality is over genuinely-scored cases only.
             score = success / scored * 100 if scored else 0.0
+            combo = {
+                "success": success,
+                "scored": scored,
+                "total": total,
+                "test_cases": test_case_results,
+            }
+            interval = analysis.score_interval(combo)
             results.append(
                 {
                     "model": model,
@@ -342,6 +401,11 @@ def run(config, verbose=False, use_cache=True):
                     "total_prompt_tokens": total_prompt_tokens,
                     "total_completion_tokens": total_completion_tokens,
                     "total_cost": total_cost,
+                    # 95 % interval on `score` (Wilson, over the test cases).
+                    "score_ci": [round(v, 1) for v in interval] if interval else None,
+                    **analysis.latency_stats(test_case_results),
+                    "repeats": repeats,
+                    "flaky": analysis.flaky_cases(combo),
                     "test_cases": test_case_results,
                 }
             )
@@ -366,7 +430,12 @@ def _progress_line(done, total, case_result):
         outcome = f"⚠ {label}: {tc.get('error', '')}"
     else:
         outcome = "pass" if tc["match_result"] else "fail"
-        if tc["evaluation"] in ("llm_judge", "weighted_match"):  # graded, not 1/0
+        if tc["evaluation"] in GRADED:  # graded, not 1/0
             outcome += f" ({tc['match_score']:.2f})"
-    where = f"{case_result['model']} / {case_result['prompt_id']} / {tc['id']}"
+        if tc.get("latency_s") is not None:
+            outcome += f"  {tc['latency_s']:.2f}s"
+    where = (
+        f"{case_result['model']} / {case_result['prompt_id']} /"
+        f" {analysis.case_label(tc)}"
+    )
     return f"[{done:>{len(str(total))}}/{total}] {where}  {outcome}"

@@ -31,7 +31,7 @@ _REAL_SEND = httpx.Client.send
 def _configs():
     for path in sorted((ROOT / "benchmarks").glob("*.yaml")):
         yield path.name, yaml.safe_load(path.read_text())
-    for doc in ("README.md", "PRD.md"):
+    for doc in ("README.md", "PRD.md", "docs/reference.md"):
         for block in re.findall(
             r"```yaml\n(.*?)```", (ROOT / doc).read_text(), flags=re.DOTALL
         ):

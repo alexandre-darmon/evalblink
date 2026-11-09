@@ -1,0 +1,65 @@
+# benchmarks/structured_output.yaml — JSON replies checked without a judge.
+# json_match: the reply's JSON has every value of expected_output (extra keys
+# are ignored; strings ignore case). Scores the share of values found; passes
+# at 1.0. json_schema: the reply's JSON satisfies a JSON Schema.
+# python: your own check, a function in a .py file next to this YAML.
+name: "Ticket Triage (structured output)"
+concurrency: 2  # free models rate-limit parallel bursts
+# repeats: 3    # run each case 3 times: shows flaky cases, steadies the score
+
+inference:
+  temperature: 0
+  max_tokens: 4096  # reasoning models spend tokens before answering
+
+prompts:
+  - id: "v1"
+    system: >
+      You triage support tickets for an online shop. Reply with one JSON object
+      and nothing else: {"label": one of {{ labels }}, "priority": 1 (urgent),
+      2 or 3 (low), "needs_human": true or false, "summary": one short sentence}.
+    template: "Ticket: {{ ticket }}"
+
+models:
+  - "cohere/north-mini-code:free"
+
+variables:
+  labels: "billing, order_issue, product_question, other"
+
+test_cases:
+  - id: "double_charge"
+    evaluation: "json_match"
+    variables:
+      ticket: "You charged my card twice for order 4471. Fix it today please."
+    expected_output: {label: "billing", priority: 1, needs_human: true}
+    tags: ["billing"]
+
+  - id: "late_parcel"
+    evaluation: "json_match"
+    variables:
+      ticket: "My parcel was due Monday and the tracking hasn't moved since."
+    expected_output: {label: "order_issue"}
+    tags: ["order"]
+
+  - id: "shape"
+    evaluation: "json_schema"
+    variables:
+      ticket: "Does the blue jacket come in XL?"
+    expected_output:
+      type: object
+      required: [label, priority, needs_human, summary]
+      additionalProperties: false
+      properties:
+        label: {enum: [billing, order_issue, product_question, other]}
+        priority: {enum: [1, 2, 3]}
+        needs_human: {type: boolean}
+        summary: {type: string, maxLength: 200}
+    tags: ["format"]
+
+  - id: "short_summary"
+    evaluation: "python"
+    scorer: "scorers.py:short_summary"  # relative to this file
+    variables:
+      ticket: >
+        I ordered three things, one arrived broken, one never arrived and the
+        third is the wrong size. Also your chat bot keeps logging me out.
+    tags: ["format"]

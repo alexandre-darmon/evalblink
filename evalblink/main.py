@@ -43,6 +43,9 @@ def load_config(filepath):
         sys.exit(f"Invalid test cases in {filepath}: {exc}")
     for warning in warnings:
         print(f"⚠  {warning}", file=sys.stderr)
+    if isinstance(config, dict):
+        # `python` scorers are files next to the YAML, like test-case files.
+        config["_base_dir"] = os.path.dirname(os.path.abspath(filepath))
     return config
 
 
@@ -842,6 +845,7 @@ YAML CONFIG KEYS
   quality_threshold             CI gate 0–100; exit 1 if the best score (unscored
                                 cases counted as failures) is below
   concurrency                   parallel requests, 1–100 (default: 5)
+  repeats                       runs of each case, 1–100 (default: 1); flags flaky cases
   evaluation.judge_model        required for llm_judge
   evaluation.judge_threshold    default: 0.70
   evaluation.judge_max_tokens   judge output budget (default: 4096)
@@ -852,9 +856,12 @@ YAML CONFIG KEYS
                                 or template variables
   test_cases[].id               required
   test_cases[].evaluation       exact_match | contains | not_contains | regex |
-                                llm_judge | weighted_match  (required)
-  test_cases[].expected_output  required except for llm_judge (a list of texts for
-                                contains / not_contains)
+                                json_match | json_schema | python | llm_judge |
+                                weighted_match  (required)
+  test_cases[].expected_output  required except for llm_judge and python (a list of
+                                texts for contains / not_contains; JSON values for
+                                json_match; a JSON Schema for json_schema)
+  test_cases[].scorer           python: "scorers.py:function", relative to the YAML
   test_cases[].criteria         required for llm_judge
   test_cases[].reference        optional gold answer injected into the judge prompt
   test_cases[].variables        per-case variables
@@ -871,14 +878,18 @@ EXAMPLES
   evalblink run benchmarks/classification.yaml --dry-run
 """
 
-_COMPARE_DESCRIPTION = "Diff two run records — quality and cost deltas, no API calls."
+_COMPARE_DESCRIPTION = (
+    "Diff two run records — quality, cost and latency deltas, no API calls."
+)
 
 _COMPARE_EPILOG = """\
 OUTPUT COLUMNS
   Model / Prompt  the combo being compared
   Quality Δ       pass-rate change B − A: ↑ / ↓, or stable within ±0.05 pp
   Cost Δ          total cost change per combo (models + judge)
-  Notes           "only in A" / "only in B" when a combo is missing from one run;
+  p50 latency Δ   median latency change, in seconds (— for a record without latency)
+  Notes           "within noise" when chance alone could explain the quality Δ;
+                  "only in A" / "only in B" when a combo is missing from one run;
                   "pipeline errors 2 → 0" when its error count changed (yellow);
                   "different test cases" when the runs ran other cases (yellow)
 
@@ -998,7 +1009,7 @@ def build_parser():
     # --- compare ---
     compare_p = subparsers.add_parser(
         "compare",
-        help="diff two run records — quality and cost deltas, no API calls",
+        help="diff two run records — quality, cost and latency deltas, no API calls",
         description=_COMPARE_DESCRIPTION,
         epilog=_COMPARE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,

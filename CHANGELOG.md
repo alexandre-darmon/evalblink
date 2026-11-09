@@ -4,8 +4,21 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+### Added
+- **Latency.** Every candidate call's latency is measured: the wall time of the attempt that returned the reply, without retries, backoff or judge calls. It shows on each progress line (`pass  0.62s`), as p50 in the results table, p50 and p95 in the Markdown report, per case and per combo in the JSON (`latency_s`, `latency_p50_s`, `latency_p95_s`, `latency_mean_s`), as a **Fastest** line in the recommendation, and as a `p50 latency Δ` column in `compare`. A cached reply keeps the latency measured when it was fetched.
+- **Confidence intervals and noise.** Each score comes with its 95 % interval (Wilson, over the number of test cases): `96.0% (87–99)` in the table, `score_ci` in the JSON. The recommendation lists the combos **within noise** of the best one (not distinguishable at 95 %), and `compare` marks quality changes within noise and says how many gains are beyond it.
+- **`repeats: N`** runs every model × prompt × test case N times (each repeat with its own cache entry). The score covers every repeat, cases whose repeats disagree are reported as **flaky**, and `--dry-run` multiplies the estimate by N.
+- **`json_match`**: the reply's JSON must hold the values in `expected_output` (extra keys ignored, strings ignore case, partial credit shown). **`json_schema`**: the reply's JSON must satisfy a JSON Schema. **`python`**: your own scorer, `scorer: "scorers.py:my_check"`, returning `True`/`False` or `{passed, score, reason}`; a scorer that raises is a pipeline error (`scorer error`), not a failed case. Example: `benchmarks/structured_output.yaml`.
+- **GitHub Action** (`action.yml`): `uses: alexandre-darmon/evalblink@<tag>` runs a benchmark, puts the report in the job summary, and fails the job on the quality gate or, with `baseline`, on a regression.
+- `docs/reference.md`: the full reference (every config key, validation rule, mode, statistic and output file).
+
 ### Changed
-- The README opens with a banner, and its terminal samples are now visuals in the same style (`docs/assets/`), each with the full text output in a collapsible block. `docs/assets/make_visuals.py` redraws them.
+- The README is an overview (about a third of its former length), opens with a banner, and its terminal samples are visuals in the same style (`docs/assets/`), each with the full text output in a collapsible block. The details moved to `docs/reference.md`.
+- The terminal results table fits an 80-column terminal: `Score (95% CI)`, `Tokens in/out` and `p50 latency` columns. The Markdown report keeps separate columns.
+- The comparison with promptfoo was rechecked against its documentation and corrected.
+- The roadmap adds local evals (Ollama, LM Studio, llama.cpp, vLLM — any OpenAI-compatible endpoint) and evaluating your own application (an HTTP endpoint or a command) for V1.1.
+- Run records are `schema_version` 2 (additive: version 1 records still load, compare and report, with no latency).
+- New dependency: `jsonschema`.
 
 ## [0.1.5] — 2026-11-02
 

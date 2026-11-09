@@ -40,6 +40,26 @@ def _combo_label(combo) -> str:
     return f"{combo['model']} / {combo['prompt_id']}"
 
 
+def _fmt_ci(combo) -> str:
+    """The score's 95 % interval, ``86–99%``, or ``—`` with nothing scored."""
+    interval = analysis.score_interval(combo)
+    if interval is None:
+        return "—"
+    return f"{interval[0]:.0f}–{interval[1]:.0f}%"
+
+
+def _fmt_seconds(value) -> str:
+    return "—" if value is None else f"{value:.2f} s"
+
+
+def _latency(combo, key) -> float | None:
+    """A combo's latency statistic: stored, else computed from its cases."""
+    value = combo.get(key)
+    if value is None:
+        value = analysis.latency_stats(combo.get("test_cases") or [])[key]
+    return value
+
+
 def _slugify(name: str) -> str:
     """Filename-safe slug: lowercase, non-alphanumeric runs → single hyphen.
 
@@ -105,16 +125,22 @@ def _write_markdown(data) -> str:
         "",
         "## Summary",
         "",
-        "| Model | Prompt | Score | Pass/Scored | Errors | Prompt tok | Completion tok | Cost |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        (
+            "| Model | Prompt | Score | 95% CI | Pass/Scored | Errors | Prompt tok |"
+            " Completion tok | Cost | p50 latency | p95 latency |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in data["results"]:
         scored = run.get("scored", run["total"])
         errors = run.get("errors", 0)
         lines.append(
             f"| {run['model']} | {run['prompt_id']} | {run['score']:.1f}% | "
-            f"{run['success']}/{scored} | {errors} | {run['total_prompt_tokens']} | "
-            f"{run['total_completion_tokens']} | ${run['total_cost']:.6f} |"
+            f"{_fmt_ci(run)} | {run['success']}/{scored} | {errors} | "
+            f"{run['total_prompt_tokens']} | {run['total_completion_tokens']} | "
+            f"${run['total_cost']:.6f} | "
+            f"{_fmt_seconds(_latency(run, 'latency_p50_s'))} | "
+            f"{_fmt_seconds(_latency(run, 'latency_p95_s'))} |"
         )
 
     for run in data["results"]:
@@ -122,17 +148,19 @@ def _write_markdown(data) -> str:
             "",
             f"## {run['model']} — prompt `{run['prompt_id']}`",
             "",
-            "| Test case | Evaluation | Match | Score | Cost |",
-            "| --- | --- | --- | --- | --- |",
+            "| Test case | Evaluation | Match | Score | Cost | Latency |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
         for tc in run["test_cases"]:
             if tc["match_score"] is None:
                 score = ERROR_LABELS.get(tc.get("status"), "error")
             else:
                 score = f"{tc['match_score']:.4f}"
+            latency = tc.get("latency_s")
             lines.append(
-                f"| {tc['id']} | {tc.get('evaluation')} | {tc.get('match_result')} | "
-                f"{score} | ${tc['total_cost']:.6f} |"
+                f"| {analysis.case_label(tc)} | {tc.get('evaluation')} |"
+                f" {tc.get('match_result')} | {score} | ${tc['total_cost']:.6f} |"
+                f" {_fmt_seconds(latency if isinstance(latency, (int, float)) else None)} |"
             )
 
     summary = data.get("insights")
@@ -157,12 +185,21 @@ def _write_markdown(data) -> str:
             "",
             "## Recommendation",
             "",
-            f"- **Best quality:** {_combo_label(top)} ({top['score']:.1f}%)",
             (
-                f"- **Best value:** {_combo_label(value)} "
-                f"({value['score']:.1f}% · ${value['total_cost']:.4f})"
+                f"- **Best quality:** {_combo_label(top)} ({top['score']:.1f}%,"
+                f" 95% CI {_fmt_ci(top)})"
             ),
         ]
+        if summary.get("within_noise"):
+            lines.append(f"- **Within noise:** {_noise_text(summary)}")
+        lines.append(
+            f"- **Best value:** {_combo_label(value)} "
+            f"({value['score']:.1f}% · ${value['total_cost']:.4f})"
+        )
+        if summary.get("fastest"):
+            lines.append(f"- **Fastest:** {_fastest_text(summary['fastest'])}")
+        if summary.get("flaky"):
+            lines.append(f"- **Flaky:** {_flaky_text(summary)}")
         for tag in summary["warnings"]:
             lines.append(f"- ⚠️ **Warning:** `{tag}` quality is below 70%.")
         if summary.get("errors"):
@@ -180,24 +217,26 @@ def _print_table(data, console: Console) -> None:
     table = Table(title=f"{data['benchmark']} — {data['run_id']}")
     table.add_column("Model", overflow="fold")
     table.add_column("Prompt", overflow="fold")
-    table.add_column("Score", justify="right", overflow="fold")
+    # Compact enough for an 80-column terminal; the Markdown report splits
+    # the interval and the token counts into their own columns.
+    table.add_column("Score (95% CI)", justify="right", overflow="fold")
     table.add_column("Pass/Scored", justify="right", overflow="fold")
     table.add_column("Errors", justify="right", overflow="fold")
-    table.add_column("Prompt tok", justify="right", overflow="fold")
-    table.add_column("Completion tok", justify="right", overflow="fold")
+    table.add_column("Tokens in/out", justify="right", overflow="fold")
     table.add_column("Cost", justify="right", overflow="fold")
+    table.add_column("p50 latency", justify="right", overflow="fold")
     for run in data["results"]:
         scored = run.get("scored", run["total"])
         errors = run.get("errors", 0)
         table.add_row(
             run["model"],
             run["prompt_id"],
-            f"{run['score']:.1f}%",
+            f"{run['score']:.1f}% ({_fmt_ci(run).rstrip('%')})",
             f"{run['success']}/{scored}",
             str(errors),
-            str(run["total_prompt_tokens"]),
-            str(run["total_completion_tokens"]),
+            f"{run['total_prompt_tokens']}/{run['total_completion_tokens']}",
             f"${run['total_cost']:.6f}",
+            _fmt_seconds(_latency(run, "latency_p50_s")),
         )
     console.print(table)
 
@@ -227,11 +266,20 @@ def _print_insights(summary, console: Console) -> None:
     console.print(tags)
 
     console.print("\nRECOMMENDATION", style="bold")
-    console.print(f"Best quality : {_combo_label(top)} ({top['score']:.1f}%)")
+    console.print(
+        f"Best quality : {_combo_label(top)} ({top['score']:.1f}%,"
+        f" 95% CI {_fmt_ci(top)})"
+    )
+    if summary.get("within_noise"):
+        console.print(f"Within noise : {_noise_text(summary)}", style="yellow")
     console.print(
         f"Best value   : {_combo_label(value)} "
         f"({value['score']:.1f}% · ${value['total_cost']:.4f}/run)"
     )
+    if summary.get("fastest"):
+        console.print(f"Fastest      : {_fastest_text(summary['fastest'])}")
+    if summary.get("flaky"):
+        console.print(f"Flaky        : {_flaky_text(summary)}", style="yellow")
     if summary.get("errors"):
         console.print(
             f"{summary['errors']} pipeline error(s) excluded from scoring.",
@@ -239,6 +287,31 @@ def _print_insights(summary, console: Console) -> None:
         )
     for tag in summary["warnings"]:
         console.print(f"⚠️  Warning  : {tag} quality is below 70%.", style="yellow")
+
+
+def _noise_text(summary) -> str:
+    """The combos the best one can't be told apart from, and what to do."""
+    tied = summary["within_noise"]
+    names = ", ".join(f"{_combo_label(c)} ({c['score']:.1f}%)" for c in tied[:2])
+    more = f" and {len(tied) - 2} more" if len(tied) > 2 else ""
+    return (
+        f"{names}{more} — not distinguishable from the best at 95%;"
+        " add test cases to separate them."
+    )
+
+
+def _fastest_text(combo) -> str:
+    return (
+        f"{_combo_label(combo)} (p50 {_fmt_seconds(analysis.latency_p50(combo))}"
+        f" · {combo['score']:.1f}%)"
+    )
+
+
+def _flaky_text(summary) -> str:
+    return (
+        f"{summary['flaky']} case(s) passed on some repeats and failed on others"
+        " — see `flaky` in the JSON."
+    )
 
 
 def write(config, results, timestamp) -> dict:
@@ -394,6 +467,16 @@ def _fmt_cost_delta(delta) -> str:
     return f"{delta:+.4f} {arrow}"
 
 
+def _fmt_latency_delta(delta) -> str:
+    """``+0.21 s ↑`` (slower) / ``-0.40 s ↓`` (faster); ``—`` without data."""
+    if delta is None:
+        return "—"
+    if abs(delta) < 0.005:
+        return "stable"
+    arrow = "↑" if delta > 0 else "↓"
+    return f"{delta:+.2f} s {arrow}"
+
+
 def _comparison_note_and_style(row) -> tuple[str, str | None]:
     """A ``compare`` row's Notes text and colour."""
     if row["present_in"] != "both":
@@ -405,6 +488,9 @@ def _comparison_note_and_style(row) -> tuple[str, str | None]:
     if errors_a != errors_b:
         return note, "yellow"  # scored over different cases: not like-for-like
     delta = row["score_delta"]
+    if row.get("noise"):
+        # Real-looking arrows, but chance alone can produce a gap this size.
+        return "within noise", None
     if delta > 0.05:
         return note, "green"
     if delta < -0.05:
@@ -425,6 +511,7 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
     table.add_column("Prompt", overflow="fold")
     table.add_column("Quality Δ", justify="right", overflow="fold")
     table.add_column("Cost Δ", justify="right", overflow="fold")
+    table.add_column("p50 latency Δ", justify="right", overflow="fold")
     table.add_column("Notes", overflow="fold")
     for row in diff_result["rows"]:
         note, style = _comparison_note_and_style(row)
@@ -433,6 +520,7 @@ def render_comparison(diff_result, console: Console | None = None) -> None:
             row["prompt_id"],
             _fmt_score_delta(row["score_delta"]),
             _fmt_cost_delta(row["cost_delta"]),
+            _fmt_latency_delta(row.get("latency_delta")),
             note,
             style=style,
         )

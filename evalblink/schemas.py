@@ -20,13 +20,16 @@ ERROR_LABELS = {
     "judge_api_error": "judge API error",
     "judge_error": "judge error",
     "internal_error": "internal error",
+    "scorer_error": "scorer error",
 }
 
 # Bumped whenever the persisted run-record shape changes incompatibly. Written
 # into every record by ``reporter._build_data`` and read by ``compare`` so it can
 # degrade gracefully across versions instead of hard-blocking. Legacy records
 # written before this field existed are treated as version 0.
-SCHEMA_VERSION = 1
+# v2 (additive): per-case `latency_s` and `sample`; per-combo `score_ci`,
+# `latency_p50_s` / `latency_p95_s` / `latency_mean_s`, `repeats`, `flaky`.
+SCHEMA_VERSION = 2
 
 # Applied when a config omits ``inference:`` or one of its keys. Shared by the
 # runner, reporter, estimator and validator so they can never disagree.
@@ -74,9 +77,10 @@ class TestCase(TypedDict, total=False):
     id: str
     variables: dict[str, Any]
     evaluation: str  # a TEXT_CHECKS key (exact_match, contains, not_contains,
-    # regex) | "weighted_match" | "llm_judge"
+    # regex) | "json_match" | "json_schema" | "python" | "weighted_match" | "llm_judge"
     expected_output: Any
     criteria: str
+    scorer: str  # python: "scorers.py:function", relative to the YAML
     tags: list[str]
 
 
@@ -88,6 +92,7 @@ class BenchmarkConfig(TypedDict, total=False):
     models: list[str]
     variables: dict[str, Any]
     test_cases: list[TestCase]
+    repeats: int  # runs of each model × prompt × test case (default 1)
 
 
 # ----------------------------------------------------------------------------
@@ -102,9 +107,10 @@ class RequestResult(TypedDict):
     prompt_tokens: int
     completion_tokens: int
     cost: float
+    latency_s: float | None  # the successful attempt's wall time
 
 
-class TestCaseResult(TypedDict):
+class TestCaseResult(TypedDict, total=False):
     id: str
     tags: list[str]
     evaluation: str
@@ -120,9 +126,11 @@ class TestCaseResult(TypedDict):
     judge_completion_tokens: int
     judge_cost: float
     total_cost: float
+    latency_s: float | None  # candidate call; None for an API error
+    sample: int  # repeat index, only with `repeats` > 1
 
 
-class RunResult(TypedDict):
+class RunResult(TypedDict, total=False):
     model: str
     prompt_id: str
     success: int
@@ -131,6 +139,12 @@ class RunResult(TypedDict):
     total_prompt_tokens: int
     total_completion_tokens: int
     total_cost: float
+    score_ci: list[float] | None  # 95 % Wilson interval on score, in %
+    latency_p50_s: float | None
+    latency_p95_s: float | None
+    latency_mean_s: float | None
+    repeats: int
+    flaky: list[str]  # test-case ids whose repeats disagree
     test_cases: list[TestCaseResult]
 
 

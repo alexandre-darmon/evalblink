@@ -4,17 +4,23 @@ Pure functions over the JSON records the reporter persists — no network, no
 scoring. Like ``analysis``, this module owns *decisions* (which combos changed,
 by how much, and the overall verdict); the reporter only formats what ``diff``
 returns. A combo is keyed by ``(model, prompt_id)``; each carries a ``score``
-(pass-rate %) and ``total_cost``.
-
-Latency is intentionally absent: the runner does not capture it, so comparing it
-would be inventing data. Quality and cost only.
+(pass-rate %), ``total_cost`` and, from schema v2, latency percentiles. A record
+from before latency was measured compares with ``None`` latency (shown as —).
+A quality delta is flagged ``noise`` when it is within what chance alone can
+produce (``analysis.within_noise``).
 """
 
 from __future__ import annotations
 
 import json
 
-from .analysis import fail_safe_score
+from .analysis import (
+    case_key,
+    case_label,
+    fail_safe_score,
+    latency_p50,
+    within_noise,
+)
 from .openrouter import is_number
 
 # Score deltas smaller than this (in percentage points) read as "stable" — keeps
@@ -122,7 +128,7 @@ def _case_ids(combo):
     cases = combo.get("test_cases")
     if not isinstance(cases, list):
         return None
-    return frozenset(str(tc.get("id")) for tc in cases if isinstance(tc, dict))
+    return frozenset(case_key(tc) for tc in cases if isinstance(tc, dict))
 
 
 def _same_cases(a, b) -> bool:
@@ -152,13 +158,16 @@ def diff(record_a, record_b) -> dict:
 
     rows = []
     improved = 0
+    beyond_noise = 0
     comparable = 0
     uneven = 0
     other_cases = 0
     for key in keys:
         a = index_a.get(key)
         b = index_b.get(key)
-        same_cases = gate_delta = None
+        same_cases = gate_delta = noise = latency_delta = None
+        latency_a = latency_p50(a) if a else None
+        latency_b = latency_p50(b) if b else None
         if a and b:
             present_in = "both"
             score_delta = b["score"] - a["score"]
@@ -167,6 +176,9 @@ def diff(record_a, record_b) -> dict:
             # CI gate computes it: comparable even when errors changed.
             gate_delta = fail_safe_score(b) - fail_safe_score(a)
             same_cases = _same_cases(a, b)
+            noise = abs(score_delta) > _SCORE_EPS and within_noise(a, b)
+            if latency_a is not None and latency_b is not None:
+                latency_delta = latency_b - latency_a
             # A slice (`run --tag/--limit`) against a full run: not comparable.
             if not same_cases:
                 other_cases += 1
@@ -178,6 +190,7 @@ def diff(record_a, record_b) -> dict:
                 comparable += 1
                 if score_delta > _SCORE_EPS:
                     improved += 1
+                    beyond_noise += not noise
         elif b:
             present_in = "b_only"
             score_delta = cost_delta = None
@@ -199,6 +212,11 @@ def diff(record_a, record_b) -> dict:
                 "present_in": present_in,
                 "same_cases": same_cases,
                 "gate_delta": gate_delta,
+                # The quality Δ is within what chance alone can produce.
+                "noise": noise,
+                "latency_a": latency_a,
+                "latency_b": latency_b,
+                "latency_delta": latency_delta,
             }
         )
 
@@ -229,7 +247,9 @@ def diff(record_a, record_b) -> dict:
         "schema_b": schema_b,
         "version_note": version_note,
         "rows": rows,
-        "verdict": _verdict(improved, comparable, uneven, other_cases, rows),
+        "verdict": _verdict(
+            improved, comparable, uneven, other_cases, rows, beyond_noise
+        ),
     }
 
 
@@ -269,7 +289,7 @@ def _uneven(row) -> bool:
     return row["present_in"] == "both" and row["errors_a"] != row["errors_b"]
 
 
-def _verdict(improved, comparable, uneven, other_cases, rows) -> str:
+def _verdict(improved, comparable, uneven, other_cases, rows, beyond_noise=None) -> str:
     """One-line summary of B versus A over like-for-like shared combos."""
     only = [r for r in rows if r["present_in"] != "both"]
     only_note = f" {len(only)} combo(s) present in only one run." if only else ""
@@ -288,12 +308,23 @@ def _verdict(improved, comparable, uneven, other_cases, rows) -> str:
         if uneven or other_cases:
             return "No like-for-like shared combos." + only_note
         return "No combos in common between the two runs." + only_note
+    noise_note = ""
+    if improved and beyond_noise is not None and beyond_noise < improved:
+        noise_note = (
+            " None of these gains is beyond noise (95%)."
+            if beyond_noise == 0
+            else f" {beyond_noise} of these gains are beyond noise (95%)."
+        )
     if improved == comparable:
-        return f"Run B improves quality on all {comparable} shared combo(s).{only_note}"
+        return (
+            f"Run B improves quality on all {comparable} shared combo(s)."
+            f"{noise_note}{only_note}"
+        )
     if improved == 0:
         return f"Run B improves quality on no shared combo(s).{only_note}"
     return (
-        f"Run B improves quality on {improved}/{comparable} shared combo(s).{only_note}"
+        f"Run B improves quality on {improved}/{comparable} shared combo(s)."
+        f"{noise_note}{only_note}"
     )
 
 
@@ -349,8 +380,9 @@ def case_diff(combo_a, combo_b) -> dict:
     row is ``{id, tags, transition, a_state, b_state, score_a, score_b,
     score_delta, present_in}``; ``rollup`` tallies every transition kind.
     """
-    by_id_a = {tc["id"]: tc for tc in combo_a.get("test_cases", [])}
-    by_id_b = {tc["id"]: tc for tc in combo_b.get("test_cases", [])}
+    # Keyed by id and repeat index; a row's `id` reads `conv_001 #2` for a repeat.
+    by_id_a = {case_key(tc): tc for tc in combo_a.get("test_cases", [])}
+    by_id_b = {case_key(tc): tc for tc in combo_b.get("test_cases", [])}
 
     rollup = {
         k: 0
@@ -394,7 +426,7 @@ def case_diff(combo_a, combo_b) -> dict:
         rollup[transition] += 1
         rows.append(
             {
-                "id": case_id,
+                "id": case_label(b or a),
                 "tags": tags,
                 "transition": transition,
                 "a_state": sa,
