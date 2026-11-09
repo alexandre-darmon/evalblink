@@ -27,7 +27,7 @@ PAGE, EDGE, GLOW, GLOW_SOFT = "#F4F2F5", "#E6E3EA", "#E0DFF0", "#E9E7F2"
 CARD, CARD_EDGE, RULE = "#FFFFFF", "#E3E1E8", "#EFEDF2"
 INK, BODY, MUTED, ACCENT, WARN = "#0A0A0A", "#5F5F66", "#6B6B70", "#8C52EE", "#A8480C"
 
-WIDTH, MARGIN, PAD = 1280, 48, 24
+WIDTH, MARGIN, PAD = 1400, 48, 24
 ROW, HEAD_ROW = 40, 42
 SANS, BOLD, MONO = "Geist-Regular", "Geist-SemiBold", "GeistMono-Regular"
 TEXT_SIZE = 19
@@ -184,21 +184,29 @@ def table(c, y, title, columns, rows, marked=None, width=None, x=MARGIN, note=No
     return y + height
 
 
-def recommendation(c, x, y, width, height, picks, warnings):
-    """A white card: each pick's label above its value, then the warnings."""
+def recommendation(c, x, y, width, picks, warnings):
+    """A white card: one line per pick (label, then value), then the warnings.
+
+    A pick's value may be ``(text, colour)``. Returns the card's bottom edge.
+    """
+    height = 44 + 36 * len(picks) + 12 + 36 * len(warnings) + 8
     c.rect(x, y, width, height, CARD, CARD_EDGE, 14)
     c.text(x + PAD, y + 34, "Recommendation", INK, BOLD, 21)
     line_y = y + 44
     for label, value in picks:
-        c.text(x + PAD, line_y + 22, label, MUTED, size=16)
-        c.text(x + PAD, line_y + 48, value, INK)
-        line_y += 64
+        fill = INK
+        if isinstance(value, tuple):
+            value, fill = value
+        c.text(x + PAD, line_y + 26, label, MUTED, size=16)
+        c.text(x + PAD + 150, line_y + 26, value, fill)
+        line_y += 36
     c.rule(x + PAD, line_y + 6, width - 2 * PAD)
     line_y += 12
     for warning in warnings:
         left = c.warning(x + PAD, line_y + 25)
         c.text(left, line_y + 26, warning, WARN)
         line_y += 36
+    return y + height
 
 
 def verdict(c, y, label, text):
@@ -214,7 +222,9 @@ def run_output(fonts):
     c = Canvas(
         fonts,
         "evalblink run: a progress line per case, a results table of six model and"
-        " prompt combinations, quality by tag, a recommendation, and a PASS verdict.",
+        " prompt combinations with score and 95% interval, cost and p50 latency,"
+        " quality by tag, a recommendation naming the combos within noise and the"
+        " fastest one, and a PASS verdict.",
     )
     y = header(c, "evalblink run bench.yaml") + 6
     c.text(
@@ -224,11 +234,12 @@ def run_output(fonts):
         MUTED,
     )
     y += 30
-    for line, outcome, fill in (
-        ("[  1/300] openai/gpt-4o-mini / v1 / conv_001", "pass", BODY),
-        ("[  2/300] openai/gpt-4o-mini / v1 / conv_002", "fail", WARN),
+    for line, outcome, fill, latency in (
+        ("[  1/300] openai/gpt-4o-mini / v1 / conv_001", "pass", BODY, "0.58s"),
+        ("[  2/300] openai/gpt-4o-mini / v1 / conv_002", "fail", WARN, "0.66s"),
     ):
-        c.text(c.text(MARGIN, y, line + "  ", BODY), y, outcome, fill)
+        left = c.text(c.text(MARGIN, y, line + "  ", BODY), y, outcome, fill)
+        c.text(left, y, "  " + latency, MUTED)
         y += 28
     c.text(MARGIN, y, "…", MUTED)
     y += 28
@@ -251,73 +262,73 @@ def run_output(fonts):
         (
             ("Model", 28, False),
             ("Prompt", 6, False),
-            ("Score", 6, True),
+            ("Score (95% CI)", 14, True),
             ("Pass/Scored", 11, True),
             ("Errors", 6, True),
-            ("Prompt tok", 10, True),
-            ("Completion tok", 14, True),
+            ("Tokens in/out", 13, True),
             ("Cost", 9, True),
+            ("p50 latency", 11, True),
         ),
         (
             (
                 "openai/gpt-4o-mini",
                 "v1",
-                "87.8%",
+                "87.8% (76–94)",
                 "43/49",
                 "1",
-                "4018",
-                "294",
+                "4018/294",
                 "$0.000784",
+                "0.61 s",
             ),
             (
                 "openai/gpt-4o-mini",
                 "v2",
-                "90.0%",
+                "90.0% (79–96)",
                 "45/50",
                 "0",
-                "5000",
-                "300",
+                "5000/300",
                 "$0.000960",
+                "0.71 s",
             ),
             (
                 "anthropic/claude-sonnet-4.6",
                 "v1",
-                "94.0%",
+                "94.0% (84–98)",
                 "47/50",
                 "0",
-                "4100",
-                "300",
+                "4100/300",
                 "$0.017500",
+                "1.54 s",
             ),
             (
                 "anthropic/claude-sonnet-4.6",
                 "v2",
-                "96.0%",
+                "96.0% (87–99)",
                 "48/50",
                 "0",
-                "5000",
-                "300",
+                "5000/300",
                 "$0.021000",
+                "1.53 s",
             ),
             (
                 "mistralai/mistral-small-2603",
                 "v1",
-                "85.4%",
+                "85.4% (73–93)",
                 "41/48",
                 "2",
-                "3936",
-                "288",
+                "3936/288",
                 "$0.000768",
+                "0.52 s",
             ),
             (
                 "mistralai/mistral-small-2603",
                 "v2",
-                "88.0%",
+                "88.0% (76–94)",
                 "44/50",
                 "0",
-                "5000",
-                "300",
+                "5000/300",
                 "$0.000960",
+                "0.50 s",
             ),
         ),
         marked=3,
@@ -346,15 +357,25 @@ def run_output(fonts):
         width=half,
         note="best combo: anthropic/claude-sonnet-4.6 / v2",
     )
-    recommendation(
+    y = recommendation(
         c,
-        MARGIN + half + 16,
-        y,
-        half,
-        tags_bottom - y,
+        MARGIN,
+        tags_bottom + 16,
+        WIDTH - 2 * MARGIN,
         (
-            ("Best quality", "anthropic/claude-sonnet-4.6 / v2 (96.0%)"),
+            ("Best quality", "anthropic/claude-sonnet-4.6 / v2 (96.0%, 95% CI 87–99%)"),
+            (
+                "Within noise",
+                (
+                    (
+                        "anthropic/claude-sonnet-4.6 / v1 (94.0%),"
+                        " openai/gpt-4o-mini / v2 (90.0%) and 3 more"
+                    ),
+                    WARN,
+                ),
+            ),
             ("Best value", "openai/gpt-4o-mini / v1 (87.8% · $0.0008/run)"),
+            ("Fastest", "mistralai/mistral-small-2603 / v2 (p50 0.50 s · 88.0%)"),
         ),
         (
             "3 pipeline error(s) excluded from scoring.",
@@ -362,7 +383,7 @@ def run_output(fonts):
             "non_english quality is below 70%.",
         ),
     )
-    y = tags_bottom + 32
+    y += 32
     left = c.warning(MARGIN, y - 1)
     c.text(
         left,
@@ -427,8 +448,9 @@ def dry_run(fonts):
 def compare(fonts):
     c = Canvas(
         fonts,
-        "evalblink compare: quality and cost deltas between two runs per model and"
-        " prompt. Run B improves quality on 2 of 3 shared combos.",
+        "evalblink compare: quality, cost and p50 latency deltas between two runs"
+        " per model and prompt. Run B improves quality on 2 of 3 shared combos,"
+        " both within noise.",
     )
     y = header(c, "evalblink compare <run_a>.json <run_b>.json")
     y = table(
@@ -440,17 +462,38 @@ def compare(fonts):
             ("Prompt", 6, False),
             ("Quality ∆", 9, False),  # U+2206: Geist has no Greek Δ
             ("Cost ∆", 10, False),
+            ("p50 latency ∆", 13, False),
             ("Notes", 12, False),
         ),
         (
-            ("anthropic/claude-sonnet-4.6", "v1", ("+4.0% ↑", INK), "+0.0002 ↑", ""),
-            ("openai/gpt-4o-mini", "v1", ("+6.0% ↑", INK), "stable", ""),
-            ("anthropic/claude-sonnet-4.6", "v2", "stable", "stable", ""),
+            (
+                "anthropic/claude-sonnet-4.6",
+                "v1",
+                ("+4.0% ↑", INK),
+                "+0.0002 ↑",
+                "-0.08 s ↓",
+                ("within noise", WARN),
+            ),
+            (
+                "openai/gpt-4o-mini",
+                "v1",
+                ("+6.0% ↑", INK),
+                "stable",
+                "stable",
+                ("within noise", WARN),
+            ),
+            ("anthropic/claude-sonnet-4.6", "v2", "stable", "stable", "-0.12 s ↓", ""),
         ),
         note="2026-06-08_101500_customer-support-classification → 2026-06-10_143205_customer-support-classification",
     )
     y += 20
-    y = verdict(c, y, "VERDICT", "Run B improves quality on 2/3 shared combo(s).")
+    y = verdict(
+        c,
+        y,
+        "VERDICT",
+        "Run B improves quality on 2/3 shared combo(s). None of these gains is"
+        " beyond noise (95%).",
+    )
     return c.svg(y + 40)
 
 

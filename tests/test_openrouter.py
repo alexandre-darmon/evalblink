@@ -376,6 +376,7 @@ def test_invalid_cache_entry_is_a_miss_and_refetched(
     (tmp_path / f"{_key()}.json").write_text(json.dumps(entry))
     client = client_factory(completion("fresh"))
     result = openrouter_request(client, "p", "m")
+    assert result.pop("latency_s") >= 0
     assert result == {
         "response": "fresh",
         "prompt_tokens": 10,

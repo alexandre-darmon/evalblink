@@ -147,8 +147,16 @@ def openrouter_request(
     system: str | None = None,
     timeout: int = 120,
     use_cache: bool = True,
+    sample: int = 0,
 ) -> dict:
-    """Call OpenRouter (or the cache) and return ``{response, *_tokens, cost}``.
+    """Call OpenRouter (or the cache) and return ``{response, *_tokens, cost, latency_s}``.
+
+    ``latency_s`` is the wall time of the attempt that succeeded, in seconds:
+    request sent → reply parsed, without the retries and backoff waits before
+    it. It is cached with the reply, so a cache hit reports the latency measured
+    when the reply was fetched (``None`` for an entry cached before latency was
+    recorded). ``sample`` (``repeats``) gives the n-th repeat of an identical
+    request its own cache entry; sample 0 keeps the plain request key.
 
     The returned dict carries an extra ``from_cache`` flag so callers can skip
     rate-limit sleeps on a cache hit; that flag is never persisted in the cache.
@@ -165,16 +173,19 @@ def openrouter_request(
         "max_tokens": max_tokens,
         "messages": messages,
     }
-    key = cache.sha256_key(payload)
+    # Repeats of one request need their own entries, or every repeat would
+    # replay the first reply. `sample` is never sent to the API.
+    key = cache.sha256_key({**payload, "sample": sample} if sample else payload)
     if use_cache:
         cached = cache.get(key)
         # A cache hit is checked exactly like a fresh response; a tampered or
         # stale-format entry is a miss (refetched and overwritten), not a crash.
         if cached is not None and _result_problem(cached) is None:
-            cached = {k: cached[k] for k in _RESULT_KEYS}
+            latency = cached.get("latency_s")
             return {
-                **cached,
+                **{k: cached[k] for k in _RESULT_KEYS},
                 "response": clean_text(cached["response"]),
+                "latency_s": _latency(latency),
                 "from_cache": True,
             }
 
@@ -188,6 +199,7 @@ def openrouter_request(
         if CANCELLED.is_set():  # Ctrl-C: no new attempt, no more retries
             raise RuntimeError("cancelled")
         last = attempt == MAX_RETRIES - 1
+        started = time.perf_counter()
         try:
             response = client.post(
                 url=OPENROUTER_URL,
@@ -217,6 +229,7 @@ def openrouter_request(
             full = response.json()
         except ValueError:  # HTML error page, empty body, bad encoding...
             full = None
+        latency = time.perf_counter() - started
         if not isinstance(full, dict):  # also a bare JSON list / string / null
             full = None
         error = full.get("error") if full is not None else None
@@ -263,6 +276,7 @@ def openrouter_request(
             "prompt_tokens": usage["prompt_tokens"],
             "completion_tokens": usage["completion_tokens"],
             "cost": usage["cost"],
+            "latency_s": round(latency, 3),
         }
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(
@@ -282,6 +296,11 @@ def openrouter_request(
     if use_cache:
         _cache_set(key, request_result)
     return {**request_result, "from_cache": False}
+
+
+def _latency(value) -> float | None:
+    """A cached latency in seconds, or ``None`` when absent or unusable."""
+    return float(value) if is_number(value) and value >= 0 else None
 
 
 def _price(value) -> float | None:

@@ -20,7 +20,7 @@ from evalblink import main
 from evalblink.validator import validate
 
 ROOT = Path(__file__).resolve().parent.parent
-DOCS = ["README.md", "PRD.md"]
+DOCS = ["README.md", "PRD.md", "docs/reference.md"]
 BENCHMARKS = sorted((ROOT / "benchmarks").glob("*.yaml"))
 
 

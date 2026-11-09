@@ -730,15 +730,17 @@ def test_unknown_keys_in_weighted_variables_are_warnings():
     )
 
 
-def test_every_key_in_the_readme_config_table_is_known():
+def test_every_key_in_the_reference_config_table_is_known():
     import re
     from pathlib import Path
 
     from evalblink.validator import KNOWN_KEYS
 
-    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
-    table = readme[
-        readme.index("## Configuration Reference") : readme.index("## CLI Reference")
+    ref = (Path(__file__).resolve().parent.parent / "docs" / "reference.md").read_text()
+    table = ref[
+        ref.index("## Configuration reference") : ref.index(
+            "## Test cases from a CSV or JSONL file"
+        )
     ]
     documented = re.findall(r"^\| `([^`]+)`", table, flags=re.MULTILINE)
     assert len(documented) > 15, "the config table moved — update this test"

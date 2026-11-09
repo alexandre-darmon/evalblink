@@ -7,7 +7,8 @@ runner and reporter never see the file form.
 A row's test-case fields (:data:`FIELDS`) keep their meaning; every other
 column (CSV/TSV) or key (JSONL) becomes a template variable. In CSV, header
 names match fields whatever their case (``ID``, ``Expected Output``), ``tags``
-are separated by ``;`` and a ``weighted_match`` ``expected_output`` is JSON.
+are separated by ``;`` and a ``weighted_match`` / ``json_match`` /
+``json_schema`` ``expected_output`` is JSON.
 """
 
 from __future__ import annotations
@@ -25,8 +26,11 @@ FIELDS = (
     "criteria",
     "reference",
     "tags",
+    "scorer",
     "human_score",
 )
+# Modes whose expected_output is JSON; a CSV cell holds it as JSON text.
+JSON_EXPECTED = ("weighted_match", "json_match", "json_schema")
 SPEC_KEYS = ("file", "evaluation")
 FORMATS = {".csv": ",", ".tsv": "\t", ".jsonl": None, ".ndjson": None}
 # csv's default cell limit is 128 KiB — too small for long-document evals.
@@ -88,14 +92,13 @@ def expand(config, base_dir: str) -> tuple:
         case.setdefault("id", f"line_{line}")
         if default is not None:
             case.setdefault("evaluation", default)
-        if case.get("evaluation") == "weighted_match" and isinstance(
-            case.get("expected_output"), str
-        ):
+        mode = case.get("evaluation")
+        if mode in JSON_EXPECTED and isinstance(case.get("expected_output"), str):
             try:
                 case["expected_output"] = json.loads(case["expected_output"])
             except ValueError as exc:
                 raise DatasetError(
-                    f"{name}:{line}: a weighted_match expected_output must be JSON ({exc})"
+                    f"{name}:{line}: a {mode} expected_output must be JSON ({exc})"
                 ) from None
         cases.append(case)
     if not cases:

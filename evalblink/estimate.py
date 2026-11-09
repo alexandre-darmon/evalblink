@@ -9,7 +9,8 @@ Estimates are deliberately rough and honest:
 - prompt tokens ≈ ``len(text) / 4`` (the ~4-chars-per-token rule of thumb),
 - completion tokens = the configured ``max_tokens`` (a ceiling — real outputs
   are usually shorter), capped at the model's own output limit from the catalog;
-  a budget above that limit is reported in ``over_output_limit``.
+  a budget above that limit is reported in ``over_output_limit``,
+- every one of ``repeats`` runs of a case is a full call.
 """
 
 from __future__ import annotations
@@ -66,6 +67,8 @@ def estimate(config, models_meta) -> dict:
         judge_max_tokens = DEFAULT_JUDGE_MAX_TOKENS
     missing: list = []
     over: list = []
+    # Every repeat is a full, paid call (and judge call).
+    repeats = config.get("repeats") or 1
 
     rows = []
     total_cost = 0.0
@@ -86,9 +89,9 @@ def estimate(config, models_meta) -> dict:
                     prompt, config.get("variables"), test_case
                 )
                 prompt_tok = _est_tokens((rendered_system or "") + rendered)
-                est_prompt_tokens += prompt_tok
-                est_completion_tokens += cand_tokens
-                est_cost += (
+                est_prompt_tokens += prompt_tok * repeats
+                est_completion_tokens += cand_tokens * repeats
+                est_cost += repeats * (
                     prompt_tok * cand_prompt_price + cand_tokens * cand_completion_price
                 )
                 if test_case.get("evaluation") == "llm_judge":
@@ -109,7 +112,7 @@ def estimate(config, models_meta) -> dict:
                         "evaluation.judge_max_tokens",
                         over,
                     )
-                    est_judge_cost += (
+                    est_judge_cost += repeats * (
                         judge_prompt_tok * judge_prompt_price
                         + judge_tokens * judge_completion_price
                     )

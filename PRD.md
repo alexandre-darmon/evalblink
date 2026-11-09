@@ -4,7 +4,7 @@
 **Author:** Alexandre Darmon  
 **Version:** 7.0  
 **Status:** Living document  
-**Last updated:** October 2026
+**Last updated:** November 2026
 
 > **Reading this document:** sections tagged `[V1 — shipped]` describe the current implementation. Sections tagged `[V1.1]`, `[V2]`, and `[V3]` describe planned future work. Nothing in future sections is implemented today.
 
@@ -24,7 +24,7 @@ Three problems compound each other.
 
 The current process is manual, slow, and non-reproducible: copy-pasting prompts across interfaces, comparing outputs visually, making decisions based on intuition rather than data.
 
-Tools like PromptFoo pioneered structured LLM evaluation but were built for JavaScript developers and acquired by OpenAI in March 2026. Enterprise data teams — working in Python, routing across vendors via OpenRouter, and operating in regulated industries — need a vendor-neutral, Python-native alternative with built-in cost estimation, live model metadata, and a versioned results workflow.
+Tools like PromptFoo pioneered structured LLM evaluation but were built for JavaScript developers, and promptfoo agreed to join OpenAI (announced March 2026). Enterprise data teams — working in Python, routing across vendors via OpenRouter, and operating in regulated industries — need a vendor-neutral, Python-native alternative with built-in cost estimation, live model metadata, and a versioned results workflow.
 
 **evalblink** is that workflow.
 
@@ -47,8 +47,9 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 ### `[V1 — shipped]`
 
 - Run a structured benchmark across N prompts × N models × N test cases in one command
-- Evaluate responses via exact match, LLM-as-judge, or weighted match (three shipped modes)
-- Measure quality and cost per combination — including judge costs; latency is intentionally not tracked
+- Evaluate responses via exact match, contains / not contains / regex, JSON match, JSON Schema, user-written Python scorers, LLM-as-judge, or weighted match
+- Measure quality, cost and latency per combination — judge costs included; p50 / p95 latency of the candidate calls
+- Report each score with a 95 % confidence interval, flag combos within noise of the best (and quality changes within noise in `compare`), and run each case several times with `repeats` to expose flaky cases
 - Cache results locally to avoid redundant API calls during prompt iteration
 - Run API calls concurrently using `ThreadPoolExecutor`
 - Retry failed API calls with exponential backoff (manual retry loop, no external library)
@@ -58,9 +59,12 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 - Store results history locally and compare runs with `evalblink compare` (quality + cost deltas; per-case transitions with `--detailed`)
 - Browse live OpenRouter model catalog with pricing and context length via `evalblink models`
 - Write a commented starter benchmark from three questions via `evalblink init`
+- Run in GitHub Actions with the repository's own composite action (`action.yml`): gate, regression check, report in the job summary
 
 ### `[V1.1 — planned]`
 
+- **Local evals** — benchmark models served on the user's machine or network (Ollama, LM Studio, llama.cpp, vLLM — any OpenAI-compatible endpoint, e.g. a `base_url` per model), so test data never leaves it and no OpenRouter key is needed. Cost reads $0 (or a configured price); latency becomes the local inference time.
+- **Evaluate your own application** — an HTTP endpoint or a command as the "model", so a RAG pipeline or an agent is tested end to end, not only a prompt
 - `evalblink calibrate` — validate judge scores against human-labelled cases (Pearson + Cohen's Kappa)
 - Pairwise judge mode with double-pass order-swap tie detection
 
@@ -78,7 +82,7 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 ## 4. Out of Scope (V1)
 
 - Web UI / dashboard (→ V2)
-- Latency measurement (intentionally excluded — varies with network conditions and adds noise to quality/cost comparisons)
+- Local models and custom providers (→ V1.1: every call goes through OpenRouter today)
 - Red teaming or adversarial testing
 - Real-time guardrails or production monitoring
 - Authentication or multi-user support
@@ -199,6 +203,7 @@ test_cases:
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `gate` | — | `{model, prompt}`, either optional: the `quality_threshold` gate checks the combos it names instead of the best combo of the run |
 | `concurrency` | — | Max parallel API requests — a whole number from 1 to 100 (default: `5`) |
+| `repeats` | — | Runs of each model × prompt × test case — a whole number from 1 to 100 (default: `1`); each repeat has its own cache entry |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
 | `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge — must be a string whenever present |
@@ -212,8 +217,9 @@ test_cases:
 | `variables` | — | Global key/value pairs injected into all templates |
 | `test_cases` | ✅ | The list of test cases below, or `{file: cases.csv, evaluation?}` to load them from a CSV, TSV or JSONL file next to the YAML. Fields `id`, `evaluation`, `expected_output`, `criteria`, `reference`, `tags` (`;`-separated in CSV) and `human_score` keep their meaning; every other column is a template variable; rows without an `id` are named `line_<n>`. Errors name the file and line; a column close to a field name gets a warning. |
 | `test_cases[].id` | ✅ | Unique identifier |
-| `test_cases[].evaluation` | ✅ | `exact_match` \| `contains` \| `not_contains` \| `regex` \| `llm_judge` \| `weighted_match` |
-| `test_cases[].expected_output` | ✅ except for `llm_judge` | Ground truth — the label for `exact_match`, text(s) for `contains` / `not_contains`, a pattern for `regex`, a JSON array for `weighted_match` |
+| `test_cases[].evaluation` | ✅ | `exact_match` \| `contains` \| `not_contains` \| `regex` \| `json_match` \| `json_schema` \| `python` \| `llm_judge` \| `weighted_match` |
+| `test_cases[].expected_output` | ✅ except for `llm_judge` and `python` | Ground truth — the label for `exact_match`, text(s) for `contains` / `not_contains`, a pattern for `regex`, the JSON values to find for `json_match`, a JSON Schema for `json_schema`, a JSON array for `weighted_match` |
+| `test_cases[].scorer` | ✅ if `python` | `"file.py:function"`, relative to the YAML: `function(response, case)` returns a bool or `{passed, score?, reason?}`; an exception is a `scorer_error` pipeline error |
 | `test_cases[].criteria` | ✅ if `llm_judge` | Evaluation rubric shown to the judge |
 | `test_cases[].reference` | — | Optional gold answer injected into the judge prompt |
 | `test_cases[].variables` | — | Per-case variables that override or extend global `variables` |
@@ -262,7 +268,7 @@ Both `prompts[].template` and `prompts[].system` render in a `SandboxedEnvironme
 
 ## 7. `[V1 — shipped]` Evaluation Modes
 
-A single config can mix all three modes across its test cases.
+A single config can mix every mode across its test cases. Beyond the three below, the free deterministic modes are `contains` / `not_contains` / `regex` (text checks), `json_match` (the reply's JSON holds the expected values; partial credit, passes at 1.0), `json_schema` (the reply's JSON satisfies a JSON Schema) and `python` (a user function, `scorer: "scorers.py:fn"`) — see `docs/reference.md#evaluation-modes`.
 
 ### 7.1 Exact Match
 
@@ -633,22 +639,23 @@ evalblink cache clear --yes                 # without --yes it only prints the e
 
 ```
 Running 300 cases (3 models × 2 prompts × 50 test cases), 5 at a time
-[  1/300] openai/gpt-4o-mini / v1 / conv_001  pass
-[  2/300] openai/gpt-4o-mini / v1 / conv_002  fail
+[  1/300] openai/gpt-4o-mini / v1 / conv_001  pass  0.58s
+[  2/300] openai/gpt-4o-mini / v1 / conv_002  fail  0.66s
 …
 [ 48/300] openai/gpt-4o-mini / v1 / conv_048  ⚠ API error: OpenRouter request timed out after 4 attempt(s)
 …
-               Customer Support Classification — 2026-06-10_143205_customer-support-classification
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ Model                        ┃ Prompt ┃ Score ┃ Pass/Scored ┃ Errors ┃ Prompt tok ┃ Completion tok ┃      Cost ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
-│ openai/gpt-4o-mini           │ v1     │ 87.8% │       43/49 │      1 │       4018 │            294 │ $0.000784 │
-│ openai/gpt-4o-mini           │ v2     │ 90.0% │       45/50 │      0 │       5000 │            300 │ $0.000960 │
-│ anthropic/claude-sonnet-4.6  │ v1     │ 94.0% │       47/50 │      0 │       4100 │            300 │ $0.017500 │
-│ anthropic/claude-sonnet-4.6  │ v2     │ 96.0% │       48/50 │      0 │       5000 │            300 │ $0.021000 │
-│ mistralai/mistral-small-2603 │ v1     │ 85.4% │       41/48 │      2 │       3936 │            288 │ $0.000768 │
-│ mistralai/mistral-small-2603 │ v2     │ 88.0% │       44/50 │      0 │       5000 │            300 │ $0.000960 │
-└──────────────────────────────┴────────┴───────┴─────────────┴────────┴────────────┴────────────────┴───────────┘
+                    Customer Support Classification — 2026-06-10_143205_customer-support-classification
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ Model                        ┃ Prompt ┃ Score (95% CI) ┃ Pass/Scored ┃ Errors ┃ Tokens in/out ┃      Cost ┃ p50 latency ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│ openai/gpt-4o-mini           │ v1     │  87.8% (76–94) │       43/49 │      1 │      4018/294 │ $0.000784 │      0.61 s │
+│ openai/gpt-4o-mini           │ v2     │  90.0% (79–96) │       45/50 │      0 │      5000/300 │ $0.000960 │      0.71 s │
+│ anthropic/claude-sonnet-4.6  │ v1     │  94.0% (84–98) │       47/50 │      0 │      4100/300 │ $0.017500 │      1.54 s │
+│ anthropic/claude-sonnet-4.6  │ v2     │  96.0% (87–99) │       48/50 │      0 │      5000/300 │ $0.021000 │      1.53 s │
+│ mistralai/mistral-small-2603 │ v1     │  85.4% (73–93) │       41/48 │      2 │      3936/288 │ $0.000768 │      0.52 s │
+│ mistralai/mistral-small-2603 │ v2     │  88.0% (76–94) │       44/50 │      0 │      5000/300 │ $0.000960 │      0.50 s │
+└──────────────────────────────┴────────┴────────────────┴─────────────┴────────┴───────────────┴───────────┴─────────────┘
+          QUALITY BY TAG — best combo
           QUALITY BY TAG — best combo
       (anthropic/claude-sonnet-4.6 / v2)
 ┏━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━┓
@@ -662,8 +669,10 @@ Running 300 cases (3 models × 2 prompts × 50 test cases), 5 at a time
 └─────────────┴───────┴─────────┴────────┴────┘
 
 RECOMMENDATION
-Best quality : anthropic/claude-sonnet-4.6 / v2 (96.0%)
+Best quality : anthropic/claude-sonnet-4.6 / v2 (96.0%, 95% CI 87–99%)
+Within noise : anthropic/claude-sonnet-4.6 / v1 (94.0%), openai/gpt-4o-mini / v2 (90.0%) and 3 more — not distinguishable from the best at 95%; add test cases to separate them.
 Best value   : openai/gpt-4o-mini / v1 (87.8% · $0.0008/run)
+Fastest      : mistralai/mistral-small-2603 / v2 (p50 0.50 s · 88.0%)
 3 pipeline error(s) excluded from scoring.
 ⚠️  Warning  : edge_case quality is below 70%.
 ⚠️  Warning  : non_english quality is below 70%.
@@ -675,9 +684,9 @@ Markdown report saved to results/2026-06-10_143205_customer-support-classificati
 PASS: best score meets quality_threshold (85).
 ```
 
-Sample from a 50-case run with `quality_threshold: 85` in which three calls timed out; most of the per-case progress lines (`[i/N] model / prompt / case  pass | fail (score) | ⚠ <error>`, on stderr; the results go to stdout) are trimmed. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the CI gate (§18).
+Sample from a 50-case run with `quality_threshold: 85` in which three calls timed out; most of the per-case progress lines (`[i/N] model / prompt / case  pass | fail (score)  latency | ⚠ <error>`, on stderr; the results go to stdout) are trimmed. The `pipeline error(s) excluded from scoring` line and the closing warning give the run total across all combos; the last line is the CI gate (§18).
 
-**Columns tracked:** Model, Prompt, Score (%), Pass/Scored, Errors (pipeline errors), Prompt tokens, Completion tokens, Cost. **Latency is not tracked.** Rows follow the config's model × prompt order. Score and Pass/Scored cover scored cases only — API errors (`api_error`) and judge errors (`judge_api_error` / `judge_error`) are counted under Errors and excluded. The tag table lists warning rows first, then the rest alphabetically. Best value is score per dollar, with cost floored at $0.0001 so free models fall back to the highest score.
+**Columns tracked:** Model, Prompt, Score (%) with its 95 % Wilson interval, Pass/Scored, Errors (pipeline errors), prompt / completion tokens, Cost, p50 latency (p95 too in the Markdown report). Latency is the wall time of the candidate call's successful attempt (retries, backoff and judge calls excluded), cached with the reply. The recommendation adds **Within noise** (combos whose score can't be told apart from the best one's at 95 %, by Newcombe's interval for a difference of proportions), **Fastest** (lowest p50) and, with `repeats`, the count of **flaky** cases (repeats that disagree). The interval counts test cases, not repeats. Rows follow the config's model × prompt order. Score and Pass/Scored cover scored cases only — API errors (`api_error`) and judge errors (`judge_api_error` / `judge_error`) are counted under Errors and excluded. The tag table lists warning rows first, then the rest alphabetically. Best value is score per dollar, with cost floored at $0.0001 so free models fall back to the highest score.
 
 ### Markdown report structure
 
@@ -694,11 +703,11 @@ Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchma
 - CI gate (quality_threshold): ...   (the top-level gate, from `insights`)
 
 ## Summary
-| Model | Prompt | Score | Pass/Scored | Errors | Prompt tok | Completion tok | Cost |
+| Model | Prompt | Score | 95% CI | Pass/Scored | Errors | Prompt tok | Completion tok | Cost | p50 latency | p95 latency |
 ...
 
 ## {model} — prompt `{id}`
-| Test case | Evaluation | Match | Score | Cost |
+| Test case | Evaluation | Match | Score | Cost | Latency |
 ...
 
 ## Quality by tag — best combo ({model} / {prompt})
@@ -706,13 +715,16 @@ Auto-generated at `results/YYYY-MM-DD_HHMMSS_<slug>.md` (`<slug>` is the benchma
 ...
 
 ## Recommendation
-- Best quality: ...
+- Best quality: ... (score, 95% CI)
+- Within noise: ...   ← combos not distinguishable from the best
 - Best value: ...
+- Fastest: ...
+- Flaky: ...          ← with repeats, when some cases' repeats disagree
 - ⚠️ Warning: ...
 - ℹ️ N pipeline error(s) excluded from scoring.   ← run total, only when the run has errors
 ```
 
-Errored cases appear in the per-combo tables with their status in the Score column — `API error`, `judge API error`, `judge error` or `internal error` — instead of a number. Judge reasoning, raw responses and error messages are in the JSON record only.
+Errored cases appear in the per-combo tables with their status in the Score column — `API error`, `judge API error`, `judge error`, `scorer error` or `internal error` — instead of a number. Judge reasoning, raw responses and error messages are in the JSON record only.
 
 ---
 
@@ -743,19 +755,19 @@ evalblink compare results/2026-06-08_101500_customer-support-classification.json
 
 ```
  DELTA: 2026-06-08_101500_customer-support-classification → 2026-06-10_143205_customer-support-classification
- Model                         Prompt  Quality Δ    Cost Δ       Notes
- anthropic/claude-sonnet-4.6   v1      +4.0% ↑      +0.0002 ↑
- openai/gpt-4o-mini            v1      +6.0% ↑      stable
- anthropic/claude-sonnet-4.6   v2      stable       stable
+ Model                          Prompt  Quality Δ    Cost Δ       p50 latency Δ   Notes
+ anthropic/claude-sonnet-4.6    v1      +4.0% ↑      +0.0002 ↑    -0.08 s ↓       within noise
+ openai/gpt-4o-mini             v1      +6.0% ↑      stable       stable          within noise
+ anthropic/claude-sonnet-4.6    v2      stable       stable       -0.12 s ↓
 
-Verdict: Run B improves quality on 2/3 shared combo(s).
+Verdict: Run B improves quality on 2/3 shared combo(s). None of these gains is beyond noise (95%).
 ```
 
 Changed (or one-sided) combos are listed first, then stable ones; combos present in only one run are flagged in Notes and mentioned in the verdict. Scores leave out pipeline-error cases, so when a shared combo's error count differs between the runs, its quality Δ compares different sets of cases. Such a row is yellow, its Notes column reads `pipeline errors 2 → 0`, and the verdict leaves it out of the improved count and says how many were left out. Use `--detailed` to see which cases changed.
 
 `--detailed` adds a per-combo test-case transition table (regressed / improved / new_error / recovered) and a global summary (change counts, worst-regressed cases, per-tag net).
 
-**Latency is intentionally absent from compare output** — the runner does not capture it.
+A quality Δ that chance alone could produce (Newcombe's interval for the difference contains 0) reads `within noise` in Notes, and the verdict says how many gains are beyond noise. The p50 latency Δ is `—` for a record from before latency was measured (schema v1). Cases are keyed by id and repeat index (`conv_001 #2`).
 
 ---
 
@@ -785,10 +797,12 @@ Data used per model:
 ```
 
 1. Invalid config (validation errors) or a missing, empty or whitespace-only `OPENROUTER_API_KEY` → exit 1 before any API call. `--dry-run` needs no API key.
-2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `internal_error`) → exit 1 (results are still written).
+2. Nothing could be scored — every case in the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `scorer_error`, `internal_error`) → exit 1 (results are still written).
 3. Otherwise the `quality_threshold` gate decides, fail-safe: for each combination the gate score is passed / total cases, so every case that could not be scored counts as a failure (`analysis.summarize` → `gate_score`). Best gate score ≥ `quality_threshold` → exit 0, below it → exit 1 (when errors are what pulled it below, the FAIL line says so). No `quality_threshold` → gate not enforced, exit 0. The record's `insights.passed` matches: `false` whenever nothing could be scored.
 
 `--dry-run` exits 1 when the estimate exceeds `max_cost_usd` or a model isn't in the catalog, 0 otherwise. A top-level `gate: {model, prompt}` makes the gate check those combos instead of the best one, and the PASS/FAIL line names them. Between runs, `evalblink compare <baseline> --fail-on-regression POINTS` exits 1 when a combo's fail-safe pass rate (unscored cases count as failures) drops by more than `POINTS` against the latest run of the same benchmark and `run` filters.
+
+The repository is also a composite GitHub Action (`action.yml`, `uses: alexandre-darmon/evalblink@<tag>`): it installs evalblink, runs the benchmark, appends the Markdown report to the job summary, optionally runs `compare <baseline> --fail-on-regression <max-drop>`, and fails the job on either.
 
 Per-case pipeline errors never abort the run: they are counted under Errors and excluded from the displayed Score, while the gate counts them as failures (a run where 9 of 10 calls failed can't pass on the 1 that was scored); when any occurred, the run ends with a prominent warning giving their count.
 
@@ -827,23 +841,27 @@ evalblink/
 ├── evalblink/
 │   ├── main.py             # argparse CLI entrypoint + subcommand handlers
 │   ├── runner.py           # Benchmark execution (ThreadPoolExecutor)
-│   ├── evaluator.py        # text checks (exact_match, contains, not_contains, regex) + weighted_match + llm_judge + bias detection
+│   ├── evaluator.py        # text checks, json_match, json_schema, python scorers, weighted_match, llm_judge + bias detection
 │   ├── reporter.py         # Terminal (Rich) + JSON + Markdown output
 │   ├── openrouter.py       # the API choke point: requests, retries, model catalog (client owned by runner)
 │   ├── cache.py            # SHA256 cache read/write/stats/clear
 │   ├── compare.py          # Delta between two run JSON records
 │   ├── estimate.py         # Offline cost estimation for --dry-run
 │   ├── validator.py        # Static config validation (no API calls)
-│   ├── analysis.py         # Insights: best combo, tag breakdown, recommendations
+│   ├── analysis.py         # Insights and statistics: best combo, intervals, noise, latency, flaky cases, tag breakdown
 │   └── schemas.py          # TypedDicts (typing only) + shared defaults (SCHEMA_VERSION, DEFAULT_*)
 ├── benchmarks/
 │   ├── exact_match_classification.yaml
 │   ├── llm_as_judge.yaml
 │   ├── weighted_match_config.yaml
-│   └── classification.yaml          # mixed-mode: exact_match + llm_judge
+│   ├── classification.yaml          # mixed-mode: exact_match + llm_judge
+│   ├── structured_output.yaml       # json_match + json_schema + python
+│   └── scorers.py                   # its Python scorer
 ├── tests/                   # offline unit tests (fake httpx.Client, no API key needed)
 ├── results/                 # git-ignored
 ├── .evalblink_cache/        # git-ignored
+├── docs/reference.md        # full reference (the README is the overview)
+├── action.yml               # the GitHub Action
 ├── pyproject.toml
 ├── README.md
 ├── CLAUDE.md
@@ -853,27 +871,26 @@ evalblink/
 
 ---
 
-## 21. `[V1 — shipped]` Differentiation vs PromptFoo
+## 21. `[V1 — shipped]` Differentiation vs promptfoo
 
-| | evalblink | PromptFoo |
+Checked against promptfoo's documentation in November 2026.
+
+| | evalblink | promptfoo |
 |---|---|---|
-| Language | Python (`pip install`) | Node.js (`npx`) |
-| Vendor neutrality | Independent | Acquired by OpenAI (March 2026) |
-| Live model metadata | ✅ OpenRouter API | ❌ |
-| Cost estimation incl. judge | ✅ | ❌ |
-| Run comparison (delta) | ✅ `evalblink compare` | ❌ |
-| Markdown report per run | ✅ | ❌ |
-| Self-preference detection | ✅ warning at run start | ❌ |
-| Verbosity + style bias guardrails | ✅ baked into judge prompt | ❌ |
-| Reference-guided grading | ✅ optional `reference` field | ❌ |
-| Per-tag result breakdown | ✅ with ⚠️ auto-warnings | ❌ |
-| Weighted match evaluation | ✅ multi-dimension scoring | ❌ |
-| Judge calibration vs human labels | V1.1 `evalblink calibrate` | ❌ |
-| Pairwise judge mode | V1.1 with order-swap tie detection | ❌ |
-| Caching | ✅ | ✅ |
-| Concurrency | ✅ `ThreadPoolExecutor` | ✅ |
-| CI/CD integration | ✅ | ✅ |
-| Red teaming | ❌ Out of scope | ✅ |
+| Install | `pip` / `pipx` | `npm` / `npx` (Python for custom assertions and providers) |
+| Ownership | Independent | Joining OpenAI |
+| Models | Every OpenRouter model | Many providers, local models, your own app (HTTP, scripts) |
+| Cost | Per call, judge calls included; dry-run estimate and budget | Per call; `cost` assertion |
+| Latency | p50 / p95 per combo, change in `compare` | Per call; `latency` assertion |
+| Confidence intervals, "within noise" | ✅ | ❌ |
+| Repeats | ✅ `repeats`, with flaky-case report | ✅ `--repeat` |
+| Run comparison | CLI `compare`, with a CI regression gate | Web viewer diff |
+| Reports | Terminal, JSON, Markdown | Web viewer, HTML, JSON, CSV, … |
+| Structured output | `json_match`, `json_schema` | `is-json` / `contains-json` with a schema |
+| Custom scorers | Python | Python, JavaScript and more |
+| LLM judge | Reference-guided, bias guardrails, self-preference warning | Many model-graded metrics (rubric, factuality, RAG…) |
+| Per-category breakdown | Tags, with automatic warnings | Named metrics, metadata filters |
+| Red teaming | ❌ | ✅ |
 | Web UI | V2 | ✅ |
 
 ---

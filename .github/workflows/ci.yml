@@ -79,3 +79,18 @@ jobs:
           /tmp/venv/bin/python -m evalblink --version
           /tmp/venv/bin/evalblink init --yes starter.yaml
           /tmp/venv/bin/evalblink validate starter.yaml
+
+  action:
+    # The composite action (action.yml) from this checkout, on a dry run: no
+    # key, no completion calls (the public model catalog only).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: eval
+        uses: ./
+        with:
+          package: .
+          config: benchmarks/structured_output.yaml
+          args: --dry-run
+      - name: A dry run writes no record
+        run: test -z "${{ steps.eval.outputs.json }}"

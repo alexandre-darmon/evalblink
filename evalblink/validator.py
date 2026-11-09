@@ -1,4 +1,8 @@
-"""Static validation for benchmark YAML configs — no API calls."""
+"""Static validation for benchmark YAML configs — no API calls.
+
+The one side effect: a ``python`` case's scorer file is imported, to check that
+its function exists (each file once per process).
+"""
 
 from __future__ import annotations
 
@@ -9,18 +13,27 @@ import re
 import jinja2
 import jinja2.meta
 
-from .evaluator import TEXT_CHECKS, plain_text
+from .evaluator import TEXT_CHECKS, ScorerError, load_scorer, plain_text, schema_problem
 from .openrouter import is_number as _is_number
 from .runner import JINJA_ENV, render_template
 from .schemas import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 
-KNOWN_EVAL_TYPES = {*TEXT_CHECKS, "weighted_match", "llm_judge"}
+KNOWN_EVAL_TYPES = {
+    *TEXT_CHECKS,
+    "json_match",
+    "json_schema",
+    "python",
+    "weighted_match",
+    "llm_judge",
+}
 # Hardcoded in ``evaluator.weighted_match`` — every one must be weighted.
 WEIGHTED_DIMENSIONS = ("use_case", "percent", "order")
 
 # httpx's default pool holds 100 connections; more workers would only queue
 # (and time out) on it.
 MAX_CONCURRENCY = 100
+# Each repeat is a paid call per model × prompt × test case.
+MAX_REPEATS = 100
 
 _SINGLE_BRACE_RE = re.compile(r"(?<!\{)\{(\w+)\}(?!\})")
 
@@ -39,6 +52,7 @@ KNOWN_KEYS = {
         "gate",
         "concurrency",
         "max_cost_usd",
+        "repeats",
     },
     "inference": {"temperature", "max_tokens"},
     "evaluation": {
@@ -59,6 +73,7 @@ KNOWN_KEYS = {
         "criteria",
         "reference",
         "tags",
+        "scorer",  # python: "scorers.py:function"
         "human_score",  # collected now, read by the planned `calibrate`
     },
 }
@@ -194,6 +209,16 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
         errors.append(
             f"concurrency must be a whole number from 1 to {MAX_CONCURRENCY}"
             f" (got {concurrency!r})"
+        )
+    repeats = config.get("repeats")
+    if repeats is not None and not (
+        _is_number(repeats)
+        and isinstance(repeats, int)
+        and not isinstance(repeats, bool)
+        and 1 <= repeats <= MAX_REPEATS
+    ):
+        errors.append(
+            f"repeats must be a whole number from 1 to {MAX_REPEATS} (got {repeats!r})"
         )
     max_cost_usd = config.get("max_cost_usd")
     if max_cost_usd is not None and not (
@@ -358,6 +383,39 @@ def validate(config: dict) -> tuple[list[str], list[str]]:
                     f" ({len(expected)} chars) relative to"
                     f" inference.max_tokens ({max_tokens})"
                 )
+
+        if eval_type == "json_match":
+            expected = tc.get("expected_output")
+            if not isinstance(expected, (dict, list)) or not expected:
+                errors.append(
+                    f"test_cases[{label}]: json_match expected_output must be a"
+                    f" non-empty mapping or list — the JSON to find (got {expected!r})"
+                )
+        if eval_type == "json_schema":
+            expected = tc.get("expected_output")
+            if expected is None:
+                errors.append(
+                    f"test_cases[{label}]: json_schema requires 'expected_output'"
+                    " (the JSON Schema)"
+                )
+            else:
+                problem = schema_problem(expected)
+                if problem:
+                    errors.append(
+                        f"test_cases[{label}]: json_schema expected_output {problem}"
+                    )
+        if eval_type == "python":
+            spec = tc.get("scorer")
+            if spec is None:
+                errors.append(
+                    f"test_cases[{label}]: python requires 'scorer'"
+                    " ('scorers.py:function_name', relative to the YAML)"
+                )
+            else:
+                try:
+                    load_scorer(spec, config.get("_base_dir", ""))
+                except ScorerError as exc:
+                    errors.append(f"test_cases[{label}]: {exc}")
 
         if eval_type == "llm_judge":
             has_llm_judge = True
