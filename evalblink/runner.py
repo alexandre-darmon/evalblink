@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 from jinja2.sandbox import SandboxedEnvironment
 
-from . import analysis
+from . import analysis, providers
 from .evaluator import (
     TEXT_CHECKS,
     ScorerError,
@@ -143,6 +143,7 @@ def _evaluate_case(
             rendered_system,
             use_cache=use_cache,
             sample=sample or 0,
+            providers_config=config.get("providers"),
         )
     except (RuntimeError, httpx.HTTPError) as exc:
         # Candidate API failed after retries — a pipeline failure, not a real
@@ -212,6 +213,7 @@ def _evaluate_case(
             test_case["criteria"],
             test_case.get("reference"),
             use_cache=use_cache,
+            providers_config=config.get("providers"),
         )
         match_result = judge_result["match_result"]
         match_score = judge_result["score_normalized"]
@@ -270,6 +272,18 @@ def _evaluate_case(
     return _sampled(sample, result)
 
 
+def _local_limits(config) -> str:
+    """`` (ollama: 1 at a time)`` when local servers cap their own requests."""
+    limits = {}
+    for model in providers.called_models(config):
+        if providers.is_local(model):
+            endpoint = providers.resolve(model, config.get("providers"))
+            limits[endpoint.provider] = endpoint.concurrency
+    if not limits:
+        return ""
+    return " (" + ", ".join(f"{p}: {n} at a time" for p, n in limits.items()) + ")"
+
+
 def run(config, verbose=False, use_cache=True):
     """Run every model × prompt × test case concurrently and return ``(results, timestamp)``.
 
@@ -315,7 +329,8 @@ def run(config, verbose=False, use_cache=True):
     if repeats > 1:
         shape.append(f"{repeats} repeats")
     _diag(
-        f"Running {_plural(len(tasks), 'case')} ({' × '.join(shape)}), {concurrency} at a time"
+        f"Running {_plural(len(tasks), 'case')} ({' × '.join(shape)}),"
+        f" {concurrency} at a time{_local_limits(config)}"
     )
 
     lock = threading.Lock()

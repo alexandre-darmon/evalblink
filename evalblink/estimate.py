@@ -10,7 +10,8 @@ Estimates are deliberately rough and honest:
 - completion tokens = the configured ``max_tokens`` (a ceiling — real outputs
   are usually shorter), capped at the model's own output limit from the catalog;
   a budget above that limit is reported in ``over_output_limit``,
-- every one of ``repeats`` runs of a case is a full call.
+- every one of ``repeats`` runs of a case is a full call,
+- a local model (``ollama:llama3.2``) costs nothing and needs no catalog.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import difflib
 import math
 
+from . import providers
 from .runner import render_template
 from .schemas import DEFAULT_JUDGE_MAX_TOKENS, DEFAULT_MAX_TOKENS
 
@@ -33,6 +35,8 @@ def _price(models_meta, model, missing):
     """Pricing for ``model``; records a miss (and returns zeros) when unknown —
     absent from the catalog, or priced ``None`` there (``openrouter`` maps a
     negative / non-numeric catalog price to ``None``)."""
+    if providers.is_local(model):  # runs on your own hardware
+        return 0.0, 0.0
     meta = models_meta.get(model)
     if meta is None or meta.get("prompt") is None or meta.get("completion") is None:
         if model not in missing:
@@ -153,4 +157,7 @@ def estimate(config, models_meta) -> dict:
         "over_output_limit": over,
         "max_cost_usd": max_cost_usd,
         "over_budget": over_budget,
+        "local_models": [
+            m for m in providers.called_models(config) if providers.is_local(m)
+        ],
     }

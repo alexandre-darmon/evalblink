@@ -1,15 +1,18 @@
-"""The single OpenRouter API choke point.
+"""The single API choke point: OpenRouter, and local OpenAI-compatible servers.
 
 One job: turn a prompt into a completion (with usage accounting), reusing a
 caller-supplied ``httpx.Client`` and consulting the SHA256 cache so identical
 requests never hit the network twice. Both the candidate loop (``runner``) and
 the LLM judge (``evaluator``) go through here, which is why it lives in its own
 leaf module — keeping it out of ``runner`` avoids a runner<->evaluator import
-cycle.
+cycle. A model id with a provider prefix (``ollama:llama3.2``, see
+``providers``) goes to that server instead of OpenRouter, through the same
+cache, retries and checks.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -20,7 +23,8 @@ import time
 
 import httpx
 
-from . import cache
+from . import cache, providers
+from .providers import Endpoint, ProviderError
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -94,10 +98,24 @@ def _result_problem(result) -> str | None:
     content = result.get("response")
     if not isinstance(content, str) or not content.strip():
         what = "null" if content is None else f"empty/non-text ({content!r})"
-        return f"{what} content. Increase max_tokens."
+        return f"{what} content"
     if not all(is_number(result.get(k)) for k in _RESULT_KEYS[1:]):
         return "malformed usage: " + str({k: result.get(k) for k in _RESULT_KEYS[1:]})
     return None
+
+
+def _empty_hint(problem: str, finish) -> str:
+    """What to do about an unusable reply. A larger budget only helps when the
+    reply ran out of it (``length``, or no reason given); a model that stopped
+    on its own (``stop``, ``content_filter``…) won't answer with more tokens."""
+    if not problem.endswith(" content"):
+        return ""
+    if finish in (None, "length"):
+        return " Increase max_tokens."
+    return (
+        " The model stopped without text, not for lack of tokens:"
+        " retry, or try another model."
+    )
 
 
 _cache_write_warned = False
@@ -138,6 +156,51 @@ def _auth_headers() -> dict:
     return headers
 
 
+def _endpoint_headers(endpoint: Endpoint) -> dict:
+    """OpenRouter's headers, or a local server's: a Bearer key only when its
+    ``api_key_env`` names a set variable."""
+    if not endpoint.local:
+        return _auth_headers()
+    key = (
+        (os.getenv(endpoint.api_key_env) or "").strip() if endpoint.api_key_env else ""
+    )
+    if not key.isascii():
+        raise RuntimeError(f"{endpoint.api_key_env} contains a non-ASCII character")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _label(endpoint: Endpoint) -> str:
+    """How errors name the server: ``OpenRouter`` or ``ollama (http://…/v1)``."""
+    if not endpoint.local:
+        return "OpenRouter"
+    return f"{endpoint.provider} ({endpoint.base_url})"
+
+
+# One semaphore per local server, sized by its `concurrency`: requests beyond it
+# wait here, before the latency timer starts, instead of in the server's queue.
+_slots: dict = {}
+_slots_lock = threading.Lock()
+
+
+def _slot(endpoint: Endpoint):
+    if endpoint.concurrency is None:
+        return contextlib.nullcontext()
+    key = (endpoint.provider, endpoint.base_url, endpoint.concurrency)
+    with _slots_lock:
+        if key not in _slots:
+            _slots[key] = threading.BoundedSemaphore(endpoint.concurrency)
+        return _slots[key]
+
+
+def _usage_value(usage: dict, key: str, endpoint: Endpoint):
+    """A usage field; a local server that leaves one out (or reports no cost —
+    none of them do) counts it as 0. OpenRouter must send all three."""
+    if not endpoint.local:
+        return usage[key]
+    value = usage.get(key)
+    return 0 if value is None else value
+
+
 def openrouter_request(
     client: httpx.Client,
     prompt: str,
@@ -148,8 +211,15 @@ def openrouter_request(
     timeout: int = 120,
     use_cache: bool = True,
     sample: int = 0,
+    providers_config: dict | None = None,
 ) -> dict:
-    """Call OpenRouter (or the cache) and return ``{response, *_tokens, cost, latency_s}``.
+    """Call the model's server (or the cache) and return ``{response, *_tokens, cost, latency_s}``.
+
+    ``model`` is an OpenRouter id, or a local one (``ollama:llama3.2``) served
+    by a provider from ``providers.BUILTIN`` or the config's ``providers:``
+    block (``providers_config``). A local server's missing usage fields count
+    as 0 (so its reply costs 0 unless it reports a cost), and it gets its own
+    ``timeout`` and ``concurrency`` from the provider settings.
 
     ``latency_s`` is the wall time of the attempt that succeeded, in seconds:
     request sent → reply parsed, without the retries and backoff waits before
@@ -165,17 +235,26 @@ def openrouter_request(
     if system:
         messages.append({"role": "system", "content": clean_text(system)})
     messages.append({"role": "user", "content": clean_text(prompt)})
+    try:
+        endpoint = providers.resolve(model, providers_config)
+    except (
+        ProviderError
+    ) as exc:  # `validate` catches it first; callers handle RuntimeError
+        raise RuntimeError(str(exc)) from exc
 
     # The request body fully determines the response — it is the cache key.
     payload = {
-        "model": clean_text(model),
+        "model": clean_text(endpoint.model),
         "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": messages,
     }
-    # Repeats of one request need their own entries, or every repeat would
-    # replay the first reply. `sample` is never sent to the API.
-    key = cache.sha256_key({**payload, "sample": sample} if sample else payload)
+    # The key names the full id (`ollama:qwen2.5`), so two servers that both
+    # call a model `qwen2.5` never share entries; for OpenRouter it is the
+    # payload itself. Repeats of one request need their own entries, or every
+    # repeat would replay the first reply. `sample` is never sent to the API.
+    keyed = {**payload, "model": clean_text(model)}
+    key = cache.sha256_key({**keyed, "sample": sample} if sample else keyed)
     if use_cache:
         cached = cache.get(key)
         # A cache hit is checked exactly like a fresh response; a tampered or
@@ -189,7 +268,13 @@ def openrouter_request(
                 "from_cache": True,
             }
 
-    headers = _auth_headers()
+    headers = _endpoint_headers(endpoint)
+    label = _label(endpoint)
+    if endpoint.local:
+        url = f"{endpoint.base_url}/chat/completions"
+        timeout = endpoint.timeout
+    else:
+        url = OPENROUTER_URL
 
     # OpenRouter free/slow models 504 intermittently; retry transient failures so a
     # single flaky call doesn't abort the whole benchmark run. Backoff: 1s, 2s, 4s,
@@ -199,14 +284,22 @@ def openrouter_request(
         if CANCELLED.is_set():  # Ctrl-C: no new attempt, no more retries
             raise RuntimeError("cancelled")
         last = attempt == MAX_RETRIES - 1
-        started = time.perf_counter()
         try:
-            response = client.post(
-                url=OPENROUTER_URL,
-                headers=headers,
-                json=payload,
-                timeout=timeout,  # default httpx timeout is 5s — too short for free models
-            )
+            # A local server's slot is taken before the timer starts: waiting
+            # for it is not the model's latency.
+            with _slot(endpoint):
+                started = time.perf_counter()
+                response = client.post(
+                    url=url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,  # default httpx timeout is 5s — too short for free models
+                )
+                try:
+                    full = response.json()
+                except ValueError:  # HTML error page, empty body, bad encoding...
+                    full = None
+                latency = time.perf_counter() - started
         except httpx.HTTPError as exc:
             # Local timeout / connection failure — treat like an upstream 504.
             # Any other client-side error (bad gzip, redirect loop) fails at once.
@@ -218,18 +311,16 @@ def openrouter_request(
                     what = f"failed to connect ({detail})"
                 else:
                     what = f"failed ({detail})"
+                hint = ""
+                if endpoint.local and isinstance(exc, httpx.ConnectError):
+                    hint = f" — is it running? Start it: {endpoint.start or 'see its docs'}"
                 raise RuntimeError(
-                    f"OpenRouter request {what} after {attempt + 1} attempt(s)"
+                    f"{label} request {what} after {attempt + 1} attempt(s){hint}"
                 ) from exc
             time.sleep(2**attempt)
             continue
 
         status = response.status_code
-        try:
-            full = response.json()
-        except ValueError:  # HTML error page, empty body, bad encoding...
-            full = None
-        latency = time.perf_counter() - started
         if not isinstance(full, dict):  # also a bare JSON list / string / null
             full = None
         error = full.get("error") if full is not None else None
@@ -243,7 +334,7 @@ def openrouter_request(
             headers_in = getattr(response, "headers", None) or {}
             wait = _backoff(attempt, rate_limited, headers_in.get("retry-after"))
             print(
-                f"OpenRouter {code or status} for {model} (attempt {attempt + 1}/{MAX_RETRIES});"
+                f"{label} {code or status} for {model} (attempt {attempt + 1}/{MAX_RETRIES});"
                 f" retrying in {wait:.0f}s...",
                 file=sys.stderr,
                 flush=True,
@@ -252,35 +343,33 @@ def openrouter_request(
             continue
         break
 
+    # The free-model advice is OpenRouter's; a local server's 429 is its own.
+    rate_hint = RATE_LIMIT_HINT if rate_limited and not endpoint.local else ""
     if error is not None:
         message = error.get("message") if isinstance(error, dict) else error
         raise RuntimeError(
-            f"OpenRouter error {code if code is not None else status}"
-            f" (HTTP {status}): {clean_text(str(message))}"
-            + (RATE_LIMIT_HINT if rate_limited else "")
+            f"{label} error {code if code is not None else status}"
+            f" (HTTP {status}): {clean_text(str(message))}" + rate_hint
         )
     if full is None:
         raise RuntimeError(
-            f"OpenRouter returned a non-JSON response (HTTP {status}):"
-            f" {response.text[:200]!r}" + (RATE_LIMIT_HINT if rate_limited else "")
+            f"{label} returned a non-JSON response (HTTP {status}):"
+            f" {response.text[:200]!r}" + rate_hint
         )
     if status >= 400:
-        raise RuntimeError(
-            f"OpenRouter HTTP {status}: {str(full)[:200]}"
-            + (RATE_LIMIT_HINT if rate_limited else "")
-        )
+        raise RuntimeError(f"{label} HTTP {status}: {str(full)[:200]}" + rate_hint)
     try:
-        usage = full["usage"]
+        usage = full["usage"] if not endpoint.local else full.get("usage") or {}
         request_result = {
             "response": full["choices"][0]["message"]["content"],
-            "prompt_tokens": usage["prompt_tokens"],
-            "completion_tokens": usage["completion_tokens"],
-            "cost": usage["cost"],
+            "prompt_tokens": _usage_value(usage, "prompt_tokens", endpoint),
+            "completion_tokens": _usage_value(usage, "completion_tokens", endpoint),
+            "cost": _usage_value(usage, "cost", endpoint),
             "latency_s": round(latency, 3),
         }
-    except (KeyError, IndexError, TypeError) as exc:
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
         raise RuntimeError(
-            f"OpenRouter returned a malformed response (HTTP {status},"
+            f"{label} returned a malformed response (HTTP {status},"
             f" {type(exc).__name__}: {exc}): {str(full)[:200]}"
         ) from exc
     problem = _result_problem(request_result)
@@ -291,7 +380,9 @@ def openrouter_request(
         except (KeyError, IndexError, TypeError, AttributeError):
             pass
         reason = f" (finish_reason: {finish})" if finish else ""
-        raise RuntimeError(f"OpenRouter returned {problem}{reason}")
+        raise RuntimeError(
+            f"{label} returned {problem}.{_empty_hint(problem, finish)}{reason}"
+        )
     request_result["response"] = clean_text(request_result["response"])
     if use_cache:
         _cache_set(key, request_result)
@@ -433,3 +524,27 @@ def fetch_models(client: httpx.Client, use_cache: bool = True) -> dict:
             file=sys.stderr,
         )
     return models
+
+
+def fetch_local_models(client: httpx.Client, endpoint: Endpoint) -> list[str] | None:
+    """The model names a local server lists at ``GET {base_url}/models``.
+
+    ``None`` when it answers without a usable list (some servers don't implement
+    it). An unreachable server raises ``httpx.TransportError`` for the caller to
+    report. Used by ``run`` to check, before any completion call, that each
+    local server is up and has its models.
+    """
+    response = client.get(
+        url=f"{endpoint.base_url}/models",
+        headers=_endpoint_headers(endpoint),
+        timeout=10,
+    )
+    try:
+        data = response.json().get("data") if response.status_code < 400 else None
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return [
+        m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)
+    ]

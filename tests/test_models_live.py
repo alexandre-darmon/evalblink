@@ -1,4 +1,4 @@
-"""Network guard: every model ID shipped in benchmarks/ and the docs exists on OpenRouter.
+"""Network guard: every OpenRouter model ID shipped in benchmarks/ and the docs exists.
 
 OpenRouter renames and retires models (`:free` variants especially), which
 silently breaks the examples. Skipped unless EVALBLINK_NETWORK_TESTS=1; runs
@@ -16,7 +16,7 @@ import httpx
 import pytest
 import yaml
 
-from evalblink import starter
+from evalblink import providers, starter
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("EVALBLINK_NETWORK_TESTS") != "1",
@@ -53,7 +53,8 @@ def _referenced_models():
         judge = (cfg.get("evaluation") or {}).get("judge_model")
         if judge:
             refs.add((source, judge))
-    return sorted(refs)
+    # Local models (`ollama:llama3.2`) run on your own server, not OpenRouter.
+    return sorted((s, m) for s, m in refs if not providers.is_local(m))
 
 
 def test_every_referenced_model_exists(monkeypatch):

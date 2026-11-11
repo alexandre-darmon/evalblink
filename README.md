@@ -221,6 +221,28 @@ Every mode, its options and its edge cases: [Evaluation modes](https://github.co
 
 ---
 
+## Local models
+
+Benchmark models on your own machine next to hosted ones: the data stays on it, local calls cost nothing, and a run of local models needs no OpenRouter key. Prefix the model with its server:
+
+```yaml
+models:
+  - "ollama:llama3.2"         # Ollama on localhost:11434
+  - "lmstudio:qwen/qwen3-8b"  # LM Studio on localhost:1234
+  - "openai/gpt-4o-mini"      # OpenRouter, in the same table
+```
+
+`ollama:`, `lmstudio:`, `llamacpp:` and `vllm:` are built in at their default addresses; a `providers:` block moves one or adds any OpenAI-compatible server (`base_url`, optional `api_key_env`). Before the first call, `run` checks that each server answers and has its models, and says how to fix it (`Start it: ollama serve`, `Get it: ollama pull llama3.2`). Each server gets one request at a time by default, so its queue never counts as latency.
+
+```bash
+ollama pull llama3.2
+evalblink run benchmarks/local_models.yaml
+```
+
+Details: [Local and self-hosted models](https://github.com/alexandre-darmon/evalblink/blob/main/docs/reference.md#local-and-self-hosted-models).
+
+---
+
 ## Numbers you can trust
 
 - **Intervals.** Each score's 95 % interval comes from the number of test cases: 48/50 reads `96.0% (87–99)`. The recommendation and `compare` flag differences that are **within noise**.
@@ -369,7 +391,7 @@ Every option, every validation rule and every output file is in the [reference](
 |---|---|---|
 | Install | `pip` / `pipx` | `npm` / `npx` (Python for custom assertions and providers) |
 | Ownership | Independent | Joining OpenAI |
-| Models | Every OpenRouter model | Many providers, local models, your own app (HTTP, scripts) |
+| Models | Every OpenRouter model, and local ones (Ollama, LM Studio, llama.cpp, vLLM, any OpenAI-compatible server) | Many providers, local models, your own app (HTTP, scripts) |
 | Cost | Per call, judge calls included; dry-run estimate and budget | Per call; `cost` assertion |
 | Latency | p50 / p95 per combo, change in `compare` | Per call; `latency` assertion |
 | Confidence intervals, "within noise" | ✅ | ❌ |
@@ -392,10 +414,10 @@ Every option, every validation rule and every output file is in the [reference](
 - Cost, latency and 95 % intervals per model × prompt; within-noise detection; repeats and flaky cases
 - Per-tag breakdown with warnings; judge bias guardrails; reference-guided grading
 - Concurrency, retries, local cache, dry-run cost estimate and budget
+- Local and self-hosted models (Ollama, LM Studio, llama.cpp, vLLM, any OpenAI-compatible server) next to OpenRouter ones
 - `validate`, `init`, `models`, `compare` (`--detailed`), CI gate, regression check and GitHub Action
 
 **V1.1**
-- **Local evals** — run benchmarks against models on your machine or network (Ollama, LM Studio, llama.cpp, vLLM: any OpenAI-compatible endpoint), so data never leaves it and no OpenRouter key is needed
 - **Evaluate your own application** — an HTTP endpoint or a command as the "model", to test a RAG pipeline or an agent end to end, not just a prompt
 - `evalblink calibrate` — check judge scores against human labels (Pearson, Cohen's kappa)
 - Pairwise judge mode with order-swap tie detection

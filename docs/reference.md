@@ -1,12 +1,13 @@
 # evalblink reference
 
-Everything the [README](https://github.com/alexandre-darmon/evalblink#readme) leaves out: every config key, what `validate` checks, each evaluation mode in detail, how latency and the statistics are computed, caching, results files and CI. The README is the place to start.
+Everything the [README](https://github.com/alexandre-darmon/evalblink#readme) leaves out: every config key, what `validate` checks, each evaluation mode in detail, local models, how latency and the statistics are computed, caching, results files and CI. The README is the place to start.
 
 ## Contents
 
 - [Configuration reference](#configuration-reference)
 - [Test cases from a CSV or JSONL file](#test-cases-from-a-csv-or-jsonl-file)
 - [Evaluation modes](#evaluation-modes)
+- [Local and self-hosted models](#local-and-self-hosted-models)
 - [Latency](#latency)
 - [Statistics: intervals, noise and repeats](#statistics-intervals-noise-and-repeats)
 - [Cost estimation](#cost-estimation)
@@ -22,7 +23,8 @@ Everything the [README](https://github.com/alexandre-darmon/evalblink#readme) le
 | Field | Required | Description |
 |---|---|---|
 | `name` | ✅ | Benchmark display name |
-| `models` | ✅ | List of OpenRouter model IDs |
+| `models` | ✅ | List of model IDs: OpenRouter ones (`openai/gpt-4o-mini`), or `provider:model` for a local or self-hosted server (`ollama:llama3.2`). See [Local and self-hosted models](#local-and-self-hosted-models) |
+| `providers` | — | Where local / self-hosted servers listen: `{name: {base_url, api_key_env?, concurrency?, timeout?}}`, to move a built-in one or add your own |
 | `quality_threshold` | — | Top-level CI/CD gate: `evalblink run` exits 1 if the best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `gate` | — | `{model, prompt}`, either optional: the `quality_threshold` gate checks the combos it names instead of the best combo of the run |
@@ -30,7 +32,7 @@ Everything the [README](https://github.com/alexandre-darmon/evalblink#readme) le
 | `repeats` | — | Runs of every model × prompt × test case — a whole number from 1 to 100 (default: `1`). See [Statistics](#statistics-intervals-noise-and-repeats) |
 | `inference.temperature` | — | Sampling temperature (default: `0` for reproducibility) |
 | `inference.max_tokens` | — | Max output tokens per call — a positive whole number such as `100`; `100.0` is rejected (default: `100`) |
-| `evaluation.judge_model` | ✅ if `llm_judge` used | OpenRouter model ID used as the judge — must be a string whenever present |
+| `evaluation.judge_model` | ✅ if `llm_judge` used | Model ID used as the judge (OpenRouter or `provider:model`) — must be a string whenever present |
 | `evaluation.judge_threshold` | — | Per-case pass threshold for `llm_judge` — normalized score 0–1 (default: `0.70`) |
 | `evaluation.judge_max_tokens` | — | Output budget of each judge call — a positive whole number (default: `4096`; reasoning judges need thousands) |
 | `evaluation.quality_threshold` | ✅ if `weighted_match` used | Per-case pass threshold for `weighted_match` — weighted score 0–1 |
@@ -57,6 +59,7 @@ Everything the [README](https://github.com/alexandre-darmon/evalblink#readme) le
 > - **Unknown keys:** a top-level key the code doesn't read is an error, with a suggestion when one is close (`unknown key 'qualty_threshold' — did you mean 'quality_threshold'?`): a misspelled `quality_threshold` would otherwise switch the CI gate off without a word. An unknown key inside `inference`, `evaluation`, a prompt or a test case is a warning naming where it is. Keys starting with `_` or `x-` are yours (YAML anchors, notes) and never flagged.
 > - **Numbers:** a top-level `quality_threshold` that isn't a number in 0–100; a `concurrency` that isn't a whole number from 1 to 100; a negative `max_cost_usd`; a non-numeric `inference.temperature`; an `inference.max_tokens` that isn't a positive whole number (`50.5`, `100.0` and `true` are rejected); and, anywhere a number is checked (`concurrency` included), a non-finite value (`.inf`, `.nan`) or one too large for a float (e.g. a 400-digit integer). An integer of more than 4300 digits, or YAML nested thousands of levels deep, makes the whole file `Invalid YAML`.
 > - **Per mode:** an `exact_match`, `contains`, `not_contains` or `regex` case without `expected_output`, or with one that isn't a string (YAML reads unquoted `yes`, `true` or `3` as a boolean or number — quote it; `contains` / `not_contains` also take a non-empty list of non-empty strings); an empty `contains` / `not_contains` text, which would match every reply; a `regex` that doesn't compile; a `json_match` `expected_output` that isn't a non-empty mapping or list; a `json_schema` `expected_output` that isn't a valid JSON Schema; a `python` case without `scorer`, or whose scorer file is missing, fails to import or has no such function (`validate` imports the file, so its module-level code runs); `llm_judge` cases without `criteria` or without `evaluation.judge_model`, or a `judge_threshold` outside 0–1, or a `judge_max_tokens` that isn't a positive whole number; an `evaluation.judge_model` that isn't a string (checked whenever it is present, even with no `llm_judge` cases); for `weighted_match`, a missing `evaluation.quality_threshold` (0–1), an `evaluation.variables` list missing any of `use_case` / `percent` / `order` or with non-numeric weights / tolerances, and an `expected_output` that is empty, not a list, or has items without a scalar `use_case` (not a list, map or set), a numeric `percent`, and an `order`.
+> - **Providers:** a model ID (or `judge_model`) whose `provider:` prefix is neither built in nor under `providers:` (`unknown provider 'olama' — did you mean 'ollama:'?`); a `providers` block that isn't a mapping, a provider name that isn't lowercase letters, digits, `-` or `_`, the reserved name `openrouter`, a new provider without `base_url`, a `base_url` that isn't an `http(s)://` URL, an `api_key_env` that isn't a variable name, a `concurrency` that isn't a whole number from 1 to 100, and a `timeout` that isn't a number of seconds above 0. An unknown key inside a provider is a warning.
 > - **Templates:** Jinja2 syntax errors in `template` / `system`, and template variables not provided by `variables`. Once everything else is valid, `validate` also trial-renders every prompt (`template` and `system`) against every test case — offline, with the runner's own render function and sandbox. Any exception (an undefined nested attribute, a `ZeroDivisionError`, a sandbox `SecurityError`, a `TypeError` from a filter…) is an error naming the prompt id and test case id, so a template that would fail at run time fails `validate` before any API call. (A template whose output is random — e.g. the `random` filter — can still fail on a later render; that case is then recorded as an `internal_error`, below.)
 >
 > Single-brace `{variable}` syntax, a `max_tokens` below 200 with `llm_judge`, and a long `expected_output` are warnings (exit 0).
@@ -336,6 +339,50 @@ Returns a weighted score 0.0–1.0. Cases scoring below `evaluation.quality_thre
 - `percent`: fraction of expected items within `tolerance` of the expected value
 - `order`: fraction of expected items with an exact order match
 
+## Local and self-hosted models
+
+A model can run on your own machine or network instead of through OpenRouter: the test data never leaves it, nothing is billed, and a run of local models needs no OpenRouter key. Name it `provider:model`; the part after the first colon is the name the server knows, colons included (`ollama:llama3.2:3b`).
+
+```yaml
+models:
+  - "ollama:llama3.2"           # local
+  - "openai/gpt-4o-mini"        # OpenRouter — both in one run, one table
+```
+
+Four servers are built in, at their default addresses:
+
+| Prefix | Server | Default `base_url` |
+|---|---|---|
+| `ollama:` | [Ollama](https://ollama.com) | `http://localhost:11434/v1` |
+| `lmstudio:` | [LM Studio](https://lmstudio.ai) | `http://localhost:1234/v1` |
+| `llamacpp:` | llama.cpp's `llama-server` | `http://localhost:8080/v1` |
+| `vllm:` | [vLLM](https://docs.vllm.ai) | `http://localhost:8000/v1` |
+
+Any other server that speaks the OpenAI chat completions API (`POST {base_url}/chat/completions`) goes under `providers:`, which also moves a built-in one:
+
+```yaml
+providers:
+  ollama:
+    base_url: "http://gpu-box.local:11434/v1"   # Ollama on another machine
+  lab:                                          # models: ["lab:qwen2.5-7b"]
+    base_url: "http://10.0.0.5:8000/v1"
+    api_key_env: "LAB_API_KEY"   # sent as `Authorization: Bearer …`; no key by default
+    concurrency: 2               # requests at a time to this server (default 1)
+    timeout: 900                 # seconds per request (default 600)
+```
+
+An OpenRouter ID always has a `vendor/` before any colon (`meta-llama/llama-3.3-70b-instruct:free`), so it is never read as a provider. The judge (`evaluation.judge_model`) can be local too.
+
+**Before the first call**, `run` asks each local server for its models (`GET {base_url}/models`). A server that doesn't answer stops the run with how to start it (`Can't reach ollama at http://localhost:11434/v1 (ConnectError). Start it: ollama serve`); a model it doesn't list stops it with how to get it and what it has (`… has no model 'llama3.2'. Get it: ollama pull llama3.2. Available: qwen2.5:7b`). Ollama's `llama3.2` matches its `llama3.2:latest`. llama.cpp is not checked (it serves the model it loaded, whatever the name), nor is a server that doesn't list models. A provider whose `api_key_env` variable is unset stops the run too. When every model and the judge are local, `OPENROUTER_API_KEY` is not needed.
+
+**Cost** reads $0 (unless the server reports a cost in `usage`): it runs on your hardware. `--dry-run` prices local models at $0, says so, and makes no network call at all when every model is local. Tokens come from the server's `usage`; a server that leaves it out counts 0.
+
+**Thinking models** (qwen3, gemma4, deepseek-r1…), common locally, reason before they answer and spend `max_tokens` on it: give them headroom (`benchmarks/local_models.yaml` uses 2048), or every reply comes back empty (`… returned empty/non-text ('') content. Increase max_tokens. (finish_reason: length)`).
+
+**Latency** is the server's: load time on a cold model included, so the first case can be slow. Each server gets one request at a time by default (`concurrency` per provider), so a local server's queue never counts as latency; the run's own `concurrency` still applies to OpenRouter models, and the progress header says both (`5 at a time (ollama: 1 at a time)`). Raise a provider's `concurrency` only if the server really serves requests in parallel (vLLM, or Ollama with `OLLAMA_NUM_PARALLEL`).
+
+**Cache and errors** work as with OpenRouter: the cache key uses the full ID (`ollama:qwen2.5`), so two servers with a model of the same name never share replies; transient failures are retried; a failed call is an `api_error` named after the server (`ollama (http://localhost:11434/v1) error …`). Example: `benchmarks/local_models.yaml`.
+
 ## Latency
 
 Every candidate call's latency is recorded: the wall time of the attempt that returned the reply, from sending the request to parsing the answer, in seconds. Retries, backoff waits and judge calls are left out, so a rate-limited first attempt doesn't inflate it.
@@ -345,7 +392,7 @@ Every candidate call's latency is recorded: the wall time of the attempt that re
 - **Fastest:** with several combos, the recommendation names the one with the lowest p50, with its score, so you can weigh speed against quality.
 - **`compare`** shows the p50 change per combo (`-0.12 s ↓` is faster). A record from before latency was measured shows `—`.
 
-Latency is what you get through OpenRouter, from where the run happens: it includes the network and OpenRouter's routing, and it rises with `concurrency` when a provider queues requests. Compare combos within one run, or runs made the same way. A cached reply keeps the latency measured when it was fetched, so a rerun from the cache reports the same numbers; use `--no-cache` to measure afresh.
+Latency is what you get through OpenRouter (or from your local server — see [Local and self-hosted models](#local-and-self-hosted-models)), from where the run happens: it includes the network and OpenRouter's routing, and it rises with `concurrency` when a provider queues requests. Compare combos within one run, or runs made the same way. A cached reply keeps the latency measured when it was fetched, so a rerun from the cache reports the same numbers; use `--no-cache` to measure afresh.
 
 ## Statistics: intervals, noise and repeats
 
@@ -418,7 +465,7 @@ concurrency: 5    # max parallel requests (default: 5)
 | Sequential | ~8–12 minutes |
 | Concurrent (default: 5) | ~45–90 seconds |
 
-Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the status line or in the JSON error body, plus local timeouts and connection errors — are retried with exponential backoff (1 s, 2 s, 4 s), up to 4 attempts. A rate limit (429) waits longer — 5 s, 10 s, 20 s plus up to 1 s of random jitter, so parallel workers don't retry in lockstep — or the server's `Retry-After` seconds when it sends them (capped at 60 s); when the retries run out, the error says it was rate-limited and suggests retrying later, lowering `concurrency` or adding a paid model. Other client-side errors (an undecodable body, a redirect loop) fail the call at once, without a retry. Any other failure of a call surfaces as a clear error (with the HTTP status when known): an error status, a non-JSON body such as an HTML 502 page, a reply with no usable `choices` / `message`, null or empty content, or missing usage data.
+Transient API failures — HTTP 408 / 429 / 502 / 503 / 504, whether on the status line or in the JSON error body, plus local timeouts and connection errors — are retried with exponential backoff (1 s, 2 s, 4 s), up to 4 attempts. A rate limit (429) waits longer — 5 s, 10 s, 20 s plus up to 1 s of random jitter, so parallel workers don't retry in lockstep — or the server's `Retry-After` seconds when it sends them (capped at 60 s); when the retries run out, the error says it was rate-limited and suggests retrying later, lowering `concurrency` or adding a paid model. Other client-side errors (an undecodable body, a redirect loop) fail the call at once, without a retry. Any other failure of a call surfaces as a clear error (with the HTTP status when known): an error status, a non-JSON body such as an HTML 502 page, a reply with no usable `choices` / `message`, null or empty content, or missing usage data. An empty reply suggests raising `max_tokens` only when it ran out of tokens (`finish_reason: length`, or no reason given); one that stopped on its own (`finish_reason: stop`, which free judges sometimes do) suggests retrying or another model, since a bigger budget would not help.
 
 **A failed call never aborts the run.** A candidate call that still fails after its retries — or hits a non-transient error such as an unknown model or a bad key — is recorded with `status: "api_error"`, `match_score: null`, `match_result: false`, an empty `response`, the message in `error`, and zero tokens/cost; its progress line shows `⚠ API error:` and the reason, and evalblink carries on. A failed judge call is recorded the same way as a judge error (see [LLM-as-judge](#llm-as-judge)). Either kind counts in the **Errors** column and is excluded from the score; the JSON and Markdown results are still written, and the end of the run prints a prominent warning with the number of pipeline errors excluded from scores. If *nothing* could be scored, the run exits 1 (see [CI/CD integration](#cicd-integration)).
 
@@ -428,7 +475,7 @@ No single test case can crash a run: anything unexpected while rendering or scor
 
 ## Caching
 
-Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model, rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached: `--no-cache` retries it for that run only (it neither reads nor writes the cache), so run `evalblink cache clear --yes` to drop the bad entry for good. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example the cache directory is read-only), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
+Every successful API response (candidate and judge) is cached under `.evalblink_cache/` by the SHA256 of the request payload: model (the full ID, `ollama:` prefix included), rendered system prompt, rendered prompt, temperature, and max_tokens. When you iterate on prompt v2, all v1 responses are served from cache at zero cost. Failed calls are never cached. A judge reply that arrives but can't be parsed (`judge_error`) *is* cached: `--no-cache` retries it for that run only (it neither reads nor writes the cache), so run `evalblink cache clear --yes` to drop the bad entry for good. `--no-cache` bypasses the cache for every call of the run, candidate and judge. A cache entry that can't be read or doesn't have the expected shape counts as a miss: the call is made again and the entry is overwritten. If the cache can't be written (for example the cache directory is read-only), evalblink prints `Could not write the response cache (…); continuing.` once and the run goes on uncached; a model catalog that can't be cached also gives a warning and the command goes on.
 
 ```bash
 evalblink cache stats            # cached responses, their size, and whether the model catalog is cached
@@ -526,7 +573,7 @@ Outputs: `json` and `markdown`, the paths of the run record and report (empty on
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-- **Exit 1 before any API call** when the config fails validation or `OPENROUTER_API_KEY` is unset, empty or whitespace-only. `--dry-run` needs no API key.
+- **Exit 1 before any API call** when the config fails validation, `OPENROUTER_API_KEY` is unset, empty or whitespace-only while an OpenRouter model is used, or a local server is down or lacks a model. `--dry-run` needs no API key.
 - **Exit 1 when nothing could be scored** — every case of the run is a pipeline error (`api_error`, `judge_api_error`, `judge_error`, `scorer_error`, `internal_error`). The results are still written.
 - **Otherwise the `quality_threshold` gate decides:** best combo ≥ `quality_threshold` → exit 0; below it → exit 1. With no `quality_threshold`, exit 0. The JSON record's `insights.passed` matches the exit code: it is `false` whenever nothing could be scored, even with `quality_threshold: 0` or none. The gate is fail-safe: it counts every case that could not be scored as a failure (passed / total cases), so a run where most calls failed can't pass on the few that were scored — while one timeout in a strong run still passes. The **Score** column itself still covers scored cases only (pipeline errors are counted under **Errors**), and when any occurred, the run ends with a warning giving their count.
 - **`gate:`** narrows the gate to one combo: `gate: {model: openai/gpt-4o-mini, prompt: v2}` makes the PASS/FAIL line read `PASS: openai/gpt-4o-mini / v2 score meets quality_threshold (80).` Either key can be left out. A `--model` / `--prompt` filter that removes the gated combo drops the gate for that run, with a note.
@@ -545,7 +592,7 @@ The regression check compares pass rates point for point; `compare` also marks t
 
 ## CLI details
 
-**API key.** `OPENROUTER_API_KEY` comes from the environment or a `.env` file read from the directory you run `evalblink` in (or the nearest parent that has one), never from the installed package's directory. `evalblink run` exits 1 with a clear message, before any API call, if it is unset, empty or whitespace-only. A key with a non-ASCII character (a pasted `…` or curly quote) can't be sent in an HTTP header: every call fails with a clear `api_error` (and `models` / `--dry-run` / `init` say so in one line). Save `.env` as UTF-8 (a BOM is fine); a file in another encoding is ignored with a warning. `evalblink validate` and `evalblink run --dry-run` need no API key and make no completion calls (`--dry-run` only fetches the public model catalog).
+**API key.** `OPENROUTER_API_KEY` comes from the environment or a `.env` file read from the directory you run `evalblink` in (or the nearest parent that has one), never from the installed package's directory. `evalblink run` exits 1 with a clear message, before any API call, if it is unset, empty or whitespace-only — unless every model it calls is local (`ollama:…`), which needs none. A key with a non-ASCII character (a pasted `…` or curly quote) can't be sent in an HTTP header: every call fails with a clear `api_error` (and `models` / `--dry-run` / `init` say so in one line). Save `.env` as UTF-8 (a BOM is fine); a file in another encoding is ignored with a warning. `evalblink validate` and `evalblink run --dry-run` need no API key and make no completion calls (`--dry-run` only fetches the public model catalog).
 
 `evalblink run` and `evalblink validate` with no path use the only YAML in `benchmarks/` (what `init` writes) and print `Using <path>` to stderr. With several YAMLs there, they use `benchmarks/exact_match_classification.yaml` when it exists (as in this repo) and otherwise exit with the list to pick from; with none, they suggest `evalblink init`.
 

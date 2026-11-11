@@ -400,6 +400,13 @@ def render_estimate(est, console: Console | None = None) -> None:
         " model's output limit); prompt tokens ≈ chars/4.",
         style="dim",
     )
+    if est.get("local_models"):
+        console.print(
+            f"Local models cost $0 here (your own hardware):"
+            f" {', '.join(est['local_models'])}.",
+            style="dim",
+            soft_wrap=True,
+        )
 
     for unknown in est.get("unknown_models", []):
         hint = (

@@ -60,10 +60,10 @@ Tools like PromptFoo pioneered structured LLM evaluation but were built for Java
 - Browse live OpenRouter model catalog with pricing and context length via `evalblink models`
 - Write a commented starter benchmark from three questions via `evalblink init`
 - Run in GitHub Actions with the repository's own composite action (`action.yml`): gate, regression check, report in the job summary
+- Benchmark local and self-hosted models next to OpenRouter ones: `provider:model` ids (`ollama:llama3.2`) for Ollama, LM Studio, llama.cpp, vLLM or any OpenAI-compatible server (`providers:` block), so test data never leaves the machine and no OpenRouter key is needed. Cost reads $0; latency is the local inference time, one request at a time per server by default; `run` checks each server and model before the first call
 
 ### `[V1.1 — planned]`
 
-- **Local evals** — benchmark models served on the user's machine or network (Ollama, LM Studio, llama.cpp, vLLM — any OpenAI-compatible endpoint, e.g. a `base_url` per model), so test data never leaves it and no OpenRouter key is needed. Cost reads $0 (or a configured price); latency becomes the local inference time.
 - **Evaluate your own application** — an HTTP endpoint or a command as the "model", so a RAG pipeline or an agent is tested end to end, not only a prompt
 - `evalblink calibrate` — validate judge scores against human-labelled cases (Pearson + Cohen's Kappa)
 - Pairwise judge mode with double-pass order-swap tie detection
@@ -198,7 +198,8 @@ test_cases:
 | Field | Required | Description |
 |---|---|---|
 | `name` | ✅ | Benchmark display name |
-| `models` | ✅ | List of OpenRouter model IDs |
+| `models` | ✅ | List of model IDs: OpenRouter ones, or `provider:model` for a local / self-hosted OpenAI-compatible server (`ollama:llama3.2`) |
+| `providers` | — | `{name: {base_url, api_key_env?, concurrency?, timeout?}}`: move a built-in server (ollama, lmstudio, llamacpp, vllm) or add one |
 | `quality_threshold` | — | Top-level CI/CD gate: exits 1 if best combo score falls below this percentage (0–100) |
 | `max_cost_usd` | — | `--dry-run` exits 1 if the estimated cost exceeds this amount |
 | `gate` | — | `{model, prompt}`, either optional: the `quality_threshold` gate checks the combos it names instead of the best combo of the run |
@@ -625,7 +626,7 @@ evalblink cache stats
 evalblink cache clear --yes                 # without --yes it only prints the entry count
 ```
 
-`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset, empty or whitespace-only. The key can also come from a `.env` file, loaded from the current working directory or its nearest parent that has one (`load_dotenv(find_dotenv(usecwd=True))`) — never from the installed package's directory. `.env` is read as UTF-8 (a BOM is stripped); a file in another encoding is ignored with a warning instead of crashing. A key containing a non-ASCII character raises `RuntimeError` in `openrouter._auth_headers` (httpx can only send ASCII headers), so each call becomes an `api_error` and `models` / `--dry-run` / `init` exit with one line.
+`evalblink run` (except `--dry-run`) exits 1 with a clear message before any API call if `OPENROUTER_API_KEY` is unset, empty or whitespace-only and an OpenRouter model (or judge) is used; a run of local models only needs no key. The key can also come from a `.env` file, loaded from the current working directory or its nearest parent that has one (`load_dotenv(find_dotenv(usecwd=True))`) — never from the installed package's directory. `.env` is read as UTF-8 (a BOM is stripped); a file in another encoding is ignored with a warning instead of crashing. A key containing a non-ASCII character raises `RuntimeError` in `openrouter._auth_headers` (httpx can only send ASCII headers), so each call becomes an `api_error` and `models` / `--dry-run` / `init` exit with one line.
 
 - `models --min-context` takes values like `100k`, `8K` or `131072`; anything else is an argparse usage error (exit 2). A catalog price that is negative or non-numeric is unknown: `models` shows it as `?` and `--free` leaves it out.
 - `report` and `compare` exit with a one-line message when a results file is missing, unreadable, not JSON, or not shaped like a run record (string `benchmark` and `timestamp`, a well-formed `results` list). `history` prints `⚠  Skipping <reason>` for each such file and lists the rest.
