@@ -21,6 +21,9 @@ All notable changes to evalblink. The format follows [Keep a Changelog](https://
 - Run records are `schema_version` 2 (additive: version 1 records still load, compare and report, with no latency).
 - New dependency: `jsonschema`.
 
+### Fixed
+- An empty reply only suggests raising `max_tokens` (or `evaluation.judge_max_tokens`) when the reply ran out of tokens (`finish_reason: length`, or none given). A model that stopped on its own with no text, as free judges sometimes do, now gets “retry, or try another model” instead.
+
 ## [0.1.5] — 2026-11-02
 
 ### Changed

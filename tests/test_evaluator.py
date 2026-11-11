@@ -299,6 +299,18 @@ def test_judge_errors_name_the_judge_budget(disable_cache, client_factory):
     assert result["status"] == "judge_api_error"
     assert "evaluation.judge_max_tokens" in result["error"]
 
+    # A judge that stops with no text isn't short of budget: no budget advice.
+    stopped = {
+        "choices": [{"message": {"content": None}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 0, "cost": 0.0},
+    }
+    result = evaluate_llm_judge(
+        client_factory(stopped), JUDGE_PARAMS, "answer", "task", "criteria"
+    )
+    assert result["status"] == "judge_api_error"
+    assert "max_tokens" not in result["error"]
+    assert "try another model" in result["error"]
+
     cut_off = {
         "choices": [{"message": {"content": '{"reasoning": "long and'}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 16, "cost": 0.0},

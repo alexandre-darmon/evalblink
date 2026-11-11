@@ -98,10 +98,24 @@ def _result_problem(result) -> str | None:
     content = result.get("response")
     if not isinstance(content, str) or not content.strip():
         what = "null" if content is None else f"empty/non-text ({content!r})"
-        return f"{what} content. Increase max_tokens."
+        return f"{what} content"
     if not all(is_number(result.get(k)) for k in _RESULT_KEYS[1:]):
         return "malformed usage: " + str({k: result.get(k) for k in _RESULT_KEYS[1:]})
     return None
+
+
+def _empty_hint(problem: str, finish) -> str:
+    """What to do about an unusable reply. A larger budget only helps when the
+    reply ran out of it (``length``, or no reason given); a model that stopped
+    on its own (``stop``, ``content_filter``…) won't answer with more tokens."""
+    if not problem.endswith(" content"):
+        return ""
+    if finish in (None, "length"):
+        return " Increase max_tokens."
+    return (
+        " The model stopped without text, not for lack of tokens:"
+        " retry, or try another model."
+    )
 
 
 _cache_write_warned = False
@@ -366,7 +380,9 @@ def openrouter_request(
         except (KeyError, IndexError, TypeError, AttributeError):
             pass
         reason = f" (finish_reason: {finish})" if finish else ""
-        raise RuntimeError(f"{label} returned {problem}{reason}")
+        raise RuntimeError(
+            f"{label} returned {problem}.{_empty_hint(problem, finish)}{reason}"
+        )
     request_result["response"] = clean_text(request_result["response"])
     if use_cache:
         _cache_set(key, request_result)

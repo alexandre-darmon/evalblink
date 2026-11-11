@@ -561,7 +561,29 @@ def test_null_content_error_is_short_and_names_finish_reason(client_factory):
         openrouter_request(client_factory(body), "p", "m", use_cache=False)
     message = str(exc.value)
     assert "null content" in message and "finish_reason: length" in message
+    assert "Increase max_tokens." in message
     assert "xxxx" not in message and len(message) < 200
+
+
+@pytest.mark.parametrize(
+    "finish, budget_hint",
+    [("length", True), (None, True), ("stop", False), ("content_filter", False)],
+)
+def test_empty_reply_hint_follows_finish_reason(client_factory, finish, budget_hint):
+    # More tokens only help a reply that ran out of them; a model that stopped
+    # on its own (free judges often do) needs a retry or another model.
+    choice = {"message": {"content": None}}
+    if finish:
+        choice["finish_reason"] = finish
+    body = {
+        "choices": [choice],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0},
+    }
+    with pytest.raises(RuntimeError) as exc:
+        openrouter_request(client_factory(body), "p", "m", use_cache=False)
+    message = str(exc.value)
+    assert ("Increase max_tokens." in message) is budget_hint
+    assert ("try another model" in message) is not budget_hint
 
 
 @pytest.mark.parametrize(
